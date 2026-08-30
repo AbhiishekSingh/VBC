@@ -1,0 +1,16 @@
+# Domain core has no runtime dependencies beyond the stdlib.
+pytest==8.3.4
+
+# Database
+sqlalchemy>=2.0,<2.1
+alembic>=1.14
+psycopg[binary]>=3.2
+
+# Phase 1a additions, not yet wired up:
+# fastapi>=0.115
+# uvicorn[standard]>=0.34
+# celery[redis]>=5.4
+# pydantic-settings>=2.7
+
+# Auth
+argon2-cffi>=23
