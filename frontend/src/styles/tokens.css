@@ -1,0 +1,143 @@
+/* =====================================================================
+   Design tokens.
+
+   The palette is deliberately sober. This is a tool analysts sit in front
+   of for an hour at a time while deciding whether a real business gets
+   onboarded; it should read as an instrument, not a dashboard demo.
+
+   Semantic colour (pass / warn / adverse / not-checked) is kept strictly
+   separate from the indigo accent, because in this product colour carries
+   meaning that a reader must be able to trust. "Not checked" gets its own
+   distinct treatment — never a muted version of "pass" — since the entire
+   premise is that a gap in coverage must never read as a clean result.
+   ===================================================================== */
+
+:root {
+  /* Neutrals, warmed very slightly toward the indigo accent so they read
+     as chosen rather than inherited. */
+  --ink:            #171a24;
+  --ink-2:          #3b4054;
+  --ink-3:          #646a80;
+  --ink-4:          #8b90a4;
+  --line:           #e2e4ec;
+  --line-2:         #eceef4;
+  --surface:        #ffffff;
+  --surface-2:      #f7f8fb;
+  --surface-3:      #eff1f7;
+  --ground:         #f4f5f9;
+
+  /* Accent — used for navigation, current state and primary actions only. */
+  --accent:         #3d3f9e;
+  --accent-ink:     #2b2d78;
+  --accent-soft:    #ececf008;
+  --accent-wash:    #eeeef8;
+
+  /* Semantic. These mean things. */
+  --pass:           #15803d;
+  --pass-wash:      #e8f5ed;
+  --warn:           #a86010;
+  --warn-wash:      #fbf1e3;
+  --adverse:        #b3243c;
+  --adverse-wash:   #fbe9ec;
+  --unchecked:      #5b6478;
+  --unchecked-wash: #eaecf2;
+
+  /* Rating chips */
+  --rating-g:       #15803d;
+  --rating-y:       #a86010;
+  --rating-r:       #b3243c;
+
+  --shadow-1: 0 1px 2px rgba(23, 26, 36, .05);
+  --shadow-2: 0 2px 8px rgba(23, 26, 36, .07);
+  --shadow-3: 0 -1px 12px rgba(23, 26, 36, .08);
+
+  --radius:    6px;
+  --radius-sm: 4px;
+
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
+               Menlo, Consolas, monospace;
+
+  --step--1: 12px;
+  --step-0:  14px;
+  --step-1:  16px;
+  --step-2:  20px;
+  --step-3:  26px;
+  --step-4:  32px;
+
+  --sidebar-w: 244px;
+  --actionbar-h: 60px;
+}
+
+/* Dark theme. Semantic hues are re-tuned rather than inverted, so a "warn"
+   still reads as caution against a dark ground instead of turning muddy. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ink:            #e9eaf2;
+    --ink-2:          #b9bdcd;
+    --ink-3:          #8b90a4;
+    --ink-4:          #6b7186;
+    --line:           #2a2e3d;
+    --line-2:         #232733;
+    --surface:        #171a24;
+    --surface-2:      #1c202b;
+    --surface-3:      #232733;
+    --ground:         #101219;
+
+    --accent:         #8b8ddb;
+    --accent-ink:     #a3a5e6;
+    --accent-wash:    #23243a;
+
+    --pass:           #4ade80;
+    --pass-wash:      #16261d;
+    --warn:           #e0a355;
+    --warn-wash:      #2a2116;
+    --adverse:        #f0788d;
+    --adverse-wash:   #2d171c;
+    --unchecked:      #9aa1b5;
+    --unchecked-wash: #21252f;
+
+    --rating-g:       #4ade80;
+    --rating-y:       #e0a355;
+    --rating-r:       #f0788d;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-2: 0 2px 8px rgba(0, 0, 0, .35);
+    --shadow-3: 0 -1px 12px rgba(0, 0, 0, .4);
+  }
+}
+
+:root[data-theme='dark'] {
+  --ink:            #e9eaf2;
+  --ink-2:          #b9bdcd;
+  --ink-3:          #8b90a4;
+  --ink-4:          #6b7186;
+  --line:           #2a2e3d;
+  --line-2:         #232733;
+  --surface:        #171a24;
+  --surface-2:      #1c202b;
+  --surface-3:      #232733;
+  --ground:         #101219;
+
+  --accent:         #8b8ddb;
+  --accent-ink:     #a3a5e6;
+  --accent-wash:    #23243a;
+
+  --pass:           #4ade80;
+  --pass-wash:      #16261d;
+  --warn:           #e0a355;
+  --warn-wash:      #2a2116;
+  --adverse:        #f0788d;
+  --adverse-wash:   #2d171c;
+  --unchecked:      #9aa1b5;
+  --unchecked-wash: #21252f;
+
+  --rating-g:       #4ade80;
+  --rating-y:       #e0a355;
+  --rating-r:       #f0788d;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, .35);
+  --shadow-3: 0 -1px 12px rgba(0, 0, 0, .4);
+}
