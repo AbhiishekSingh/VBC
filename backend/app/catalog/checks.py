@@ -21,9 +21,11 @@ from app.domain.types import (
 ACTIVE = CheckState.ACTIVE
 HOOK = CheckState.NOT_CONFIGURED
 
-FS, WX, AR, IH, NONE = (
+FS, WX, FA, EC, AR, IH, NONE = (
     Provider.FILESURE,
     Provider.WHOISXML,
+    Provider.FINAGG,
+    Provider.ECOURTS,
     Provider.ARCHIVE,
     Provider.IN_HOUSE,
     Provider.NONE,
@@ -47,9 +49,9 @@ CHECK_GROUPS: tuple[dict, ...] = (
     {"id": CheckGroup.WEB, "name": "Web Presence History", "source": "archive.org · free", "mark": "W", "configured": True},
     {"id": CheckGroup.INTERNAL, "name": "Internal Checks", "source": "our database · free", "mark": "I", "configured": True},
     {"id": CheckGroup.ADMIN, "name": "Account & Data Freshness", "source": "FileSure · admin", "mark": "A", "configured": True},
-    {"id": CheckGroup.TAX, "name": "Identity & Tax", "source": "not configured", "mark": "—", "configured": False},
+    {"id": CheckGroup.TAX, "name": "Identity & Tax", "source": "FinAGG GSP · GST", "mark": "G", "configured": True},
     {"id": CheckGroup.SANCTIONS, "name": "Sanctions & Watchlists", "source": "not configured", "mark": "—", "configured": False},
-    {"id": CheckGroup.REP, "name": "Reputation & Directories", "source": "not configured", "mark": "—", "configured": False},
+    {"id": CheckGroup.REP, "name": "Litigation & Reputation", "source": "eCourtsIndia · LegalCheck", "mark": "L", "configured": True},
 )
 
 
@@ -432,17 +434,187 @@ CHECKS: tuple[CheckDefinition, ...] = (
         note="Spend by endpoint over the last 30 days",
         admin=True,
     ),
-    # ================= Hooks · defined, no provider wired up ==============
+    # ================= Group G · GST (FinAGG GSP) =========================
+    #
+    # Two calls, both on the Common APIs, both needing no taxpayer consent.
+    #
+    # FinAGG's other eleven endpoints — every Taxpayer API and both File
+    # Download calls — authenticate AS THE TAXPAYER with an OTP sent to
+    # their registered mobile. A vendor under assessment does not forward
+    # an OTP, so those endpoints are not in this catalog and not in the
+    # adapter. Composition status in particular is read from search.dty
+    # rather than from the OTP-gated /returns/cmp endpoint, which would
+    # otherwise be the obvious source for C3.
     CheckDefinition(
         id="gst",
         group=CheckGroup.TAX,
-        name="GST verification and filing status",
-        endpoint="provider not selected",
-        provider=NONE,
-        state=HOOK,
-        note="Would fill all five Compliance parameters (C1–C5)",
-        feeds=("C1", "C2", "C3", "C4", "C5"),
+        name="GST registration and status",
+        endpoint="GET /commonapi/{v}/search?action=SEARCHGSTIN",
+        provider=FA,
+        note="Registration status, taxpayer type, constitution, principal address",
+        feeds=("C1", "C3", "C4", "C5"),
+        params=(
+            _p("gstin", "GSTIN", required=True, from_vendor="gst",
+               placeholder="27AAACX1234C1ZV"),
+        ),
     ),
+    CheckDefinition(
+        id="gstret",
+        group=CheckGroup.TAX,
+        name="GST return filing history",
+        endpoint="GET /commonapi/{v}/returns?action=RETTRACK",
+        provider=FA,
+        note="Filed periods and dates — no invoice data, no consent needed",
+        requires=("gst",),
+        feeds=("C2",),
+        params=(
+            _p("gstin", "GSTIN", required=True, from_vendor="gst",
+               placeholder="27AAACX1234C1ZV"),
+            _p("fy", "Financial year", placeholder="2025-26"),
+        ),
+    ),
+    CheckDefinition(
+        id="courtsearch",
+        group=CheckGroup.REP,
+        name="Court case search",
+        endpoint="GET /search",
+        provider=EC,
+        note="Cases naming this party, with petitioner/respondent so the side is visible",
+        params=(
+            _p("parties", "Party name", required=True, from_vendor="legal_name",
+               placeholder="MERIDIAN PACKAGING PRIVATE LIMITED"),
+            _p("courtCodes", "Court codes", placeholder="DLHC01"),
+            _p("filingDateFrom", "Filed since", type="date"),
+        ),
+    ),
+    CheckDefinition(
+        id="courthearing",
+        group=CheckGroup.REP,
+        name="Upcoming hearings",
+        endpoint="POST /causelist/cnr/batch",
+        provider=EC,
+        note="Which matched cases are listed for hearing — active, not merely historical",
+        requires=("courtsearch",),
+    ),
+    CheckDefinition(
+        id="casedetail",
+        group=CheckGroup.REP,
+        name="Case detail",
+        endpoint="GET /case/{cnr}",
+        provider=EC,
+        note="Full record for one case, including its order list",
+        params=(
+            _p("cnr", "CNR", required=True, from_result="courtsearch",
+               placeholder="DLHC010001232024"),
+        ),
+    ),
+    CheckDefinition(
+        id="courtorders",
+        group=CheckGroup.REP,
+        name="Order text",
+        endpoint="GET /case/{cnr}/order-md/{file}",
+        provider=EC,
+        note="What the orders actually say — capped by VBC_ECOURTS_MAX_ORDERS",
+        requires=("casedetail",),
+    ),
+    CheckDefinition(
+        id="courtorderai",
+        group=CheckGroup.REP,
+        name="Order analysis (provider model)",
+        endpoint="GET /case/{cnr}/order-ai/{file}",
+        provider=EC,
+        note="PROVIDER-GENERATED analysis, not registry fact. See scope decision 1.",
+        requires=("casedetail",),
+    ),
+    CheckDefinition(
+        id="causelist",
+        group=CheckGroup.REP,
+        name="Cause list search",
+        endpoint="GET /causelist/search",
+        provider=EC,
+        note="Scheduled hearings naming this party — fuzzy match, analyst confirms identity",
+        params=(
+            _p("litigant", "Party name", required=True, from_vendor="legal_name"),
+            _p("state", "State code", placeholder="MH"),
+            _p("limit", "Max rows", type="number", default="100"),
+            _p("offset", "Skip rows", type="number", default="0"),
+        ),
+    ),
+    # ---- Admin · reference data and freshness. Feed no parameter and no
+    # ---- risk rule, exactly like FileSure's wallet check.
+    CheckDefinition(
+        id="courtcaps",
+        group=CheckGroup.ADMIN,
+        name="Court search capabilities",
+        endpoint="GET /search/capabilities",
+        provider=EC,
+        note="Which filters and name-match modes Case Search supports. Free.",
+        admin=True,
+    ),
+    CheckDefinition(
+        id="courtenums",
+        group=CheckGroup.ADMIN,
+        name="Court enum reference",
+        endpoint="GET /enums",
+        provider=EC,
+        note="Live case-status and bench-type codes. Free of charge, authenticated.",
+        admin=True,
+        params=(_p("types", "Enum types", default="caseStatus,benchType"),),
+    ),
+    CheckDefinition(
+        id="courtstructure",
+        group=CheckGroup.ADMIN,
+        name="Court structure",
+        endpoint="GET /causelist/court-structure/…",
+        provider=EC,
+        note="States, districts and complexes. High courts appear as districts.",
+        admin=True,
+        params=(
+            _p("state", "State code", placeholder="DL"),
+            _p("districtCode", "District code", placeholder="1"),
+        ),
+    ),
+    CheckDefinition(
+        id="courtdates",
+        group=CheckGroup.ADMIN,
+        name="Cause list available dates",
+        endpoint="GET /causelist/available-dates",
+        provider=EC,
+        note="Which dates hold cause-list data. Free with auth.",
+        admin=True,
+        params=(
+            _p("state", "State code", placeholder="DL"),
+            _p("districtCode", "District code"),
+            _p("courtComplexCode", "Complex code"),
+            _p("courtNo", "Court room"),
+            _p("court", "Court identifier"),
+        ),
+    ),
+    CheckDefinition(
+        id="caserefresh",
+        group=CheckGroup.ADMIN,
+        name="Refresh a case from source",
+        endpoint="POST /case/{cnr}/refresh",
+        provider=EC,
+        note="Async — queues a re-pull; the provider quotes 5-10 minutes",
+        admin=True,
+        params=(_p("cnr", "CNR", required=True, from_result="courtsearch"),),
+    ),
+    CheckDefinition(
+        id="courtchecks",
+        group=CheckGroup.ADMIN,
+        name="Legal checks on this account",
+        endpoint="GET /legal-check",
+        provider=EC,
+        note="Every legal check submitted, with its risk band. Free.",
+        admin=True,
+        params=(
+            _p("status", "Status", type="select",
+               options=("", "completed", "running", "failed"), default="completed"),
+            _p("page_size", "Rows", type="number", default="20"),
+        ),
+    ),
+    # ================= Hooks · defined, no provider wired up ==============
     CheckDefinition(
         id="pan", group=CheckGroup.TAX, name="PAN verification",
         endpoint="provider not selected", provider=NONE, state=HOOK,
@@ -464,9 +636,36 @@ CHECKS: tuple[CheckDefinition, ...] = (
         id="news", group=CheckGroup.REP, name="Adverse news scan",
         endpoint="provider not selected", provider=NONE, state=HOOK,
     ),
+    # ---- Litigation · eCourtsIndia LegalCheck ------------------------
+    #
+    # NOT case search. A name-based court search is noisy in both
+    # directions, and a fixed penalty on a fuzzy name match occasionally
+    # condemns the wrong company with nothing to show the analyst that is
+    # what happened. LegalCheck returns identity_confidence beside the
+    # risk band, which is what makes the finding defensible.
+    #
+    # Covers Supreme Court, 37 High Courts, District Courts, NCLT, NCLAT.
     CheckDefinition(
-        id="court", group=CheckGroup.REP, name="Court records",
-        endpoint="provider not selected", provider=NONE, state=HOOK,
+        id="court",
+        group=CheckGroup.REP,
+        name="Litigation exposure",
+        endpoint="POST /legal-check → GET /legal-check/{code}/report",
+        provider=EC,
+        state=HOOK,
+        note=("Risk band with an identity-confidence score. NOT CONFIGURED: "
+              "POST /legal-check returns 400 VALIDATION_ERROR with an empty "
+              "details[] on every documented body shape, and the submit "
+              "endpoint is absent from the published API docs. Awaiting the "
+              "schema from eCourts. /legal-check/models confirms the account "
+              "has model eCI-1.2 with company support, so this is a contract "
+              "gap, not an entitlement one."),
+        params=(
+            _p("subjectName", "Legal name to search", required=True,
+               from_vendor="legal_name",
+               placeholder="MERIDIAN PACKAGING PRIVATE LIMITED"),
+            _p("subjectType", "Subject", type="select",
+               options=("company", "individual"), default="company"),
+        ),
     ),
     CheckDefinition(
         id="reviews", group=CheckGroup.REP, name="Online reviews",
@@ -529,5 +728,13 @@ def expand_selection(selected: list[str]) -> list[str]:
     return out
 
 
-assert len(CHECKS) == 34, f"expected 34 checks, got {len(CHECKS)}"
-assert sum(1 for c in CHECKS if not c.is_configured) == 9
+#: 34 before GST. The FinAGG integration replaced the single `gst` hook
+#: with two live checks — `gst` (search) and `gstret` (returns metadata) —
+#: because the two facts come from two endpoints, so 35 checks and one
+#: fewer hook.
+assert len(CHECKS) == 47, f"expected 47 checks, got {len(CHECKS)}"
+#: 8, not 7: `court` went back to a hook on 2026-09-08 when LegalCheck
+#: submit could not be made to accept any request body. The other twelve
+#: eCourts checks are live, so litigation EVIDENCE still reaches the
+#: analyst — only the scored band is missing, and it says so.
+assert sum(1 for c in CHECKS if not c.is_configured) == 8

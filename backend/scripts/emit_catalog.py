@@ -247,7 +247,7 @@ def main() -> int:
         print("OK   generated catalog matches the Python source")
         return 0
 
-    OUT.write_text(content)
+    OUT.write_text(content, encoding="utf-8")
     print(f"OK   wrote {OUT.relative_to(ROOT.parent)}")
     print(
         f"     {len(SCAN_PARAMETERS)} SCAN · {len(SURVEILLANCE_PARAMETERS)} field · "

@@ -78,6 +78,15 @@ def health():
                 else "not_configured"
             ),
             "whoisxml": "live" if settings.whoisxml_configured else "not_configured",
+            # Sandbox is reported distinctly for the same reason FileSure is:
+            # a green run against a sandbox host is not evidence the live
+            # path works.
+            "finagg": (
+                "sandbox" if settings.finagg_configured and settings.finagg_is_sandbox
+                else "live" if settings.finagg_configured
+                else "not_configured"
+            ),
+            "ecourts": "live" if settings.ecourts_configured else "not_configured",
             "archive": "live",
         },
         "paidCallsEnabled": settings.allow_paid_calls,

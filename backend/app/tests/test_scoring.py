@@ -12,6 +12,7 @@ import pytest
 
 from app.catalog.manual_fields import TEMPLATES_BY_ID
 from app.catalog.scan import SCAN_PARAMETERS, BEST_ACHIEVABLE_ALL
+from app.catalog.risk import RISK_RULES
 from app.domain.scoring import score_risk, score_scan, score_surveillance
 from app.domain.types import Pillar, RuleState
 from app.tests import fixtures as fx
@@ -124,18 +125,28 @@ class TestKaveriFixture:
 
         assert with_entry.pct < without.pct
 
-    def test_manual_entry_is_the_only_source_of_the_suspension(self):
-        """No configured check can produce C4 — that is the real argument.
+    def test_suspension_now_has_a_sourced_feed(self):
+        """C4 used to be reachable only through a manual entry.
 
-        The GST provider is the sole feed for all five Compliance
-        parameters and it is not configured. Whatever the score does, a
-        suspended GSTIN reaches this system through a human or not at all.
+        This fixture is the argument for the FinAGG integration: Kaveri's
+        suspended GSTIN was invisible to every configured check, so a human
+        had to notice it or the vendor passed at 62.5%. The GST search call
+        now feeds C4 directly.
+
+        The manual-field template stays. A vendor whose GSTIN the API
+        cannot resolve still needs a route in, and an analyst-stated fact
+        remains distinguishable from a sourced one in the report.
         """
         from app.catalog.checks import check
         from app.catalog.scan import scan_parameter
 
         assert scan_parameter("C4").fed_by == "gst"
-        assert check("gst").is_configured is False
+        assert check("gst").is_configured is True
+        assert check("gst").provider.value == "finagg"
+        # C2 comes from a second endpoint — filing history is not in the
+        # search response.
+        assert scan_parameter("C2").fed_by == "gstret"
+        assert check("gstret").requires == ("gst",)
 
 
 # =====================================================================
@@ -239,11 +250,23 @@ class TestRiskLedger:
         assert r.score == 50
 
     def test_unconfigured_rules_report_why(self):
+        """A rule with no provider must say so, not score zero silently."""
         r = score_risk(fx.MERIDIAN_CHECKS, fx.MERIDIAN_SELECTED)
-        gst = next(l for l in r.ledger if l.id == "r10")
-        assert gst.state is RuleState.NOT_CONFIGURED
-        assert gst.explanation == "source not configured"
-        assert gst.contribution == 0
+        # Sanctions is still a hook — r12 has no provider behind it.
+        sanctions = next(l for l in r.ledger if l.id == "r12")
+        assert sanctions.state is RuleState.NOT_CONFIGURED
+        assert sanctions.explanation == "source not configured"
+        assert sanctions.contribution == 0
+
+    def test_gst_rules_are_now_selectable_not_dead(self):
+        """r10 (+40) and r11 (-25) moved from 'no provider exists' to
+        'this vendor's run did not include the check' — a different fact,
+        and the one the coverage section has to report."""
+        r = score_risk(fx.MERIDIAN_CHECKS, fx.MERIDIAN_SELECTED)
+        for rule_id in ("r10", "r11"):
+            line = next(l for l in r.ledger if l.id == rule_id)
+            assert line.state is RuleState.NOT_SELECTED
+            assert line.contribution == 0
 
     def test_deselected_check_is_distinct_from_unconfigured(self):
         r = score_risk(fx.KAVERI_CHECKS, fx.KAVERI_SELECTED)
@@ -251,10 +274,16 @@ class TestRiskLedger:
         assert filings.state is RuleState.NOT_SELECTED
         assert filings.explanation == "check not selected for this vendor"
 
-    def test_four_rules_are_dead_in_phase_one(self):
+    def test_four_rules_do_not_participate_for_this_vendor(self):
+        """Four sit out — but for two different reasons, which the report
+        must not merge. r10/r11 were not selected for this run; r12/r13
+        have no provider at all. 'We chose not to look' and 'we cannot
+        look' are different sentences in the coverage section."""
         r = score_risk(fx.MERIDIAN_CHECKS, fx.MERIDIAN_SELECTED)
         assert r.dead == 4
         assert r.participating == 9
+        states = {l.id: l.state for l in r.ledger}
+        assert states["r10"] is not states["r12"]
 
     def test_ledger_is_always_complete(self):
         """Every rule appears, whatever its state. The ledger never shrinks."""
@@ -307,3 +336,83 @@ class TestManualFieldMapping:
                     f"{template.id} maps to {target!r}, not an option of "
                     f"{parameter.id}"
                 )
+
+
+class TestPartialRuleAvailability:
+    """A rule whose sources are part-unconfigured and part-deselected.
+
+    Counting the two exclusions separately, neither covered all of a rule's
+    `needs`, so the rule reported AVAILABLE and contributed zero —
+    indistinguishable in the ledger from "we searched and found nothing".
+    That is the one thing this ledger exists to prevent.
+
+    THESE TESTS DO NOT READ THE LIVE CATALOG. They used to, through r13
+    (news + court), and broke the day `court` was parked as
+    NOT_CONFIGURED: r13 became wholly unconfigured and the mixed case
+    stopped existing anywhere in the catalog. Rewriting the assertions to
+    match would have left two tests that pass while exercising nothing,
+    and the defect would sit unguarded until the next time a provider is
+    wired up. So the configured/unconfigured states are INJECTED here. The
+    scenario is reproduced whether or not any real rule currently has it.
+    """
+
+    RULE_ID = "r13"
+
+    @staticmethod
+    def _needs(rule_id: str) -> tuple[str, ...]:
+        return next(r for r in RISK_RULES if r.id == rule_id).needs
+
+    def _inject(self, monkeypatch, rule_id: str, configured: set[str]) -> None:
+        """Force is_configured for this rule's needs; leave every other
+        check answering from the real catalog."""
+        from app.catalog.checks import check as real_check
+        from app.domain import scoring as scoring_mod
+
+        needs = self._needs(rule_id)
+
+        class _Stub:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            @property
+            def is_configured(self) -> bool:
+                return self.name in configured
+
+        monkeypatch.setattr(
+            scoring_mod, "check",
+            lambda name: _Stub(name) if name in needs else real_check(name),
+        )
+
+    def test_rule_with_no_source_actually_run_is_not_available(self, monkeypatch):
+        """One need has no provider, the other exists but was not ticked.
+
+        This is the exact combination that used to report AVAILABLE.
+        """
+        first, second = self._needs(self.RULE_ID)[:2]
+        self._inject(monkeypatch, self.RULE_ID, configured={second})
+
+        r = score_risk({}, ["master"])       # `second` deliberately not selected
+        line = next(l for l in r.ledger if l.id == self.RULE_ID)
+        assert line.state is RuleState.NOT_SELECTED
+        assert line.contribution == 0
+
+    def test_rule_becomes_available_once_one_source_runs(self, monkeypatch):
+        second = self._needs(self.RULE_ID)[1]
+        self._inject(monkeypatch, self.RULE_ID, configured={second})
+
+        r = score_risk({}, [second])
+        line = next(l for l in r.ledger if l.id == self.RULE_ID)
+        assert line.state is RuleState.AVAILABLE
+
+    def test_all_sources_unconfigured_is_not_configured(self, monkeypatch):
+        """The other half of the same fix: nothing exists, so nothing ran.
+
+        Selecting every need must NOT promote the rule to available — a
+        ticked box is not a wired-up provider.
+        """
+        self._inject(monkeypatch, self.RULE_ID, configured=set())
+
+        r = score_risk({}, list(self._needs(self.RULE_ID)))
+        line = next(l for l in r.ledger if l.id == self.RULE_ID)
+        assert line.state is RuleState.NOT_CONFIGURED
+        assert line.contribution == 0

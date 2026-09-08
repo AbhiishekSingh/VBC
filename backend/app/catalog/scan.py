@@ -65,13 +65,19 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         feed="Site surveillance",
         options=(("Owned", G), ("Rented", Y)),
     ),
-    # ---- C · Compliance (0.1) — every parameter waits on the GST API ------
+    # ---- C · Compliance (0.1) — live via FinAGG GSP (Common APIs) --------
+    #
+    # C1, C3, C4, C5 come from one search call; C2 from returns metadata.
+    # Neither needs the taxpayer's consent. C5 is the weak one: GSTN has
+    # no residential flag, so it is set only when the nature-of-business
+    # field positively indicates commercial premises, and left for an
+    # analyst otherwise rather than inferred.
     ScanParameter(
         id="C1",
         pillar=Pillar.C,
         label="GST Registration",
-        source=SourceMode.HOOK,
-        feed="GST API — not configured",
+        source=SourceMode.AUTO,
+        feed="FinAGG GSP — common search",
         fed_by="gst",
         options=(("Registered", G), ("Not Applicable", Y), ("Unregistered", R)),
     ),
@@ -79,9 +85,9 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         id="C2",
         pillar=Pillar.C,
         label="Filing Status",
-        source=SourceMode.HOOK,
-        feed="GST API — not configured",
-        fed_by="gst",
+        source=SourceMode.AUTO,
+        feed="FinAGG GSP — returns metadata",
+        fed_by="gstret",
         options=(
             ("Regular", G),
             ("History of Default", Y),
@@ -92,8 +98,8 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         id="C3",
         pillar=Pillar.C,
         label="Registration Type",
-        source=SourceMode.HOOK,
-        feed="GST API — not configured",
+        source=SourceMode.AUTO,
+        feed="FinAGG GSP — common search",
         fed_by="gst",
         options=(("Regular", G), ("Composite", Y)),
     ),
@@ -101,8 +107,8 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         id="C4",
         pillar=Pillar.C,
         label="Suspension (if any)",
-        source=SourceMode.HOOK,
-        feed="GST API — not configured",
+        source=SourceMode.AUTO,
+        feed="FinAGG GSP — common search",
         fed_by="gst",
         options=(("No", G), ("Yes", R)),
     ),
@@ -110,8 +116,8 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         id="C5",
         pillar=Pillar.C,
         label="GST Address",
-        source=SourceMode.HOOK,
-        feed="GST API — not configured",
+        source=SourceMode.AUTO,
+        feed="FinAGG GSP — common search",
         fed_by="gst",
         options=(("Commercial", G), ("Residential", Y)),
     ),

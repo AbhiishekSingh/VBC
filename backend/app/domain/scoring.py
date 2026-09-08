@@ -324,11 +324,25 @@ def score_risk(
         unselected = [
             n for n in rule.needs if check(n).is_configured and n not in selection
         ]
+        # A rule participates only when at least one of its sources both
+        # EXISTS and was actually run for this vendor.
+        #
+        # Counting the two exclusions separately was not enough. A rule
+        # reading two checks where one has no provider and the other was
+        # deselected matched neither "all unconfigured" nor "all
+        # unselected", so it reported AVAILABLE and contributed zero —
+        # which reads as "we looked and found nothing" when nothing was
+        # looked at. r13 (news + court) hit exactly that the moment court
+        # gained a provider.
+        ran = [
+            n for n in rule.needs if check(n).is_configured and n in selection
+        ]
 
         applied = False
         if len(unconfigured) == len(rule.needs):
             state = RuleState.NOT_CONFIGURED
-        elif len(unselected) == len(rule.needs):
+        elif not ran:
+            # Something exists but none of it ran.
             state = RuleState.NOT_SELECTED
         else:
             state = RuleState.AVAILABLE

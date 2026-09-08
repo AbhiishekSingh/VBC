@@ -92,6 +92,8 @@ class RuleState(str, Enum):
 class Provider(str, Enum):
     FILESURE = "filesure"
     WHOISXML = "whoisxml"
+    FINAGG = "finagg"
+    ECOURTS = "ecourts"
     ARCHIVE = "archive"
     IN_HOUSE = "in_house"
     NONE = "none"

@@ -46,6 +46,8 @@ from app.db.models import AuditLog, Unlock, Vendor, VendorCheck, VendorCheckInpu
 from app.domain.types import CheckStatus
 from app.providers import archive as archive_mod
 from app.providers import filesure as fs_mod
+from app.providers import ecourts as ec_mod
+from app.providers import finagg as fa_mod
 from app.providers import inhouse
 from app.providers import whoisxml as wx_mod
 from app.providers.base import (
@@ -62,12 +64,66 @@ from app.providers.base import (
 
 logger = logging.getLogger(__name__)
 
-#: Checks safe to dispatch together — independent, and elapsed time becomes
-#: the slowest call rather than their sum.
-PARALLEL_BLOCK = ("filings", "fin", "whois", "reput", "ssl", "avail", "cdx", "mentions", "dprof")
+#: Run sequentially, first, and in this order: later checks read the CIN and
+#: the master payload these produce.
+SEQUENTIAL_BLOCK = ("ustatus", "master", "dirs", "charges")
 
-#: Checks needing a value produced by the parallel block.
-DEPENDENT_BLOCK = ("rwhois", "shot", "dcontact", "download")
+#: Free, local, no provider — run last, order irrelevant.
+INHOUSE_BLOCK = ("dup", "rp", "conflict")
+
+#: Checks whose runner needs a value the catalog cannot express as
+#: ``requires`` — the dependency is on a FIELD of another finding, not on
+#: the finding existing. These are forced into a later wave than the check
+#: they read, on top of whatever the catalog says.
+_EXTRA_ORDERING: dict[str, tuple[str, ...]] = {
+    "rwhois": ("whois",),
+    "shot": ("avail",),
+    "dcontact": ("dprof",),
+    "download": ("filings",),
+    # casedetail reads the first CNR out of the courtsearch finding.
+    "casedetail": ("courtsearch",),
+}
+
+
+def _waves(runnable: list[str], done_already: set[str] | None = None) -> list[list[str]]:
+    """Group ``runnable`` into dependency-ordered waves.
+
+    Everything inside a wave is independent and is dispatched together;
+    each wave sees the findings of every wave before it. Derived from the
+    catalog's ``requires`` graph rather than from a hand-maintained tuple,
+    so a new check is executed the moment it is catalogued — the previous
+    hardcoded PARALLEL_BLOCK/DEPENDENT_BLOCK silently dropped every check
+    that nobody remembered to add to them.
+    """
+    done_already = done_already or set()
+    pending = [c for c in runnable
+               if c not in SEQUENTIAL_BLOCK and c not in INHOUSE_BLOCK
+               and c not in done_already]
+    pending_set = set(pending)
+
+    def prereqs(check_id: str) -> set[str]:
+        definition = CHECKS_BY_ID.get(check_id)
+        needs = set(definition.requires if definition else ())
+        needs |= set(_EXTRA_ORDERING.get(check_id, ()))
+        # Only prerequisites that are actually running this time constrain
+        # ordering. A prerequisite that was skipped is the dispatcher's
+        # problem, not the scheduler's.
+        return needs & pending_set
+
+    waves: list[list[str]] = []
+    done: set[str] = set()
+    while pending:
+        wave = [c for c in pending if prereqs(c) <= done]
+        if not wave:
+            # A cycle, or a prerequisite that cannot resolve. Run the rest
+            # in one wave rather than dropping them on the floor.
+            logger.warning("check dependency cycle among %s — running as one wave",
+                           pending)
+            wave = list(pending)
+        waves.append(wave)
+        done.update(wave)
+        pending = [c for c in pending if c not in done]
+    return waves
 
 
 @dataclass
@@ -87,6 +143,34 @@ class Finding:
     #: seconds. Application clock, not SQL now(), which is TRANSACTION START
     #: time and would stamp every row with the second the run began.
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def _first_cnr(prior: dict) -> str | None:
+    """The first CNR the case search turned up, if it ran."""
+    found = prior.get("courtsearch")
+    rows = ((found.raw or {}).get("results") or []) if found and found.raw else []
+    for row in rows:
+        if row.get("cnr"):
+            return row["cnr"]
+    return None
+
+
+def _order_files(detail_raw: dict) -> list[str]:
+    """Order filenames from a case-detail payload, judgments first.
+
+    Judgments are the operative outcome; interim orders are procedural. When
+    the fetch is capped, the caller should get the ones that decided
+    something.
+    """
+    names: list[str] = []
+    for key in ("judgment_orders", "interim_orders"):
+        for order in detail_raw.get(key) or []:
+            if not isinstance(order, dict):
+                continue
+            name = order.get("filename") or order.get("orderUrl") or order.get("order")
+            if name:
+                names.append(str(name).rsplit("/", 1)[-1])
+    return names
 
 
 @dataclass
@@ -117,9 +201,12 @@ class CheckRunner:
         self.filesure = fs_mod.FileSureProvider(self.settings, spend=self.spend)
         self.whoisxml = wx_mod.WhoisXmlProvider(self.settings, spend=self.spend)
         self.archive = archive_mod.ArchiveProvider(self.settings, spend=self.spend)
+        self.finagg = fa_mod.FinaggProvider(self.settings, spend=self.spend)
+        self.ecourts = ec_mod.EcourtsProvider(self.settings, spend=self.spend)
 
     def close(self) -> None:
-        for provider in (self.filesure, self.whoisxml, self.archive):
+        for provider in (self.filesure, self.whoisxml, self.archive,
+                         self.finagg, self.ecourts):
             provider.close()
 
     # =================================================================
@@ -170,7 +257,7 @@ class CheckRunner:
 
         # --- STEP 4: master, sequential — later steps depend on it -------
         master_payload: dict | None = None
-        for check_id in ("ustatus", "master", "dirs", "charges"):
+        for check_id in SEQUENTIAL_BLOCK:
             if check_id not in runnable:
                 continue
             finding = self._run_one(check_id, vendor, cin, inputs, master_payload, result)
@@ -178,28 +265,31 @@ class CheckRunner:
             if check_id == "master" and finding.status.was_examined:
                 master_payload = finding.raw
 
-        # --- STEP 5: parallel block --------------------------------------
-        parallel = [c for c in runnable if c in PARALLEL_BLOCK]
-        if parallel:
-            with ThreadPoolExecutor(max_workers=min(8, len(parallel))) as pool:
-                futures = {
-                    pool.submit(
-                        self._run_one, check_id, vendor, cin, inputs, master_payload, result
-                    ): check_id
-                    for check_id in parallel
-                }
+        # --- STEP 5: every remaining provider check, in dependency waves --
+        # Within a wave the checks are independent, so they go out together;
+        # each wave reads the findings of the ones before it.
+        # `resolve` (STEP 1) and anything else already dispatched must not
+        # be run a second time.
+        already = {f.check_id for f in result.findings}
+        for wave in _waves(runnable, already):
+            by_id = {f.check_id: f for f in result.findings}
+            if len(wave) == 1:
+                result.findings.append(
+                    self._run_one(wave[0], vendor, cin, inputs,
+                                  master_payload, result, by_id)
+                )
+                continue
+            with ThreadPoolExecutor(max_workers=min(8, len(wave))) as pool:
+                futures = [
+                    pool.submit(self._run_one, check_id, vendor, cin, inputs,
+                                master_payload, result, by_id)
+                    for check_id in wave
+                ]
                 for future in as_completed(futures):
                     result.findings.append(future.result())
 
-        # --- STEP 6: dependent calls -------------------------------------
-        by_id = {f.check_id: f for f in result.findings}
-        for check_id in (c for c in runnable if c in DEPENDENT_BLOCK):
-            result.findings.append(
-                self._run_one(check_id, vendor, cin, inputs, master_payload, result, by_id)
-            )
-
-        # --- STEP 7: in-house --------------------------------------------
-        for check_id in ("dup", "rp", "conflict"):
+        # --- STEP 6: in-house --------------------------------------------
+        for check_id in INHOUSE_BLOCK:
             if check_id in runnable:
                 result.findings.append(self._run_inhouse(check_id, vendor))
 
@@ -261,6 +351,16 @@ class CheckRunner:
                 },
                 error=str(exc),
             )
+        except ec_mod.LegalCheckPending as exc:
+            # A subclass of ProviderUnavailable, caught FIRST because the
+            # code has to survive. The check is paid for and still running
+            # on the provider's side; storing the code turns the next run
+            # into a free collection instead of a second charge.
+            return Finding(
+                check_id, CheckStatus.UNAVAILABLE, "Still running", str(exc),
+                raw={"code": exc.code, "_pending": True},
+                error=str(exc),
+            )
         except ProviderUnavailable as exc:
             return Finding(
                 check_id, CheckStatus.UNAVAILABLE, "Source unavailable",
@@ -269,6 +369,16 @@ class CheckRunner:
         except ProviderError as exc:
             return Finding(check_id, CheckStatus.UNAVAILABLE, "Check failed", str(exc),
                            error=str(exc))
+        except ValueError as exc:
+            # Input the adapter validated and REFUSED — a CIN typed into a
+            # CNR field, a search filter the capability catalog does not
+            # list. The call was never made, so this is a skipped check,
+            # not a failure of the source. Reported as "Unexpected error"
+            # before, which read like a crash.
+            return Finding(
+                check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                "Invalid input", str(exc), error=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 — one bad check must not kill a run
             logger.exception("unhandled error in check %s", check_id)
             return Finding(
@@ -281,7 +391,8 @@ class CheckRunner:
         master: dict | None, result: RunResult, prior: dict,
     ) -> Finding:
         get = lambda key, default="": inputs.get(check_id, {}).get(key, default)  # noqa: E731
-        fs, wx, ar = self.filesure, self.whoisxml, self.archive
+        fs, wx, ar, fa = self.filesure, self.whoisxml, self.archive, self.finagg
+        ec = self.ecourts
 
         # ---- MCA ----------------------------------------------------
         if check_id == "ustatus":
@@ -560,10 +671,325 @@ class CheckRunner:
                            f"Wallet ₹{balance / 100:,.2f}", "Account usage retrieved.",
                            raw=data)
 
+        # ---- GST · FinAGG GSP -----------------------------------------
+        #
+        # Both calls use the Common APIs, which read published GSTN data
+        # and need no taxpayer consent. FinAGG's Taxpayer APIs are not
+        # wired here on purpose: they authenticate as the taxpayer via an
+        # OTP to their registered mobile, and a vendor being assessed does
+        # not supply one.
+        if check_id == "gst":
+            gstin = get("gstin", vendor.gst or "")
+            data = fa.search_gstin(gstin)
+            if data["is_cancelled"]:
+                status, value = CheckStatus.FAIL, "Registration cancelled"
+            elif data["is_suspended"]:
+                status, value = CheckStatus.FAIL, "Registration suspended"
+            elif data["is_active"]:
+                status, value = CheckStatus.PASS, "Registered and active"
+            else:
+                # A status we do not recognise is not a pass. Reporting an
+                # unknown state as clean is the failure this product exists
+                # to prevent.
+                status = CheckStatus.WARN
+                value = f"Status '{data['status']}' not recognised"
+            return Finding(
+                check_id, status, value,
+                f"{data['legal_name'] or data['trade_name'] or 'Name not returned'} · "
+                f"{data['taxpayer_type'] or 'type not returned'} · "
+                f"registered {data['registered_on'] or 'date not returned'}"
+                + (f" · cancelled {data['cancelled_on']}" if data["cancelled_on"] else ""),
+                raw=data,
+            )
+
+        if check_id == "gstret":
+            gstin = get("gstin", vendor.gst or "")
+            data = fa.returns_metadata(gstin, fy=get("fy") or None)
+            months = data["months_since_last_filing"]
+            if not data["filing_count"]:
+                status = CheckStatus.FAIL
+                value = f"No returns filed in {data['financial_year']}"
+            elif months is not None and months > 3:
+                status = CheckStatus.FAIL
+                value = f"Last filed {months} months ago"
+            elif months is not None and months > 1:
+                status = CheckStatus.WARN
+                value = f"Last filed {months} months ago"
+            else:
+                status = CheckStatus.PASS
+                value = f"{data['filing_count']} returns filed"
+            return Finding(
+                check_id, status, value,
+                f"Latest {data['latest_period'] or '—'} filed "
+                f"{data['latest_filed_on'] or '—'} · "
+                f"types {', '.join(data['return_types']) or '—'}",
+                raw=data,
+            )
+
+        if check_id == "courtsearch":
+            party = get("parties", vendor.legal_name or vendor.name or "")
+            if not party.strip():
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No party name",
+                               "Court records are searched by the registered "
+                               "legal name; the trade name will not match.")
+            data = ec.case_search(
+                parties=party,
+                courtCodes=get("courtCodes") or None,
+                filingDateFrom=get("filingDateFrom") or None,
+            )
+            count = data["count"]
+            # A hit is not automatically adverse — a company recovering a
+            # debt appears here alongside one being wound up. The side is in
+            # petitioners/respondents, and judging it is the analyst's job.
+            return Finding(
+                check_id,
+                CheckStatus.WARN if count else CheckStatus.PASS,
+                f"{count} case(s) naming this party" if count else "No cases found",
+                (f"Review the parties on each — appearing as petitioner is not "
+                 f"the same fact as appearing as respondent."
+                 if count else
+                 f"Searched {', '.join(data['query'])} with no matches."),
+                raw=data,
+            )
+
+        if check_id == "courthearing":
+            found = prior.get("courtsearch")
+            cnrs = [
+                r["cnr"] for r in ((found.raw or {}).get("results") or [])
+                if found and found.raw and r.get("cnr")
+            ] if found else []
+            if not cnrs:
+                return Finding(check_id, CheckStatus.SKIP, "No cases to check",
+                               "The case search found nothing to look up "
+                               "hearings for.")
+            data = ec.cnr_causelist_batch(cnrs)
+            listed = data["listed_count"]
+            return Finding(
+                check_id,
+                CheckStatus.WARN if listed else CheckStatus.PASS,
+                f"{listed} of {data['checked']} listed for hearing",
+                "An upcoming listing means the matter is live, not merely "
+                "historical." if listed else
+                "None of the matched cases are currently listed.",
+                raw=data,
+            )
+
+        if check_id == "casedetail":
+            cnr = get("cnr") or _first_cnr(prior)
+            if not cnr:
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No CNR", "Supply a CNR, or run the case search "
+                               "first so one can be taken from its results.")
+            data = ec.case_detail(cnr)
+            parties = " v ".join(filter(None, [
+                ", ".join(data["petitioners"]) or None,
+                ", ".join(data["respondents"]) or None,
+            ]))
+            # A pending matter is a live exposure; a disposed one is history.
+            # But DISPOSED alone says nothing — a withdrawal and a conviction
+            # are both "disposed", so the disposal TYPE carries the finding.
+            status = CheckStatus.WARN if data["is_pending"] else CheckStatus.PASS
+            return Finding(
+                check_id, status,
+                f"{data.get('case_status') or 'status unknown'}"
+                + (f" · {data['disposal_type_raw']}" if data.get("disposal_type_raw") else ""),
+                " · ".join(filter(None, [
+                    parties or None,
+                    data.get("case_type_sub") or data.get("case_type_label"),
+                    data.get("acts_and_sections"),
+                    data.get("court_name"),
+                    f"filed {data['filing_date']}" if data.get("filing_date") else None,
+                    f"{data['order_count']} order(s)" if data.get("order_count") else None,
+                ])),
+                raw=data,
+            )
+
+        if check_id in ("courtorders", "courtorderai"):
+            detail = prior.get("casedetail")
+            raw = (detail.raw or {}) if detail else {}
+            cnr = raw.get("cnr")
+            files = _order_files(raw)[: self.settings.ecourts_max_orders]
+            if not cnr or not files:
+                return Finding(check_id, CheckStatus.SKIP, "No orders to read",
+                               "The case detail listed no judgment or interim "
+                               "orders to fetch.")
+            fetched = []
+            for name in files:
+                if check_id == "courtorders":
+                    fetched.append(ec.order_markdown(cnr, name))
+                else:
+                    fetched.append(ec.order_ai(cnr, name))
+            unreadable = sum(
+                1 for f in fetched
+                if check_id == "courtorders" and not f.get("markdown_available")
+            )
+            return Finding(
+                check_id, CheckStatus.PASS,
+                f"{len(fetched)} order(s) retrieved",
+                (f"Capped at {self.settings.ecourts_max_orders} per case."
+                 + (f" {unreadable} could not be converted to text — the PDF is "
+                    f"still there." if unreadable else "")
+                 + (" Analysis is generated by the PROVIDER's model, not by VBC "
+                    "— it is a sourced finding, not registry fact."
+                    if check_id == "courtorderai" else "")),
+                raw={"cnr": cnr, "orders": fetched},
+            )
+
+        if check_id == "causelist":
+            party = get("litigant", vendor.legal_name or vendor.name or "")
+            if not party.strip():
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No party name", "Cause lists are searched by name.")
+            data = ec.causelist_search(
+                party, state=get("state") or None,
+                limit=int(get("limit", "100") or 100),
+                offset=int(get("offset", "0") or 0),
+            )
+            count = data["count"]
+            more = data.get("truncated")
+            return Finding(
+                check_id, CheckStatus.WARN if count else CheckStatus.PASS,
+                f"{count}{'+' if more else ''} listing(s) under this name",
+                ("Name match is fuzzy — the list includes any party whose "
+                 "name contains the search term, which for a group name "
+                 "returns unrelated companies. An analyst must confirm "
+                 "which rows are this vendor before any of it counts."
+                 + (f" Capped at {data['limit']} — there are more."
+                    if more else ""))
+                if count else "Nothing scheduled under this name.",
+                raw=data,
+            )
+        # ---- Admin · reference data. No SCAN parameter, no risk rule. ----
+        if check_id == "courtcaps":
+            data = ec.search_capabilities()
+            return Finding(check_id, CheckStatus.PASS,
+                           f"{len(data['fields'])} searchable field(s)",
+                           "The authoritative list of Case Search filters.",
+                           raw=data)
+
+        if check_id == "courtenums":
+            data = ec.enums(get("types", "caseStatus,benchType") or "caseStatus,benchType")
+            return Finding(check_id, CheckStatus.PASS,
+                           f"{len(data)} enum group(s)",
+                           "Live codes — fetched rather than hard-coded.", raw=data)
+
+        if check_id == "courtstructure":
+            rows = ec.court_structure(get("state") or None,
+                                      get("districtCode") or None)
+            return Finding(check_id, CheckStatus.PASS, f"{len(rows)} entries",
+                           "High courts appear as districts and the Supreme "
+                           "Court as a state.", raw={"rows": rows})
+
+        if check_id == "courtdates":
+            dates = ec.available_dates(
+                state=get("state"), districtCode=get("districtCode"),
+                courtComplexCode=get("courtComplexCode"),
+                courtNo=get("courtNo"), court=get("court"),
+            )
+            return Finding(check_id, CheckStatus.PASS, f"{len(dates)} date(s)",
+                           "Dates holding cause-list data.", raw={"dates": dates})
+
+        if check_id == "caserefresh":
+            cnr = get("cnr") or _first_cnr(prior)
+            if not cnr:
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No CNR", "Nothing to refresh.")
+            data = ec.case_refresh(cnr)
+            return Finding(
+                check_id, CheckStatus.PASS, data.get("status") or "queued",
+                f"{data.get('message') or 'Queued'} · "
+                f"{data.get('estimated_time') or 'a few seconds'}. Re-run the "
+                f"case detail check afterwards to see refreshed data.",
+                raw=data,
+            )
+
+        if check_id == "courtchecks":
+            data = ec.list_legal_checks(
+                status=get("status") or None,
+                page_size=int(get("page_size", "20") or 20),
+            )
+            return Finding(check_id, CheckStatus.PASS,
+                           f"{len(data['items'])} legal check(s)",
+                           "Every check submitted on this account.", raw=data)
+
+        # ---- Litigation · eCourtsIndia LegalCheck ---------------------
+        if check_id == "court":
+            name = get("subjectName", vendor.legal_name or vendor.name or "")
+            if not name.strip():
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No legal name",
+                               "A court search needs the registered legal name; "
+                               "the trade name will not match court records.")
+
+            # A code stored by an EARLIER RUN means that check is paid for
+            # and was still running when the request had to return. Collect
+            # it rather than submitting — and paying — a second time.
+            prior_code = self._prior_legal_check_code(vendor.id)
+
+            data = ec.run_legal_check(
+                subject_name=name,
+                subject_type=get("subjectType", "company") or "company",
+                # Stable per vendor, so an HTTP-level retry collects the
+                # existing job instead of starting a second paid one.
+                idempotency_key=f"vbc-{vendor.id}-court",
+                client_ref_no=vendor.id,
+                existing_code=prior_code,
+                min_score=self.settings.ecourts_min_score,
+            )
+
+            band = data.get("risk_band") or "UNKNOWN"
+            confidence = data.get("identity_confidence")
+            confident = bool(data.get("confident"))
+            count = data.get("match_count", 0)
+
+            if not confident:
+                # Named, not scored. r13 checks the same flag, so this
+                # cannot move the ledger — it goes to a human instead.
+                status = CheckStatus.WARN
+                value = f"{band} band, identity confidence {confidence}"
+                detail = (
+                    f"Below the {ec_mod.MIN_IDENTITY_CONFIDENCE:.0f}% confidence "
+                    f"threshold, so this is NOT scored. Matches may belong to a "
+                    f"similarly-named party — an analyst should confirm whether "
+                    f"'{name}' is the subject before this counts against the "
+                    f"vendor."
+                )
+            elif band in ("HIGH", "MEDIUM"):
+                status = CheckStatus.FAIL
+                value = f"{band} litigation risk"
+                detail = (f"{count} matter(s) matched at {confidence}% identity "
+                          f"confidence · model {data.get('model')} · "
+                          f"floor min_score={data.get('min_score_applied')}")
+            else:
+                status = CheckStatus.PASS
+                value = f"{band or 'LOW'} litigation risk"
+                detail = (f"{count} matter(s) matched at {confidence}% identity "
+                          f"confidence · model {data.get('model')}")
+
+            return Finding(check_id, status, value, detail, raw=data)
+
         return Finding(check_id, CheckStatus.SKIP, "Not implemented",
                        f"No runner is wired for check '{check_id}'.")
 
     # =================================================================
+
+    def _prior_legal_check_code(self, vendor_id: str) -> str | None:
+        """The LegalCheck code a previous run left behind, if any.
+
+        LegalCheck is queued and charged at submit. When a run exhausts its
+        poll budget the job keeps going on eCourts' side, so the code is
+        stored with the unavailable finding. Reading it back turns a second
+        attempt into a free collection instead of a second charge.
+        """
+        row = self.session.query(VendorCheck).filter(
+            VendorCheck.vendor_id == vendor_id,
+            VendorCheck.check_id == "court",
+        ).one_or_none()
+        if row is None or not isinstance(row.raw_response, dict):
+            return None
+        code = row.raw_response.get("code")
+        return str(code) if code else None
 
     def _run_inhouse(self, check_id: str, vendor: Vendor) -> Finding:
         try:
