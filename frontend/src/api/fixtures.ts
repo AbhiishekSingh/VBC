@@ -15,8 +15,6 @@ import type { Vendor, AuditEntry } from '@/types/domain'
 export const SEED_VENDORS: Vendor[] = [
   {
     "id": "234478",
-    "clientId": "CL000001",
-    "clientName": "Reliance Industries",
     "name": "Azahan Advertising",
     "legalName": "AZAHAN ADVERTISING",
     "address": "Bajirao Hule Chawl, Sainath Nagar Road, Shanti Nagar,\nGhatkopar West, Mumbai 400086, Maharashtra",
@@ -149,12 +147,12 @@ export const SEED_VENDORS: Vendor[] = [
       }
     ],
     "surveillance": {},
-    "surveillanceDone": false
+    "surveillanceDone": false,
+    "clientId": "c1",
+    "clientName": "Q1 Software Solutions LLP"
   },
   {
     "id": "234479",
-    "clientId": "CL000001",
-    "clientName": "Reliance Industries",
     "name": "Meridian Packaging Pvt Ltd",
     "legalName": "MERIDIAN PACKAGING PRIVATE LIMITED",
     "address": "Plot 44, MIDC Industrial Area, Andheri East,\nMumbai 400093, Maharashtra",
@@ -388,12 +386,12 @@ export const SEED_VENDORS: Vendor[] = [
       "V12": "Yes",
       "V13": "State"
     },
-    "surveillanceDone": true
+    "surveillanceDone": true,
+    "clientId": "c1",
+    "clientName": "Q1 Software Solutions LLP"
   },
   {
     "id": "234480",
-    "clientId": "CL000002",
-    "clientName": "Tata Steel",
     "name": "Kaveri Traders",
     "legalName": "KAVERI TRADERS",
     "address": "18/B Gandhi Market, Pune 411002, Maharashtra",
@@ -534,7 +532,9 @@ export const SEED_VENDORS: Vendor[] = [
       }
     ],
     "surveillance": {},
-    "surveillanceDone": false
+    "surveillanceDone": false,
+    "clientId": "c1",
+    "clientName": "Q1 Software Solutions LLP"
   }
 ]
 
@@ -635,14 +635,14 @@ export const COST_REFERENCE = [
   {
     "group": "FileSure",
     "item": "Company unlock (once per company per year)",
-    "unit": "₹220",
-    "source": "unlockPrice 22000 paisa"
+    "unit": "₹330",
+    "source": "filesure.COMPANY_UNLOCK_PAISA = 33000"
   },
   {
     "group": "FileSure",
     "item": "Director unlock",
-    "unit": "₹10",
-    "source": "unlockPrice 1000 paisa"
+    "unit": "₹50",
+    "source": "filesure.DIRECTOR_UNLOCK_PAISA = 5000"
   },
   {
     "group": "FileSure",
@@ -703,6 +703,12 @@ export const COST_REFERENCE = [
     "item": "Availability, CDX, Advanced Search",
     "unit": "FREE",
     "source": "no key required"
+  },
+  {
+    "group": "eCourtsIndia",
+    "item": "Case search, case detail, cause lists, LegalCheck",
+    "unit": "not yet quoted",
+    "source": "VBC_ECOURTS_*_PAISA unset — a run under-reports its court spend until the provider quotes prices"
   },
   {
     "group": "In-house",

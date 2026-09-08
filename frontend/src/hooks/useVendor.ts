@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/api'
 import type { Vendor } from '@/types/domain'
+import { errorMessage } from '@/api/http'
 
 export function useVendor(id: string | undefined) {
   const [vendor, setVendor] = useState<Vendor | null>(null)
@@ -30,7 +31,7 @@ export function useVendor(id: string | undefined) {
         setVendor(v)
         setError(v ? null : `No vendor with id ${id}`)
       })
-      .catch((e: Error) => live && setError(e.message))
+      .catch((e: unknown) => live && setError(errorMessage(e)))
       .finally(() => live && setLoading(false))
     return () => {
       live = false

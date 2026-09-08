@@ -374,6 +374,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: var(--shadow-2); max-width: 400px;
 }
 
+/* An error toast carries the only explanation of why something did not
+   happen, so it is wider, dismissible, and marked as adverse rather than
+   sliding past in the same neutral chrome as a confirmation. */
+.toast.toast-error {
+  /* --ground follows the theme, so this stays legible on the light-red
+     adverse of the light theme and the pale-pink of the dark one. A
+     literal #fff would be white-on-pink in dark mode. */
+  background: var(--adverse); color: var(--ground);
+  max-width: 520px; padding: 12px 40px 12px 16px;
+  line-height: 1.45;
+}
+.toast .toast-h { font-weight: 620; margin-bottom: 3px; }
+.toast .toast-x {
+  position: absolute; top: 6px; right: 8px;
+  background: none; border: 0; color: inherit;
+  font-size: 20px; line-height: 1; cursor: pointer;
+  opacity: .75; padding: 2px 6px;
+}
+.toast .toast-x:hover { opacity: 1; }
+.toast .toast-x:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+
 .callout {
   border: 1px solid var(--line); border-left: 3px solid var(--ink-4);
   background: var(--surface-2); border-radius: var(--radius-sm);

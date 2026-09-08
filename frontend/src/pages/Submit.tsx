@@ -16,6 +16,7 @@ import { Callout, Card, Field } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { useClients } from '@/hooks/useClients'
 import type { Vendor } from '@/types/domain'
+import { errorMessage } from '@/api/http'
 
 const GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/
@@ -98,7 +99,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
     } catch (e) {
       // A duplicate CIN for this client is a 409 with a message worth
       // showing verbatim — it names the vendor already on file.
-      setError(e instanceof Error ? e.message : 'Could not file the vendor.')
+      setError(errorMessage(e))
     } finally {
       setSaving(false)
     }

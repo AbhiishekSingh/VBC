@@ -9,9 +9,10 @@
 import { useState } from 'react'
 
 import { useAuth } from '@/hooks/useAuth'
+import { errorMessage } from '@/api/http'
 
 export default function Login() {
-  const { signIn } = useAuth()
+  const { signIn, bootError } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -25,7 +26,10 @@ export default function Login() {
     try {
       await signIn(email.trim(), password)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Sign in failed.')
+      // The API answers wrong-password and unknown-email identically,
+      // on purpose, so the form is not a user-existence oracle. Show
+      // whatever it said rather than substituting our own wording.
+      setError(errorMessage(e))
       setPassword('')
     } finally {
       setBusy(false)
@@ -69,9 +73,9 @@ export default function Login() {
           />
         </label>
 
-        {error && (
+        {(error ?? bootError) && (
           <div className="callout k-adverse auth-error" role="alert">
-            {error}
+            {error ?? bootError}
           </div>
         )}
 

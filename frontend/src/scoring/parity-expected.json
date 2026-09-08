@@ -762,17 +762,17 @@
           },
           {
             "id": "r10",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r11",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r12",
@@ -783,10 +783,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -945,17 +945,17 @@
           },
           {
             "id": "r10",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r11",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r12",
@@ -966,10 +966,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -1093,17 +1093,17 @@
           },
           {
             "id": "r10",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r11",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r12",
@@ -1114,10 +1114,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -1198,17 +1198,17 @@
           },
           {
             "id": "r10",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r11",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           },
           {
             "id": "r12",
@@ -1219,10 +1219,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
