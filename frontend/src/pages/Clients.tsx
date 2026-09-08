@@ -13,6 +13,7 @@ import { Card, EmptyState } from '@/components/ui'
 import { useClients } from '@/hooks/useClients'
 import { useToast } from '@/hooks/useToast'
 import { api } from '@/api'
+import { errorMessage } from '@/api/http'
 
 const BLANK = { name: '', legalName: '', industry: '', spoc: '', email: '', phone: '', notes: '' }
 
@@ -38,7 +39,7 @@ export default function Clients() {
       setAdding(false)
       reload()
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Could not add the client.')
+      setFormError(errorMessage(e))
     } finally {
       setSaving(false)
     }

@@ -154,8 +154,8 @@ export const SCAN_PARAMETERS = [
     "id": "C1",
     "pillar": "C",
     "label": "GST Registration",
-    "source": "HOOK",
-    "feed": "GST API — not configured",
+    "source": "AUTO",
+    "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
     "options": [
       {
@@ -176,9 +176,9 @@ export const SCAN_PARAMETERS = [
     "id": "C2",
     "pillar": "C",
     "label": "Filing Status",
-    "source": "HOOK",
-    "feed": "GST API — not configured",
-    "fedBy": "gst",
+    "source": "AUTO",
+    "feed": "FinAGG GSP — returns metadata",
+    "fedBy": "gstret",
     "options": [
       {
         "value": "Regular",
@@ -198,8 +198,8 @@ export const SCAN_PARAMETERS = [
     "id": "C3",
     "pillar": "C",
     "label": "Registration Type",
-    "source": "HOOK",
-    "feed": "GST API — not configured",
+    "source": "AUTO",
+    "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
     "options": [
       {
@@ -216,8 +216,8 @@ export const SCAN_PARAMETERS = [
     "id": "C4",
     "pillar": "C",
     "label": "Suspension (if any)",
-    "source": "HOOK",
-    "feed": "GST API — not configured",
+    "source": "AUTO",
+    "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
     "options": [
       {
@@ -234,8 +234,8 @@ export const SCAN_PARAMETERS = [
     "id": "C5",
     "pillar": "C",
     "label": "GST Address",
-    "source": "HOOK",
-    "feed": "GST API — not configured",
+    "source": "AUTO",
+    "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
     "options": [
       {
@@ -681,9 +681,9 @@ export const CHECK_GROUPS = [
   {
     "id": "tax",
     "name": "Identity & Tax",
-    "source": "not configured",
-    "mark": "—",
-    "configured": false
+    "source": "FinAGG GSP · GST",
+    "mark": "G",
+    "configured": true
   },
   {
     "id": "sanctions",
@@ -694,10 +694,10 @@ export const CHECK_GROUPS = [
   },
   {
     "id": "rep",
-    "name": "Reputation & Directories",
-    "source": "not configured",
-    "mark": "—",
-    "configured": false
+    "name": "Litigation & Reputation",
+    "source": "eCourtsIndia · LegalCheck",
+    "mark": "L",
+    "configured": true
   }
 ] as const;
 
@@ -1684,15 +1684,14 @@ export const CHECKS = [
   {
     "id": "gst",
     "group": "tax",
-    "name": "GST verification and filing status",
-    "endpoint": "provider not selected",
-    "provider": "none",
-    "note": "Would fill all five Compliance parameters (C1–C5)",
-    "state": "not_configured",
+    "name": "GST registration and status",
+    "endpoint": "GET /commonapi/{v}/search?action=SEARCHGSTIN",
+    "provider": "finagg",
+    "note": "Registration status, taxpayer type, constitution, principal address",
+    "state": "active",
     "requires": [],
     "feeds": [
       "C1",
-      "C2",
       "C3",
       "C4",
       "C5"
@@ -1704,7 +1703,521 @@ export const CHECKS = [
     "needsDirectorUnlock": false,
     "always": false,
     "admin": false,
+    "params": [
+      {
+        "key": "gstin",
+        "label": "GSTIN",
+        "required": true,
+        "fromVendor": "gst",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "27AAACX1234C1ZV"
+      }
+    ]
+  },
+  {
+    "id": "gstret",
+    "group": "tax",
+    "name": "GST return filing history",
+    "endpoint": "GET /commonapi/{v}/returns?action=RETTRACK",
+    "provider": "finagg",
+    "note": "Filed periods and dates — no invoice data, no consent needed",
+    "state": "active",
+    "requires": [
+      "gst"
+    ],
+    "feeds": [
+      "C2"
+    ],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "gstin",
+        "label": "GSTIN",
+        "required": true,
+        "fromVendor": "gst",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "27AAACX1234C1ZV"
+      },
+      {
+        "key": "fy",
+        "label": "Financial year",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "2025-26"
+      }
+    ]
+  },
+  {
+    "id": "courtsearch",
+    "group": "rep",
+    "name": "Court case search",
+    "endpoint": "GET /search",
+    "provider": "ecourts",
+    "note": "Cases naming this party, with petitioner/respondent so the side is visible",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "parties",
+        "label": "Party name",
+        "required": true,
+        "fromVendor": "legal_name",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "MERIDIAN PACKAGING PRIVATE LIMITED"
+      },
+      {
+        "key": "courtCodes",
+        "label": "Court codes",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "DLHC01"
+      },
+      {
+        "key": "filingDateFrom",
+        "label": "Filed since",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "date",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "courthearing",
+    "group": "rep",
+    "name": "Upcoming hearings",
+    "endpoint": "POST /causelist/cnr/batch",
+    "provider": "ecourts",
+    "note": "Which matched cases are listed for hearing — active, not merely historical",
+    "state": "active",
+    "requires": [
+      "courtsearch"
+    ],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
     "params": []
+  },
+  {
+    "id": "casedetail",
+    "group": "rep",
+    "name": "Case detail",
+    "endpoint": "GET /case/{cnr}",
+    "provider": "ecourts",
+    "note": "Full record for one case, including its order list",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "cnr",
+        "label": "CNR",
+        "required": true,
+        "fromVendor": null,
+        "fromResult": "courtsearch",
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "DLHC010001232024"
+      }
+    ]
+  },
+  {
+    "id": "courtorders",
+    "group": "rep",
+    "name": "Order text",
+    "endpoint": "GET /case/{cnr}/order-md/{file}",
+    "provider": "ecourts",
+    "note": "What the orders actually say — capped by VBC_ECOURTS_MAX_ORDERS",
+    "state": "active",
+    "requires": [
+      "casedetail"
+    ],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": []
+  },
+  {
+    "id": "courtorderai",
+    "group": "rep",
+    "name": "Order analysis (provider model)",
+    "endpoint": "GET /case/{cnr}/order-ai/{file}",
+    "provider": "ecourts",
+    "note": "PROVIDER-GENERATED analysis, not registry fact. See scope decision 1.",
+    "state": "active",
+    "requires": [
+      "casedetail"
+    ],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": []
+  },
+  {
+    "id": "causelist",
+    "group": "rep",
+    "name": "Cause list search",
+    "endpoint": "GET /causelist/search",
+    "provider": "ecourts",
+    "note": "Scheduled hearings naming this party — fuzzy match, analyst confirms identity",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "litigant",
+        "label": "Party name",
+        "required": true,
+        "fromVendor": "legal_name",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "state",
+        "label": "State code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "MH"
+      },
+      {
+        "key": "limit",
+        "label": "Max rows",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "number",
+        "options": [],
+        "default": "100",
+        "placeholder": ""
+      },
+      {
+        "key": "offset",
+        "label": "Skip rows",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "number",
+        "options": [],
+        "default": "0",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "courtcaps",
+    "group": "admin",
+    "name": "Court search capabilities",
+    "endpoint": "GET /search/capabilities",
+    "provider": "ecourts",
+    "note": "Which filters and name-match modes Case Search supports. Free.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": []
+  },
+  {
+    "id": "courtenums",
+    "group": "admin",
+    "name": "Court enum reference",
+    "endpoint": "GET /enums",
+    "provider": "ecourts",
+    "note": "Live case-status and bench-type codes. Free of charge, authenticated.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": [
+      {
+        "key": "types",
+        "label": "Enum types",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "caseStatus,benchType",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "courtstructure",
+    "group": "admin",
+    "name": "Court structure",
+    "endpoint": "GET /causelist/court-structure/…",
+    "provider": "ecourts",
+    "note": "States, districts and complexes. High courts appear as districts.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": [
+      {
+        "key": "state",
+        "label": "State code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "DL"
+      },
+      {
+        "key": "districtCode",
+        "label": "District code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "1"
+      }
+    ]
+  },
+  {
+    "id": "courtdates",
+    "group": "admin",
+    "name": "Cause list available dates",
+    "endpoint": "GET /causelist/available-dates",
+    "provider": "ecourts",
+    "note": "Which dates hold cause-list data. Free with auth.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": [
+      {
+        "key": "state",
+        "label": "State code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "DL"
+      },
+      {
+        "key": "districtCode",
+        "label": "District code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "courtComplexCode",
+        "label": "Complex code",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "courtNo",
+        "label": "Court room",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "court",
+        "label": "Court identifier",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "caserefresh",
+    "group": "admin",
+    "name": "Refresh a case from source",
+    "endpoint": "POST /case/{cnr}/refresh",
+    "provider": "ecourts",
+    "note": "Async — queues a re-pull; the provider quotes 5-10 minutes",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": [
+      {
+        "key": "cnr",
+        "label": "CNR",
+        "required": true,
+        "fromVendor": null,
+        "fromResult": "courtsearch",
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "courtchecks",
+    "group": "admin",
+    "name": "Legal checks on this account",
+    "endpoint": "GET /legal-check",
+    "provider": "ecourts",
+    "note": "Every legal check submitted, with its risk band. Free.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": true,
+    "params": [
+      {
+        "key": "status",
+        "label": "Status",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "select",
+        "options": [
+          "",
+          "completed",
+          "running",
+          "failed"
+        ],
+        "default": "completed",
+        "placeholder": ""
+      },
+      {
+        "key": "page_size",
+        "label": "Rows",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "number",
+        "options": [],
+        "default": "20",
+        "placeholder": ""
+      }
+    ]
   },
   {
     "id": "pan",
@@ -1804,10 +2317,10 @@ export const CHECKS = [
   {
     "id": "court",
     "group": "rep",
-    "name": "Court records",
-    "endpoint": "provider not selected",
-    "provider": "none",
-    "note": "",
+    "name": "Litigation exposure",
+    "endpoint": "POST /legal-check → GET /legal-check/{code}/report",
+    "provider": "ecourts",
+    "note": "Risk band with an identity-confidence score. NOT CONFIGURED: POST /legal-check returns 400 VALIDATION_ERROR with an empty details[] on every documented body shape, and the submit endpoint is absent from the published API docs. Awaiting the schema from eCourts. /legal-check/models confirms the account has model eCI-1.2 with company support, so this is a contract gap, not an entitlement one.",
     "state": "not_configured",
     "requires": [],
     "feeds": [],
@@ -1818,7 +2331,33 @@ export const CHECKS = [
     "needsDirectorUnlock": false,
     "always": false,
     "admin": false,
-    "params": []
+    "params": [
+      {
+        "key": "subjectName",
+        "label": "Legal name to search",
+        "required": true,
+        "fromVendor": "legal_name",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "MERIDIAN PACKAGING PRIVATE LIMITED"
+      },
+      {
+        "key": "subjectType",
+        "label": "Subject",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "select",
+        "options": [
+          "company",
+          "individual"
+        ],
+        "default": "company",
+        "placeholder": ""
+      }
+    ]
   },
   {
     "id": "reviews",
@@ -2241,3 +2780,4 @@ export const MANUAL_TEMPLATES = [
     "hint": ""
   }
 ] as const;
+

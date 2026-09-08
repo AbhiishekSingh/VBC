@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/api'
+import { errorMessage, errorTitle } from '@/api/http'
 import { inputValue, missingInputs } from '@/api/mock'
 import {
   CHECKS,
@@ -50,6 +51,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const navigate = useNavigate()
   const toast = useToast()
   const [running, setRunning] = useState(false)
+  const [runError, setRunError] = useState<unknown>(null)
   const selected = vendor.selected
 
   const toggle = async (checkId: string) => {
@@ -119,6 +121,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   const run = async () => {
     setRunning(true)
+    setRunError(null)
     try {
       const result = await api.runChecks(vendor.id)
       setVendor(result.vendor)
@@ -129,6 +132,18 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
             : ''),
       )
       navigate(`/vendor/${vendor.id}/findings`)
+    } catch (e) {
+      // This used to be a bare try/finally. A run that failed — a spend
+      // guard refusing a paid call, a provider down, the session expired
+      // mid-run — left the button un-spinning and said nothing at all,
+      // and the analyst had no way to tell a refusal from a success with
+      // no findings. The reason has to reach the screen.
+      //
+      // It is shown twice on purpose: a toast for someone watching, and a
+      // callout that stays on the page for someone who looked away during
+      // a run that can take a minute.
+      setRunError(e)
+      toast.error(e)
     } finally {
       setRunning(false)
     }
@@ -160,6 +175,16 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           are enabled for you, and anything you leave off is recorded as not examined.
         </p>
       </div>
+
+      {runError != null && (
+        <Callout kind="adverse" title={errorTitle(runError)}>
+          {errorMessage(runError)}
+          <div className="small muted" style={{ marginTop: 6 }}>
+            Nothing was recorded against this vendor. Selections are unchanged — fix the cause
+            and run again.
+          </div>
+        </Callout>
+      )}
 
       <div className="grid-4">
         <Tile n={selected.length} label="Checks selected" tone="accent" />

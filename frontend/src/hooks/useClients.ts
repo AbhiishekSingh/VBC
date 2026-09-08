@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { api } from '@/api'
 import type { Client } from '@/types/domain'
+import { errorMessage } from '@/api/http'
 
 export function useClients(includeInactive = false) {
   const [clients, setClients] = useState<Client[]>([])
@@ -18,7 +19,7 @@ export function useClients(includeInactive = false) {
         setClients(rows)
         setError(null)
       })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Could not load clients.'))
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoading(false))
   }, [includeInactive])
 
@@ -46,7 +47,7 @@ export function useClient(id: string | undefined) {
         setClient(c)
         setError(c ? null : `No client with id ${id}`)
       })
-      .catch((e) => alive && setError(e instanceof Error ? e.message : 'Load failed.'))
+      .catch((e) => alive && setError(errorMessage(e)))
       .finally(() => alive && setLoading(false))
     return () => {
       alive = false
