@@ -14,6 +14,16 @@ from app.tests import fixtures as fx  # noqa: E402
 
 OUT = ROOT.parent / "frontend" / "src" / "api" / "fixtures.ts"
 
+#: The client the three seeded vendors belong to. The Vendor type gained
+#: clientId/clientName with the multi-client work and these fixtures predate
+#: it, so the values are supplied here rather than added to each literal
+#: below. They MUST match the client seeded in backend/app/db/seed.py — if
+#: they drift, the mock adapter and the backend disagree about who owns
+#: these vendors, which is exactly what generating this file prevents.
+SEED_CLIENT_ID = "c1"
+SEED_CLIENT_NAME = "Q1 Software Solutions LLP"
+
+
 def checks(d):
     return {k: {"checkId": k, "status": v.status.value, "value": v.value,
                 "detail": v.detail} for k, v in d.items()}
@@ -103,6 +113,12 @@ VENDORS = [
    "surveillance": {}, "surveillanceDone": False},
 ]
 
+# Every vendor carries its client. setdefault rather than assignment so a
+# fixture that names its own client above is never silently overwritten.
+for _vendor in VENDORS:
+    _vendor.setdefault("clientId", SEED_CLIENT_ID)
+    _vendor.setdefault("clientName", SEED_CLIENT_NAME)
+
 AUDIT = [
   {"ts": "2026-07-24 11:20:04", "vendorId": "234478", "actor": "a.mehta", "action": "VENDOR_SUBMITTED", "detail": "Azahan Advertising submitted via intake form"},
   {"ts": "2026-07-24 11:20:20", "vendorId": "234478", "actor": "a.mehta", "action": "CHECKS_SELECTED", "detail": "8 checks selected · est. ₹3 + 50 credits"},
@@ -120,8 +136,8 @@ AUDIT = [
 
 COST_REF = [
   {"group": "FileSure", "item": "Company master / directors / filings / extractions", "unit": "₹1 per read", "source": "derived from /v1/account/usage"},
-  {"group": "FileSure", "item": "Company unlock (once per company per year)", "unit": "₹220", "source": "unlockPrice 22000 paisa"},
-  {"group": "FileSure", "item": "Director unlock", "unit": "₹10", "source": "unlockPrice 1000 paisa"},
+  {"group": "FileSure", "item": "Company unlock (once per company per year)", "unit": "₹330", "source": "filesure.COMPANY_UNLOCK_PAISA = 33000"},
+  {"group": "FileSure", "item": "Director unlock", "unit": "₹50", "source": "filesure.DIRECTOR_UNLOCK_PAISA = 5000"},
   {"group": "FileSure", "item": "Filing document download", "unit": "₹0.10", "source": "19250 paisa / 1925 calls"},
   {"group": "FileSure", "item": "Full company refresh (async)", "unit": "₹150", "source": "priceChargedPaisa 15000"},
   {"group": "FileSure", "item": "Filings-only refresh", "unit": "₹5", "source": "priceChargedPaisa 500"},
@@ -132,6 +148,7 @@ COST_REF = [
   {"group": "WhoisXML", "item": "Reverse WHOIS", "unit": "1 credit", "source": "shares the 500-credit pool"},
   {"group": "WhoisXML", "item": "Screenshot", "unit": "1 of only 10", "source": "tightest limit on the platform"},
   {"group": "archive.org", "item": "Availability, CDX, Advanced Search", "unit": "FREE", "source": "no key required"},
+  {"group": "eCourtsIndia", "item": "Case search, case detail, cause lists, LegalCheck", "unit": "not yet quoted", "source": "VBC_ECOURTS_*_PAISA unset — a run under-reports its court spend until the provider quotes prices"},
   {"group": "In-house", "item": "Duplicate, related party, director conflict", "unit": "FREE", "source": "computed over stored data"},
 ]
 
@@ -157,5 +174,7 @@ body += "export const SEED_AUDIT: AuditEntry[] = " + json.dumps(AUDIT, indent=2,
 body += "export const COST_REFERENCE = " + json.dumps(COST_REF, indent=2, ensure_ascii=False) + " as const\n"
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
-OUT.write_text(body)
+# encoding is explicit: Windows defaults to cp1252, which cannot encode the
+# rupee sign and made this script fail there while passing on CI.
+OUT.write_text(body, encoding="utf-8")
 print(f"OK   wrote {OUT.name} — {len(VENDORS)} vendors, {len(AUDIT)} audit entries")

@@ -57,6 +57,40 @@ def _domain_older_than_2y(checks: dict[str, CheckResult]) -> bool:
     return bool(match) and int(match.group(1)) >= 2
 
 
+def _gst_flag(checks: dict[str, CheckResult], key: str) -> bool:
+    """Read a boolean the GST search normaliser wrote into the raw payload.
+
+    Deliberately not derived from the check STATUS. A suspended registration
+    and an unrecognised status are both non-PASS, but only one of them is
+    evidence of suspension — reading the flag keeps those apart.
+    """
+    result = checks.get("gst")
+    if not result or not result.status.was_examined:
+        return False
+    raw = result.raw_response
+    return bool(isinstance(raw, dict) and raw.get(key))
+
+
+def _court_adverse(checks: dict[str, CheckResult]) -> bool:
+    """Litigation that is BOTH adverse and confidently the right subject.
+
+    ``identity_confidence`` gates this. A HIGH risk band on a 40%-confidence
+    match is a case that probably belongs to a similarly-named company, and
+    scoring it would penalise the wrong vendor with nothing on the report to
+    show why. Below the threshold the adapter records WARN for an analyst
+    and this rule does not fire.
+    """
+    result = checks.get("court")
+    if not result or not result.status.was_examined:
+        return False
+    raw = result.raw_response
+    if not isinstance(raw, dict):
+        return False
+    if not raw.get("confident"):
+        return False
+    return str(raw.get("risk_band") or "").upper() in ("HIGH", "MEDIUM")
+
+
 #: Rule id -> predicate. Kept separate from the RiskRule dataclass so the
 #: rules themselves stay serialisable and seedable into the database.
 RULE_TESTS: dict[str, Callable[[dict[str, CheckResult]], bool]] = {
@@ -69,12 +103,15 @@ RULE_TESTS: dict[str, Callable[[dict[str, CheckResult]], bool]] = {
     "r7": lambda c: _adverse(c, "charges"),
     "r8": lambda c: _adverse(c, "dup"),
     "r9": lambda c: _adverse(c, "rp"),
-    # The four below have no configured source in Phase 1. They are kept in
-    # the ledger deliberately, reported as not_configured, never as false.
-    "r10": lambda c: False,
-    "r11": lambda c: False,
+    "r10": lambda c: _gst_flag(c, "is_active"),
+    "r11": lambda c: _gst_flag(c, "is_suspended"),
+    # No configured source. Kept in the ledger deliberately, reported as
+    # not_configured, never as false.
     "r12": lambda c: False,
-    "r13": lambda c: False,
+    # `news` is still a hook; `court` is live. The rule fires on either,
+    # which is why the predicate reads court alone rather than requiring
+    # both — a rule needing an unconfigured check would never fire.
+    "r13": _court_adverse,
 }
 
 RISK_RULES: tuple[RiskRule, ...] = (

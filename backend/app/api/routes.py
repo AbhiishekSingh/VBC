@@ -389,6 +389,59 @@ def _write_auto_ratings(session: Session, vendor: Vendor, result) -> None:
     elif master and master.status.value == "fail":
         _set_rating(session, vendor.id, "S1", "Individual/ Proprietorship", set_by="system")
 
+    # C1, C3, C4, C5 — one GST search call fills four Compliance parameters.
+    gst = by_id.get("gst")
+    if gst and gst.status.was_examined and gst.raw:
+        facts = gst.raw or {}
+
+        # C1 registration. "Not Applicable" is a judgement about whether a
+        # vendor NEEDS to be registered — turnover threshold, exempt supply —
+        # which no API answers. So this writes only the two states the
+        # registry actually evidences, and leaves the third to an analyst.
+        if facts.get("is_active") or facts.get("is_suspended"):
+            _set_rating(session, vendor.id, "C1", "Registered", set_by="system")
+        elif facts.get("is_cancelled"):
+            _set_rating(session, vendor.id, "C1", "Unregistered", set_by="system")
+
+        # C3 registration type, from search.dty — NOT from the composition
+        # returns endpoint, which is OTP-gated.
+        taxpayer_type = facts.get("taxpayer_type")
+        if taxpayer_type:
+            _set_rating(session, vendor.id, "C3",
+                        "Composite" if facts.get("is_composition") else "Regular",
+                        set_by="system")
+
+        # C4 suspension. Only written when a status came back at all; an
+        # unreadable status must leave the parameter N/A rather than record
+        # "not suspended" on the strength of nothing.
+        if facts.get("status"):
+            _set_rating(session, vendor.id, "C4",
+                        "Yes" if facts.get("is_suspended") else "No",
+                        set_by="system")
+
+        # C5 address. GSTN has no residential flag, so only a positive
+        # commercial signal is recorded. Absence of the nature-of-business
+        # field means nothing was declared — it does not mean a home
+        # address, and inferring one would put a guess in the sourced half
+        # of the report.
+        if facts.get("premises_kind") == "commercial":
+            _set_rating(session, vendor.id, "C5", "Commercial", set_by="system")
+
+    # C2 — filing status, from the returns metadata track.
+    gstret = by_id.get("gstret")
+    if gstret and gstret.status.was_examined and gstret.raw:
+        facts = gstret.raw or {}
+        months = facts.get("months_since_last_filing")
+        if not facts.get("filing_count"):
+            value = "Current Default (0-3 months)"
+        elif months is not None and months > 3:
+            value = "Current Default (0-3 months)"
+        elif months is not None and months > 1:
+            value = "History of Default"
+        else:
+            value = "Regular"
+        _set_rating(session, vendor.id, "C2", value, set_by="system")
+
     # S3 — web presence, from the archive timeline.
     cdx = by_id.get("cdx")
     if cdx and cdx.status.was_examined and cdx.raw:

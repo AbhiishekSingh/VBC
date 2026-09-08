@@ -52,6 +52,60 @@ class Settings(BaseSettings):
     #: one balance. The screenshot pool is the tightest at 10.
     whoisxml_api_key: str = ""
 
+    # --- FinAGG GSP (GST) ----------------------------------------------
+    #: Header is `x-api-key`, obtained from gsp@finagg.in.
+    #:
+    #: Only the two Common APIs are used — search and returns metadata.
+    #: The Taxpayer APIs and File Download endpoints authenticate AS THE
+    #: TAXPAYER via an OTP to their registered mobile, which a vendor being
+    #: assessed will not supply. They are not implemented, so no auth token
+    #: or app_key encryption setting appears here.
+    finagg_api_key: str = ""
+    finagg_base_url: str = "https://sandbox-gsp.finagg.in/basic/gstn"
+    #: Path segments FinAGG's docs leave unspecified. Confirm both with
+    #: gsp@finagg.in — a wrong value is a 404, not a helpful error.
+    finagg_version: str = "v1"
+    finagg_gsp_version: str = "v1.2"
+    #: Per-call price in paisa. Zero until FinAGG quotes one: a call priced
+    #: at zero is waved through the spend guard, so leaving these at 0 while
+    #: the real contract bills would under-report the cost of a run. Set
+    #: them the day pricing is agreed.
+    finagg_search_paisa: int = 0
+    finagg_returns_paisa: int = 0
+
+    # --- eCourtsIndia (litigation) --------------------------------------
+    #: Header is `Authorization: Bearer eci_live_…`.
+    #:
+    #: Only LegalCheck is used. Case Search is not implemented: its
+    #: parameter list was truncated in the published documentation, and an
+    #: adapter built on a guessed query shape returns 200 with zero results
+    #: and reads as "nothing found".
+    ecourts_api_key: str = ""
+    ecourts_base_url: str = "https://webapi.ecourtsindia.com/api/partner"
+    #: LegalCheck is a queued job — the provider's own example takes ~68s.
+    #: VBC runs checks synchronously and nginx cuts at 120s, so the poll
+    #: budget must leave room for the other checks in the same request.
+    ecourts_poll_budget_seconds: float = 75.0
+    ecourts_poll_interval_seconds: float = 3.0
+    #: Match-confidence floor passed to the report. Recorded with the
+    #: finding, because a score computed against one floor is not
+    #: comparable to one computed against another.
+    ecourts_min_score: int = 40
+    #: Per-call prices in paisa, once eCourts quotes them. At 0 a call
+    #: passes the spend guard untouched and a run under-reports its cost.
+    ecourts_check_paisa: int = 0
+    ecourts_search_paisa: int = 0
+    ecourts_case_paisa: int = 0
+    #: Refuse a Case Search filter the capability catalog does not list.
+    #: On by default: the published parameter list was truncated, and a
+    #: filter the server silently ignores produces a WIDER result set than
+    #: intended, or an empty one — neither is visible in the response.
+    ecourts_strict_search: bool = True
+    #: Ceiling on order documents fetched per case. Each one is a paid call
+    #: and a case can carry dozens, so an uncapped fetch turns one ticked
+    #: box into an unbounded bill.
+    ecourts_max_orders: int = 3
+
     # --- archive.org ---------------------------------------------------
     #: No key, no account. Free.
     archive_base_url: str = "https://archive.org"
@@ -97,6 +151,19 @@ class Settings(BaseSettings):
     @property
     def whoisxml_configured(self) -> bool:
         return bool(self.whoisxml_api_key)
+
+    @property
+    def ecourts_configured(self) -> bool:
+        return bool(self.ecourts_api_key)
+
+    @property
+    def finagg_configured(self) -> bool:
+        return bool(self.finagg_api_key)
+
+    @property
+    def finagg_is_sandbox(self) -> bool:
+        """A green sandbox run is not evidence the live path works."""
+        return "sandbox" in self.finagg_base_url.lower()
 
     @property
     def filesure_is_sandbox(self) -> bool:
