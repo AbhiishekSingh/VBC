@@ -61,11 +61,25 @@ class Settings(BaseSettings):
     #: assessed will not supply. They are not implemented, so no auth token
     #: or app_key encryption setting appears here.
     finagg_api_key: str = ""
+    #: Sandbox serves LIVE GSTN data, not a fixture set — verified 2026-09-09
+    #: against a real vendor. So the sandbox host is a working default, not a
+    #: placeholder, and production access is not a prerequisite for testing.
     finagg_base_url: str = "https://sandbox-gsp.finagg.in/basic/gstn"
-    #: Path segments FinAGG's docs leave unspecified. Confirm both with
-    #: gsp@finagg.in — a wrong value is a 404, not a helpful error.
-    finagg_version: str = "v1"
-    finagg_gsp_version: str = "v1.2"
+    #: Path segments FinAGG's docs leave unspecified. These are the values
+    #: FinAGG support supplied on 2026-09-09 in a working curl, confirmed
+    #: with a 200. They are NOT the ones the portal implies: `v1` / `v1.2`
+    #: returns 500 with an empty `status_cd: "0"` body and no error object,
+    #: which reads like a server fault rather than a wrong path.
+    finagg_version: str = "fin-v1"
+    finagg_gsp_version: str = "v1.3"
+    #: Endpoint actions. `TP` for search is confirmed working. The returns
+    #: action is NOT confirmed — `RETTRACK` is the GSTN contract's value and
+    #: a placeholder here, because search turned out to be `TP` rather than
+    #: the contract's `SEARCHGSTIN`, so the contract is not a safe guide.
+    #: Settings rather than constants so the value can be corrected from the
+    #: environment the moment FinAGG answers, without a deploy.
+    finagg_search_action: str = "TP"
+    finagg_returns_action: str = "RETTRACK"
     #: Per-call price in paisa. Zero until FinAGG quotes one: a call priced
     #: at zero is waved through the spend guard, so leaving these at 0 while
     #: the real contract bills would under-report the cost of a run. Set
