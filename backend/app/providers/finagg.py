@@ -16,28 +16,56 @@ token, no ``app_key`` encryption and no session state.
 
 What remains is enough:
 
-  ``GET /commonapi/{v}/search``    → C1, C3, C4, C5
-  ``GET /commonapi/{v}/returns``   → C2
+  ``GET /fin-v1/commonapi/v1.3/search?action=TP``   → C1, C3, C4, C5
+  ``GET /fin-v1/commonapi/v1.3/returns``            → C2
 
 Two calls, no consent, the whole Compliance pillar.
 
+THE PATH AND ACTION ARE NOT WHAT THE DOCS IMPLY
+-----------------------------------------------
+`fin-v1`, `v1.3` and `action=TP` were supplied by FinAGG support on
+2026-09-09 and confirmed with a 200. The values the portal and the GSTN
+contract imply — `v1`, `v1.2`, `action=SEARCHGSTIN` — return HTTP 500 with
+a bare ``{"status_cd": "0"}`` and no error object, byte-identical for a
+valid GSTIN and a malformed one. That reads like a provider outage rather
+than a bad request, so it is worth stating plainly: a 500 with an empty
+status body here means the PATH or ACTION is wrong, not the GSTIN.
+
+The returns action is still unconfirmed. Both actions come from Settings so
+a correction needs an environment change, not a deploy.
+
+THE ENVELOPE
+------------
+The GSTN body arrives BASE64-ENCODED as a string::
+
+    {"status_cd": "1", "data": "<base64 JSON>", "rek": "", "hmac": ""}
+
+``rek``/``hmac`` are GSTN's encryption fields and are empty on these two
+consent-free endpoints. ``_decode_envelope`` handles this and RAISES on
+anything it cannot read, rather than returning an empty dict — ParseGuard
+only trips when raw has content and parsed does not, so an empty dict would
+pass straight through it and be reported as a vendor with no registration.
+
 FIELD NAMES
 -----------
-FinAGG's published documentation promises only "legal name, trade name, and
-registration status" and does not enumerate the response. The field names
-below are the standard GSTN contract that GSPs wrap (``sts``, ``dty``,
-``ctb``, ``pradr``), and every one of them is read through a tolerant
-lookup that also accepts a wrapped envelope.
+Verified against a live 200 on 2026-09-09: ``sts``, ``dty``, ``ctb``,
+``lgnm``, ``tradeNam``, ``rgdt`` (day-first), ``cxdt``, ``stj``, ``ctj``
+and the nested ``pradr.addr`` all match the standard GSTN contract. The
+response also carries ``nba`` (nature of business as a real array, preferred
+over splitting ``pradr.ntr``), ``adadr`` (additional places of business),
+``einvoiceStatus`` and ``lstupdt``.
 
-If FinAGG's shape differs, ParseGuard turns that into ``unavailable`` with
-the payload attached, rather than a clean-looking empty result. That is the
-same inversion the rest of this package uses: an adapter that reads nothing
-out of a non-empty payload is assumed to be out of date, not to have found
-nothing.
+Anything this adapter cannot read becomes ``unavailable`` with the payload
+attached, never a clean-looking empty result. That is the same inversion the
+rest of this package uses: an adapter that reads nothing out of a non-empty
+payload is assumed to be out of date, not to have found nothing.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 import re
 from datetime import date, datetime, timezone
@@ -47,6 +75,7 @@ from app.providers.base import (
     HttpProvider,
     NotConfigured,
     ParseGuard,
+    ProviderParseGap,
     Spend,
     dig,
     is_blank,
@@ -54,10 +83,14 @@ from app.providers.base import (
 
 logger = logging.getLogger(__name__)
 
-#: Actions on the two Common endpoints. Documented for search; the returns
-#: action follows the GSTN contract and is the first thing to check if the
-#: call comes back 400.
-ACTION_SEARCH = "SEARCHGSTIN"
+#: Fallback actions, used only when the settings carry none. `TP` for search
+#: is confirmed against a 200; the returns action is unconfirmed.
+#:
+#: The GSTN contract's `SEARCHGSTIN` was wrong — FinAGG uses `TP`. That is
+#: the reason `ACTION_RETURNS` is not trusted either: the contract has
+#: already been shown not to describe this GSP. Both now come from Settings
+#: so a correction does not need a code change.
+ACTION_SEARCH = "TP"
 ACTION_RETURNS = "RETTRACK"
 
 #: A GSTIN is 15 characters: 2 state code, 10 PAN, 1 entity, 1 Z, 1 check.
@@ -109,6 +142,13 @@ class FinaggProvider(HttpProvider):
     def _headers(self) -> dict:
         return {"x-api-key": self.settings.finagg_api_key}
 
+    def _action(self, which: str) -> str:
+        """Endpoint action, from settings, falling back to the constants."""
+        configured = getattr(self.settings, f"finagg_{which}_action", "") or ""
+        if configured.strip():
+            return configured.strip()
+        return ACTION_SEARCH if which == "search" else ACTION_RETURNS
+
     # -----------------------------------------------------------------
     # C1, C3, C4, C5
     # -----------------------------------------------------------------
@@ -132,16 +172,17 @@ class FinaggProvider(HttpProvider):
             "GET",
             self._url("search"),
             headers=self._headers(),
-            params={"action": ACTION_SEARCH, "gstin": gstin},
+            params={"action": self._action("search"), "gstin": gstin},
         )
         self.spend.record("finagg.search", paisa=self.settings.finagg_search_paisa)
 
         payload = response.payload or {}
-        data = _unwrap(payload)
+        data = _decode_envelope(payload)
 
         status_raw = _first(data, "sts", "status", "gstinStatus")
         taxpayer_type = _first(data, "dty", "taxpayerType", "dealerType")
         address_block = _first(data, "pradr", "principalAddress") or {}
+        additional = _additional_places(data)
 
         guard = ParseGuard("finagg.search")
         guard.expect(
@@ -172,11 +213,25 @@ class FinaggProvider(HttpProvider):
             "constitution": _first(data, "ctb", "constitutionOfBusiness"),
             "registered_on": _iso(_first(data, "rgdt", "registrationDate")),
             "cancelled_on": _iso(_first(data, "cxdt", "cancellationDate")),
-            "nature_of_business": _nature(address_block),
-            "premises_kind": _premises_kind(address_block),
+            "nature_of_business": _nature(address_block, data),
+            "premises_kind": _premises_kind(address_block, data),
             "address": address,
             "state_jurisdiction": _first(data, "stj", "stateJurisdiction"),
             "centre_jurisdiction": _first(data, "ctj", "centreJurisdiction"),
+            "state_jurisdiction_code": _first(data, "stjCd"),
+            "centre_jurisdiction_code": _first(data, "ctjCd"),
+            # Additional places of business. A vendor with warehouses or
+            # depots beyond its registered office is materially different
+            # from one operating out of a single address, and `pradr` alone
+            # does not show that. Recorded as evidence; nothing infers a
+            # rating from it yet.
+            "additional_places": additional,
+            "additional_place_count": len(additional),
+            # e-invoicing is mandatory above a turnover threshold, so "Yes"
+            # is a scale signal — but the threshold has moved repeatedly and
+            # the flag alone does not fix a turnover band. Recorded, not scored.
+            "einvoice_status": _first(data, "einvoiceStatus"),
+            "record_last_updated": _iso(_first(data, "lstupdt")),
         }
 
     # -----------------------------------------------------------------
@@ -194,19 +249,25 @@ class FinaggProvider(HttpProvider):
         gstin = (gstin or "").strip().upper()
         if not GSTIN_RE.match(gstin):
             raise ValueError(f"'{gstin}' is not a valid GSTIN.")
+
+        # Whether the year was chosen by the caller or derived here decides
+        # if the prior-year fallback below is allowed to fire.
+        caller_supplied_fy = bool(fy)
         fy = fy or _current_fy()
 
-        response = self.request(
-            "GET",
-            self._url("returns"),
-            headers=self._headers(),
-            params={"action": ACTION_RETURNS, "gstin": gstin, "fy": fy},
-        )
-        self.spend.record("finagg.returns", paisa=self.settings.finagg_returns_paisa)
+        payload, data, rows = self._fetch_returns(gstin, fy)
 
-        payload = response.payload or {}
-        data = _unwrap(payload)
-        rows = _return_rows(data)
+        # An empty current year early in the financial year is not a default
+        # — nothing is due yet. Without this, every compliant vendor checked
+        # in April or May scores C2 red on the strength of a year that has
+        # barely started. Only fires for a year we derived ourselves: a
+        # caller who named a year gets an answer about that year.
+        fallback_fy = None
+        if not rows and not caller_supplied_fy and _early_in_fy():
+            fallback_fy = _previous_fy(fy)
+            payload, data, rows = self._fetch_returns(gstin, fallback_fy)
+            if rows:
+                fy = fallback_fy
 
         guard = ParseGuard("finagg.returns")
         guard.expect(
@@ -244,12 +305,97 @@ class FinaggProvider(HttpProvider):
             "return_types": sorted({
                 f["return_type"] for f in filings if f["return_type"]
             }),
+            # True when the current financial year was empty this early in
+            # April–June and the prior year answered instead. C2 needs to
+            # know: "no filings yet this year" and "no filings last year"
+            # are not the same finding.
+            "fell_back_to_prior_fy": fy == fallback_fy and fallback_fy is not None,
         }
+
+    def _fetch_returns(self, gstin: str, fy: str):
+        """One returns call. Returns ``(payload, decoded, rows)``."""
+        response = self.request(
+            "GET",
+            self._url("returns"),
+            headers=self._headers(),
+            params={
+                "action": self._action("returns"),
+                "gstin": gstin,
+                "fy": fy,
+            },
+        )
+        self.spend.record("finagg.returns",
+                          paisa=self.settings.finagg_returns_paisa)
+        payload = response.payload or {}
+        data = _decode_envelope(payload)
+        return payload, data, _return_rows(data)
 
 
 # ---------------------------------------------------------------------
 # Payload helpers
 # ---------------------------------------------------------------------
+
+
+def _decode_envelope(payload):
+    """Unwrap FinAGG's envelope, whose ``data`` is a base64 STRING.
+
+    The real shape, confirmed against a 200 on 2026-09-09::
+
+        {"status_cd": "1", "data": "<base64 JSON>", "rek": "", "hmac": ""}
+
+    ``status_cd`` is "1" on success and "0" on failure. ``rek`` and ``hmac``
+    are GSTN's encryption fields and arrive EMPTY on these two consent-free
+    endpoints — if they are ever populated the body is encrypted and this
+    plain decode does not apply, which is why a populated ``rek`` is treated
+    as unreadable rather than parsed anyway.
+
+    Every failure path returns ``{}`` on purpose. ParseGuard then reports
+    ``unavailable`` with the payload attached, which is the inversion the
+    rest of this package uses: an adapter that reads nothing out of a
+    non-empty payload is assumed to be out of date, not to have found
+    nothing. Returning a half-decoded dict would put a clean-looking empty
+    result in front of an analyst instead.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    def _unreadable(reason: str):
+        # NOT `return {}`. ParseGuard only trips when raw HAS content and
+        # parsed does not, so an empty dict would sail through it and be
+        # reported as a vendor with no GST registration. A body we could
+        # not read has to raise here, with the payload attached, or the
+        # whole guard doctrine has a hole in it exactly where the provider
+        # changes shape.
+        raise ProviderParseGap(
+            f"finagg: {reason}. The response is stored with this result — "
+            f"open it and send it to whoever maintains the adapter.",
+            payload=payload,
+        )
+
+    status = str(payload.get("status_cd", "")).strip()
+    if status and status != "1":
+        _unreadable(f"provider reported status_cd={status!r}")
+
+    if not is_blank(payload.get("rek")) or not is_blank(payload.get("hmac")):
+        _unreadable("response carries rek/hmac, so the body is encrypted "
+                    "and this adapter's plain base64 decode does not apply")
+
+    blob = payload.get("data")
+    if isinstance(blob, str) and blob.strip():
+        try:
+            # "===" is harmless when the string is already padded and fixes
+            # it when the provider strips padding.
+            raw = base64.b64decode(blob + "===")
+            decoded = json.loads(raw.decode("utf-8"))
+        except (ValueError, TypeError, binascii.Error, UnicodeDecodeError):
+            _unreadable("`data` could not be base64/JSON decoded")
+        if not isinstance(decoded, dict):
+            _unreadable("`data` decoded to something other than an object")
+        return _unwrap(decoded)
+
+    # No `data` key at all — an older or different envelope. Fall back to
+    # the dict-nesting logic rather than failing outright.
+    return _unwrap(payload)
 
 
 def _unwrap(payload):
@@ -287,8 +433,19 @@ def _first(source, *keys, default=None):
     return default
 
 
-def _nature(address_block) -> list[str]:
-    """``pradr.addr.ntr`` — nature of business at the principal place."""
+def _nature(address_block, data=None) -> list[str]:
+    """Nature of business at the principal place.
+
+    ``nba`` is preferred: it is a top-level ARRAY of the same values, so it
+    needs no comma-splitting and cannot be corrupted by a value that itself
+    contains a comma — "Office / Sale Office" is one entry there and two if
+    split out of ``ntr``. ``pradr.ntr`` remains the fallback.
+    """
+    if isinstance(data, dict):
+        nba = _first(data, "nba", "natureOfBusiness")
+        if isinstance(nba, list) and nba:
+            return [str(v).strip() for v in nba if not is_blank(v)]
+
     if not isinstance(address_block, dict):
         return []
     raw = _first(address_block, "ntr", "natureOfBusiness")
@@ -301,7 +458,25 @@ def _nature(address_block) -> list[str]:
     return [part.strip() for part in str(raw).split(",") if part.strip()]
 
 
-def _premises_kind(address_block) -> str | None:
+def _additional_places(data) -> list[dict]:
+    """``adadr`` — additional places of business, each with its own nature."""
+    if not isinstance(data, dict):
+        return []
+    rows = _first(data, "adadr", "additionalAddresses")
+    if not isinstance(rows, list):
+        return []
+    places = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        address = _flatten_address(row)
+        natures = _nature(row)
+        if address or natures:
+            places.append({"address": address, "nature_of_business": natures})
+    return places
+
+
+def _premises_kind(address_block, data=None) -> str | None:
     """Commercial, or unknown. Never 'residential' by inference.
 
     GSTN has no residential flag. The nature-of-business field is the only
@@ -311,7 +486,7 @@ def _premises_kind(address_block) -> str | None:
     an inferred fact in the sourced-findings half of the report, which is
     the one line this product does not cross.
     """
-    natures = _nature(address_block)
+    natures = _nature(address_block, data)
     if not natures:
         return None
     joined = " ".join(natures).lower()
@@ -386,3 +561,23 @@ def _current_fy(today: date | None = None) -> str:
     today = today or datetime.now(timezone.utc).date()
     start = today.year if today.month >= 4 else today.year - 1
     return f"{start}-{str(start + 1)[-2:]}"
+
+
+def _previous_fy(fy: str) -> str:
+    """``2026-27`` → ``2025-26``."""
+    try:
+        start = int(str(fy).split("-")[0]) - 1
+    except (ValueError, IndexError):
+        return fy
+    return f"{start}-{str(start + 1)[-2:]}"
+
+
+def _early_in_fy(today: date | None = None) -> bool:
+    """April, May or June — too early for the year to evidence anything.
+
+    GSTR-1 and 3B for the first month of a financial year are not due until
+    well into the second, so a query in this window can legitimately return
+    nothing for a fully compliant vendor.
+    """
+    today = today or datetime.now(timezone.utc).date()
+    return today.month in (4, 5, 6)

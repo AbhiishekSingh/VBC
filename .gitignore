@@ -9,4 +9,4 @@ __pycache__/
 .env
 *.log
 .DS_Store
-'@ | Set-Content -Encoding ascii .gitignore
+'@ | Set-Content -Encoding ascii .gitignore 

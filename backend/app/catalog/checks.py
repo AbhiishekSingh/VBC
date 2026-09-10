@@ -449,7 +449,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         id="gst",
         group=CheckGroup.TAX,
         name="GST registration and status",
-        endpoint="GET /commonapi/{v}/search?action=SEARCHGSTIN",
+        endpoint="GET /commonapi/{v}/search?action=TP",
         provider=FA,
         note="Registration status, taxpayer type, constitution, principal address",
         feeds=("C1", "C3", "C4", "C5"),

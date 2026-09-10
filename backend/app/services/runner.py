@@ -698,7 +698,10 @@ class CheckRunner:
                 f"{data['legal_name'] or data['trade_name'] or 'Name not returned'} · "
                 f"{data['taxpayer_type'] or 'type not returned'} · "
                 f"registered {data['registered_on'] or 'date not returned'}"
-                + (f" · cancelled {data['cancelled_on']}" if data["cancelled_on"] else ""),
+                + (f" · cancelled {data['cancelled_on']}" if data["cancelled_on"] else "")
+                + (f" · {data['additional_place_count']} additional "
+                   f"place(s) of business"
+                   if data.get("additional_place_count") else ""),
                 raw=data,
             )
 
@@ -718,13 +721,19 @@ class CheckRunner:
             else:
                 status = CheckStatus.PASS
                 value = f"{data['filing_count']} returns filed"
-            return Finding(
-                check_id, status, value,
+            detail = (
                 f"Latest {data['latest_period'] or '—'} filed "
                 f"{data['latest_filed_on'] or '—'} · "
-                f"types {', '.join(data['return_types']) or '—'}",
-                raw=data,
+                f"types {', '.join(data['return_types']) or '—'}"
             )
+            if data.get("fell_back_to_prior_fy"):
+                # The analyst must see that the year reported is not the
+                # current one, or "12 returns filed" reads as this year's.
+                detail += (
+                    f" · read from FY {data['financial_year']}: the current "
+                    f"financial year has no filings due yet"
+                )
+            return Finding(check_id, status, value, detail, raw=data)
 
         if check_id == "courtsearch":
             party = get("parties", vendor.legal_name or vendor.name or "")
