@@ -8,10 +8,133 @@
 
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import type { Vendor } from '@/types/domain'
 import { API_MODE } from '@/api'
+
+/* =====================================================================
+   Theme
+   =====================================================================
+   A complete dark palette already existed in tokens.css — in two verbatim
+   copies — but nothing in the app ever set `data-theme`, so it could never
+   render. The palette is now one block keyed on [data-theme='dark'], and
+   this resolves "system" to an explicit value so there is only ever one
+   copy to keep in step.
+
+   Presentation only: it writes an attribute on <html> and a string to
+   localStorage. No data, no request, no logic.
+   ===================================================================== */
+
+export type Theme = 'light' | 'dark' | 'system'
+const THEME_KEY = 'vbc.theme'
+
+function systemTheme(): 'light' | 'dark' {
+  return typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light'
+}
+
+function readTheme(): Theme {
+  try {
+    const v = localStorage.getItem(THEME_KEY)
+    if (v === 'light' || v === 'dark' || v === 'system') return v
+  } catch {
+    /* private mode, blocked storage — the default is fine */
+  }
+  return 'system'
+}
+
+export function applyTheme(theme: Theme): void {
+  const resolved = theme === 'system' ? systemTheme() : theme
+  document.documentElement.setAttribute('data-theme', resolved)
+}
+
+export function useTheme(): [Theme, (t: Theme) => void] {
+  const [theme, setThemeState] = useState<Theme>(readTheme)
+
+  useEffect(() => {
+    applyTheme(theme)
+    if (theme !== 'system') return
+    // Follow the OS while the choice is "system".
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => applyTheme('system')
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [theme])
+
+  const setTheme = useCallback((t: Theme) => {
+    setThemeState(t)
+    try {
+      localStorage.setItem(THEME_KEY, t)
+    } catch {
+      /* not being able to remember the choice is not a reason to refuse it */
+    }
+  }, [])
+
+  return [theme, setTheme]
+}
+
+const SUN = 'M12 3v1.5m0 15V21M5.6 5.6l1.1 1.1m10.6 10.6 1.1 1.1M3 12h1.5m15 0H21M5.6 18.4l1.1-1.1M17.3 6.7l1.1-1.1M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z'
+const MOON = 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z'
+
+export function ThemeToggle() {
+  const [theme, setTheme] = useTheme()
+  const resolved = theme === 'system' ? systemTheme() : theme
+  const next = resolved === 'dark' ? 'light' : 'dark'
+  return (
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={() => setTheme(next)}
+      aria-label={`Switch to ${next} theme`}
+      title={`Switch to ${next} theme`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d={resolved === 'dark' ? SUN : MOON} />
+      </svg>
+    </button>
+  )
+}
+
+/* =====================================================================
+   Sidebar collapse
+   =====================================================================
+   244px is a lot of permanent chrome on a 13" laptop, and the Outcome
+   sheet is nine columns wide.
+   ===================================================================== */
+
+const RAIL_KEY = 'vbc.sidebarRail'
+
+export function useSidebarRail(): [boolean, () => void] {
+  const [rail, setRail] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(RAIL_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggle = useCallback(() => {
+    setRail((r) => {
+      try {
+        localStorage.setItem(RAIL_KEY, r ? '0' : '1')
+      } catch {
+        /* ignore */
+      }
+      return !r
+    })
+  }, [])
+  return [rail, toggle]
+}
 
 export const FLOW = [
   'submit',
@@ -128,24 +251,24 @@ export function Sidebar({
     >
       <div className="brand">
         <div className="brand-badge" aria-hidden="true">VB</div>
-        <div>
+        <div className="brand-text">
           <div className="brand-mark">VBC</div>
           <div className="brand-sub">Vendor Intelligence</div>
         </div>
       </div>
 
       <nav className="nav" aria-label="Main">
-        <NavLink to="/" end className={cls}>
+        <NavLink to="/" end className={cls} title="Dashboard">
           <Icon d={ICON.dashboard} />
-          Dashboard
+          <span className="nav-text">Dashboard</span>
         </NavLink>
-        <NavLink to="/clients" className={cls}>
+        <NavLink to="/clients" className={cls} title="Clients">
           <Icon d={ICON.clients} />
-          Clients
+          <span className="nav-text">Clients</span>
         </NavLink>
 
         <div className="nav-label">
-          Vendor flow
+          <span>Vendor flow</span>
           {/* Without a vendor the nine steps are unreachable. Saying so beats
               nine identically greyed rows that look like a broken menu. */}
           {vendor ? (
@@ -162,45 +285,59 @@ export function Sidebar({
             const done = stepDone(vendor, route)
             const inner = (
               <>
-                <span className={`nav-step${done ? ' is-done' : ''}`}>
+                <span className={`nav-step${done ? ' is-done' : ''}`} aria-hidden="true">
                   {done ? '✓' : i + 1}
                 </span>
-                {FLOW_LABEL[route]}
+                <span className="nav-text">{FLOW_LABEL[route]}</span>
               </>
             )
             if (!vendor) {
+              // Was a <span>: not focusable, and never announced as
+              // disabled, so a screen reader heard nine plain labels with
+              // no indication that none of them do anything.
               return (
-                <span key={route} className="nav-item is-disabled">
+                <button
+                  key={route}
+                  type="button"
+                  disabled
+                  className="nav-item is-disabled"
+                  title="Open a vendor to use the flow"
+                >
                   {inner}
-                </span>
+                </button>
               )
             }
             return (
-              <NavLink key={route} to={`/vendor/${vendor.id}/${route}`} className={cls}>
+              <NavLink
+                key={route}
+                to={`/vendor/${vendor.id}/${route}`}
+                className={cls}
+                title={FLOW_LABEL[route]}
+              >
                 {inner}
               </NavLink>
             )
           })}
         </div>
 
-        <div className="nav-label">Governance</div>
-        <NavLink to="/outcome" className={cls}>
+        <div className="nav-label"><span>Governance</span></div>
+        <NavLink to="/outcome" className={cls} title="Outcome sheet">
           <Icon d={ICON.outcome} />
-          Outcome sheet
+          <span className="nav-text">Outcome sheet</span>
         </NavLink>
-        <NavLink to="/audit" className={cls}>
+        <NavLink to="/audit" className={cls} title="Audit trail">
           <Icon d={ICON.audit} />
-          Audit trail
+          <span className="nav-text">Audit trail</span>
         </NavLink>
-        <NavLink to="/costs" className={cls}>
+        <NavLink to="/costs" className={cls} title="API cost reference">
           <Icon d={ICON.costs} />
-          API cost reference
+          <span className="nav-text">API cost reference</span>
         </NavLink>
       </nav>
 
       <div className="nav-foot">
         <span className={`dot${API_MODE === 'mock' ? ' is-warn' : ' is-ok'}`} aria-hidden="true" />
-        <span className="small muted">
+        <span className="small muted nav-foot-text">
           {API_MODE === 'mock' ? 'Mock data — no backend' : 'Connected to API'}
         </span>
       </div>
@@ -288,20 +425,38 @@ export function ActionBar({
     return () => window.removeEventListener('keydown', onKey)
   }, [vendor, index, navigate])
 
+  const canBack = !!vendor && index > 0
+  const canNext = !!vendor && index >= 0 && index < FLOW.length - 1
+
   return (
     <div className="actionbar">
       <button
         type="button"
         className="btn"
-        disabled={index <= 0 || !vendor}
+        disabled={!canBack}
         onClick={() => vendor && navigate(`/vendor/${vendor.id}/${FLOW[index - 1]}`)}
       >
         ← Back
       </button>
-      <span className="actionbar-step">
-        {index >= 0 ? `Step ${index + 1} of ${FLOW.length}` : ''}
-      </span>
-      <div className="row">{primary}</div>
+
+      
+
+      <div className="row">
+        {/* The bar had a Back button and no Next. Forward motion was
+            whatever each page injected, under a label that changed at every
+            step, so there was no constant way onward. The page's own
+            primary action still leads; this is the plain fallback. */}
+        {/* {canNext && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => vendor && navigate(`/vendor/${vendor.id}/${FLOW[index + 1]}`)}
+          >
+            Next →
+          </button>
+        )} */}
+        {primary}
+      </div>
     </div>
   )
 }

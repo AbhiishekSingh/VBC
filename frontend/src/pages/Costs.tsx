@@ -10,15 +10,26 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/api'
-import { Callout, Card, Tile, rupees } from '@/components/ui'
+import { Callout, Card, LoadingBlock, Tile, rupees } from '@/components/ui'
 import { COMPANY_UNLOCK_PAISA } from '@/catalog/generated'
 
 type Row = { group: string; item: string; unit: string; source: string }
 
 export default function Costs() {
   const [rows, setRows] = useState<readonly Row[]>([])
+  // Rendered an empty table while the request was in flight, so a price
+  // reference with no prices in it looked like the answer.
+  const [loading, setLoading] = useState(true)
+
   useEffect(() => {
-    api.listCostReference().then(setRows)
+    let alive = true
+    api
+      .listCostReference()
+      .then((r) => alive && setRows(r))
+      .finally(() => alive && setLoading(false))
+    return () => {
+      alive = false
+    }
   }, [])
 
   const groups = [...new Set(rows.map((r) => r.group))]
@@ -45,6 +56,20 @@ export default function Costs() {
         free GET on the unlock path always runs first, so an unlock is never bought for a company
         that already has one.
       </Callout>
+
+      {loading && (
+        <Card title="Loading the price list" tight>
+          <LoadingBlock label="Reading unit prices…" />
+        </Card>
+      )}
+
+      {!loading && groups.length === 0 && (
+        <Card title="No prices recorded" tight>
+          <div className="empty-inline">
+            <span className="muted">The cost reference came back empty.</span>
+          </div>
+        </Card>
+      )}
 
       {groups.map((group) => (
         <Card key={group} title={group} tight>

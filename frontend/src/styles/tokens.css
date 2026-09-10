@@ -10,15 +10,35 @@
    meaning that a reader must be able to trust. "Not checked" gets its own
    distinct treatment — never a muted version of "pass" — since the entire
    premise is that a gap in coverage must never read as a clean result.
+
+   THEME MECHANICS
+   ---------------
+   The dark palette lives in ONE block, keyed on [data-theme='dark'].
+   `applyTheme()` in components/Layout.tsx always writes an explicit
+   data-theme onto <html>, resolving "system" against the media query, so
+   there is no second copy of the palette to keep in sync. The media query
+   below only sets color-scheme, so form controls and scrollbars render
+   correctly in the split second before the script runs.
    ===================================================================== */
 
+/* Inter and JetBrains Mono are what this design was drawn for. They were
+   named in --font-sans / --font-mono but never actually loaded, so every
+   screen silently fell back to the system UI font. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {
+  color-scheme: light;
+
   /* Neutrals, warmed very slightly toward the indigo accent so they read
      as chosen rather than inherited. */
   --ink:            #171a24;
+  --ink-1:          #23283a;   /* was used in four rules but never defined */
   --ink-2:          #3b4054;
-  --ink-3:          #646a80;
-  --ink-4:          #8b90a4;
+  --ink-3:          #5c6379;
+  /* Was #8b90a4 — about 2.9:1 on white, and it carries every table header,
+     tile note, field hint and nav label in the app. Darkened to clear 4.5:1
+     without becoming a second body colour. */
+  --ink-4:          #6f7589;
   --line:           #e2e4ec;
   --line-2:         #eceef4;
   --surface:        #ffffff;
@@ -29,7 +49,7 @@
   /* Accent — used for navigation, current state and primary actions only. */
   --accent:         #3d3f9e;
   --accent-ink:     #2b2d78;
-  --accent-soft:    #ececf008;
+  --accent-soft:    #f2f2f9;   /* was #ececf008 — an 8-digit hex at ~3% alpha */
   --accent-wash:    #eeeef8;
 
   /* Semantic. These mean things. */
@@ -47,18 +67,49 @@
   --rating-y:       #a86010;
   --rating-r:       #b3243c;
 
-  --shadow-1: 0 1px 2px rgba(23, 26, 36, .05);
-  --shadow-2: 0 2px 8px rgba(23, 26, 36, .07);
-  --shadow-3: 0 -1px 12px rgba(23, 26, 36, .08);
+  /* ---- Elevation ---------------------------------------------------
+     Was a single near-invisible step (5% alpha, 2px blur) doing all the
+     work, which is why the app read as flat and boxy. Four rungs now,
+     each visibly distinct from the one below it. */
+  --shadow-0: none;
+  --shadow-1: 0 1px 2px rgba(23, 26, 36, .06),
+              0 1px 3px rgba(23, 26, 36, .04);
+  --shadow-2: 0 2px 4px rgba(23, 26, 36, .05),
+              0 4px 12px rgba(23, 26, 36, .08);
+  --shadow-3: 0 8px 16px rgba(23, 26, 36, .08),
+              0 16px 32px rgba(23, 26, 36, .10);
+  --shadow-up: 0 -1px 2px rgba(23, 26, 36, .04),
+               0 -6px 16px rgba(23, 26, 36, .07);
 
-  --radius:    6px;
-  --radius-sm: 4px;
+  /* ---- Spacing -----------------------------------------------------
+     There was no scale at all; every padding and gap was a literal, which
+     is how 19 different values ended up in one stylesheet. 4px base. */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  32px;
+  --space-8:  40px;
+  --space-9:  56px;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius:    8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
                'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono',
                Menlo, Consolas, monospace;
 
+  /* ---- Type --------------------------------------------------------
+     --step--2 is new: it replaces the 9.5px and 10px literals that were
+     scattered through the nav, every table header and every micro-label.
+     Nothing in a professional tool should be set at 9.5px. */
+  --step--2: 11px;
   --step--1: 12px;
   --step-0:  14px;
   --step-1:  16px;
@@ -66,53 +117,64 @@
   --step-3:  26px;
   --step-4:  32px;
 
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semi:   600;
+  --weight-bold:   700;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.55;
+  --tracking-wide: .06em;
+
+  /* ---- Motion ------------------------------------------------------
+     Durations were hard-coded at .12s / .15s / .16s / .22s / .25s in five
+     different places. */
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --ease:      cubic-bezier(.4, 0, .2, 1);
+  --ease-out:  cubic-bezier(.16, 1, .3, 1);
+
+  /* ---- Focus -------------------------------------------------------
+     One ring, one colour, everywhere. Form fields used to override this
+     with --accent-wash, a near-white on white, which meant no input in
+     the app had a visible focus indicator at all. */
+  --focus-ring: 2px solid var(--accent);
+  --focus-offset: 2px;
+
+  /* ---- Layering ----------------------------------------------------
+     The sidebar drawer and the toast both sat at 60. */
+  --z-base:      1;
+  --z-sticky:    10;
+  --z-topbar:    20;
+  --z-actionbar: 30;
+  --z-scrim:     40;
+  --z-popover:   50;
+  --z-drawer:    60;
+  --z-toast:     70;
+
   --sidebar-w: 244px;
+  --sidebar-w-collapsed: 64px;
   --actionbar-h: 60px;
+  --content-max: 1240px;
+}
+
+/* Before the theme script runs, at least render native controls in the
+   right scheme. The palette itself is applied by [data-theme]. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) { color-scheme: dark; }
 }
 
 /* Dark theme. Semantic hues are re-tuned rather than inverted, so a "warn"
    still reads as caution against a dark ground instead of turning muddy. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --ink:            #e9eaf2;
-    --ink-2:          #b9bdcd;
-    --ink-3:          #8b90a4;
-    --ink-4:          #6b7186;
-    --line:           #2a2e3d;
-    --line-2:         #232733;
-    --surface:        #171a24;
-    --surface-2:      #1c202b;
-    --surface-3:      #232733;
-    --ground:         #101219;
-
-    --accent:         #8b8ddb;
-    --accent-ink:     #a3a5e6;
-    --accent-wash:    #23243a;
-
-    --pass:           #4ade80;
-    --pass-wash:      #16261d;
-    --warn:           #e0a355;
-    --warn-wash:      #2a2116;
-    --adverse:        #f0788d;
-    --adverse-wash:   #2d171c;
-    --unchecked:      #9aa1b5;
-    --unchecked-wash: #21252f;
-
-    --rating-g:       #4ade80;
-    --rating-y:       #e0a355;
-    --rating-r:       #f0788d;
-
-    --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
-    --shadow-2: 0 2px 8px rgba(0, 0, 0, .35);
-    --shadow-3: 0 -1px 12px rgba(0, 0, 0, .4);
-  }
-}
-
 :root[data-theme='dark'] {
+  color-scheme: dark;
+
   --ink:            #e9eaf2;
+  --ink-1:          #d2d5e2;
   --ink-2:          #b9bdcd;
-  --ink-3:          #8b90a4;
-  --ink-4:          #6b7186;
+  --ink-3:          #949ab0;
+  --ink-4:          #7b8296;
   --line:           #2a2e3d;
   --line-2:         #232733;
   --surface:        #171a24;
@@ -122,6 +184,7 @@
 
   --accent:         #8b8ddb;
   --accent-ink:     #a3a5e6;
+  --accent-soft:    #1d1f2e;
   --accent-wash:    #23243a;
 
   --pass:           #4ade80;
@@ -137,7 +200,11 @@
   --rating-y:       #e0a355;
   --rating-r:       #f0788d;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
-  --shadow-2: 0 2px 8px rgba(0, 0, 0, .35);
-  --shadow-3: 0 -1px 12px rgba(0, 0, 0, .4);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 2px 4px rgba(0, 0, 0, .3),
+              0 4px 12px rgba(0, 0, 0, .4);
+  --shadow-3: 0 8px 16px rgba(0, 0, 0, .4),
+              0 16px 32px rgba(0, 0, 0, .5);
+  --shadow-up: 0 -1px 2px rgba(0, 0, 0, .3),
+               0 -6px 16px rgba(0, 0, 0, .4);
 }

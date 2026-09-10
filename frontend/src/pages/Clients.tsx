@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { Card, EmptyState } from '@/components/ui'
+import { Card, EmptyState, LoadingBlock } from '@/components/ui'
 import { useClients } from '@/hooks/useClients'
 import { useToast } from '@/hooks/useToast'
 import { api } from '@/api'
@@ -48,7 +48,7 @@ export default function Clients() {
   const set = (key: keyof typeof BLANK) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setDraft((d) => ({ ...d, [key]: e.target.value }))
 
-  if (loading) return <p className="muted">Loading clients…</p>
+  if (loading) return <LoadingBlock label="Loading clients…" />
 
   return (
     <div className="stack">
@@ -145,7 +145,7 @@ export default function Clients() {
                   <span className="client-avatar" aria-hidden="true">
                     {client.name.slice(0, 2).toUpperCase()}
                   </span>
-                  <div className="client-id small mono muted">{client.id}</div>
+                  {/* <div className="client-id small mono muted">{client.id}</div> */}
                 </div>
 
                 <div className="client-name">{client.name}</div>

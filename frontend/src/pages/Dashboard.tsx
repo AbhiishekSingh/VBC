@@ -14,7 +14,15 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { Card, EmptyState, Meter, Tile, toneForScan } from '@/components/ui'
+import {
+  Card,
+  EmptyState,
+  LoadingBlock,
+  Meter,
+  SkeletonTiles,
+  Tile,
+  toneForScan,
+} from '@/components/ui'
 import { useVendorList } from '@/hooks/useVendor'
 import { DEFAULT_POLICY, applyPolicy, scoreRisk, scoreScan } from '@/scoring'
 import type { Vendor } from '@/types/domain'
@@ -95,7 +103,18 @@ export default function Dashboard() {
     })
   }, [vendors, query, filter])
 
-  if (loading) return <p className="muted">Loading vendors…</p>
+  if (loading) {
+    return (
+      <div className="stack">
+        <SkeletonTiles />
+        <div className="card">
+          <div className="card-body">
+            <LoadingBlock label="Loading vendors…" />
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const open = (id: string) => navigate(`/vendor/${id}/findings`)
 
@@ -215,9 +234,7 @@ export default function Dashboard() {
                         >
                           <td>
                             <div className="cell-strong">{v.name}</div>
-                            <div className="small muted mono cell-ref">
-                              #{v.id} · {v.cin ?? 'no CIN'}
-                            </div>
+                            <div className="small muted mono cell-ref">#{v.id}</div>
                           </td>
                           <td className="small cell-client">{v.clientName || '—'}</td>
                           <td>
@@ -225,7 +242,7 @@ export default function Dashboard() {
                               {STAGE_LABEL[v.stage] ?? v.stage}
                             </span>
                           </td>
-                          <td style={{ minWidth: 140 }}>
+                          <td className="col-coverage">
                             {scan.isScored ? (
                               <>
                                 <div className="small nums">
@@ -288,7 +305,7 @@ export default function Dashboard() {
                       </div>
 
                       <div className="small muted mono">
-                        #{v.id} · {v.cin ?? 'no CIN'}
+                        #{v.id}
                       </div>
                       {v.clientName && <div className="small muted">{v.clientName}</div>}
 

@@ -52,17 +52,25 @@ export default function Manual({ vendor, setVendor, setPrimary }: PageProps) {
 
   const addFromTemplate = async () => {
     if (!value.trim()) return
-    setVendor(
-      await api.addManualEntry(vendor.id, {
-        key: template.label,
-        value,
-        type: template.type as FieldTypeName,
-        templateId: template.id,
-        note,
-        enteredBy: CURRENT_ANALYST,
-        enteredAt: now(),
-      }),
-    )
+    // A manual entry is an analyst asserting a fact that no provider
+    // supplied, and several of them map straight onto a SCAN parameter.
+    // Losing one silently is losing evidence.
+    try {
+      setVendor(
+        await api.addManualEntry(vendor.id, {
+          key: template.label,
+          value,
+          type: template.type as FieldTypeName,
+          templateId: template.id,
+          note,
+          enteredBy: CURRENT_ANALYST,
+          enteredAt: now(),
+        }),
+      )
+    } catch (e) {
+      toast.error(e, 'That entry could not be recorded.')
+      return
+    }
     toast(mappingPreview ? `Recorded — sets ${mappingPreview}` : 'Entry recorded')
     setValue('')
     setNote('')
@@ -70,17 +78,22 @@ export default function Manual({ vendor, setVendor, setPrimary }: PageProps) {
 
   const addCustom = async () => {
     if (!customKey.trim() || !customValue.trim()) return
-    setVendor(
-      await api.addManualEntry(vendor.id, {
-        key: customKey,
-        value: customValue,
-        type: customType,
-        templateId: null,
-        note: customNote,
-        enteredBy: CURRENT_ANALYST,
-        enteredAt: now(),
-      }),
-    )
+    try {
+      setVendor(
+        await api.addManualEntry(vendor.id, {
+          key: customKey,
+          value: customValue,
+          type: customType,
+          templateId: null,
+          note: customNote,
+          enteredBy: CURRENT_ANALYST,
+          enteredAt: now(),
+        }),
+      )
+    } catch (e) {
+      toast.error(e, 'That entry could not be recorded.')
+      return
+    }
     toast('Custom entry recorded')
     setCustomKey('')
     setCustomValue('')
@@ -265,7 +278,7 @@ export default function Manual({ vendor, setVendor, setPrimary }: PageProps) {
                   return (
                     <tr key={entry.id}>
                       <td>
-                        <div style={{ fontWeight: 550 }}>{entry.key}</div>
+                        <div className="cell-strong">{entry.key}</div>
                         {entry.note && <div className="small muted">{entry.note}</div>}
                       </td>
                       <td>
@@ -291,7 +304,12 @@ export default function Manual({ vendor, setVendor, setPrimary }: PageProps) {
                           type="button"
                           className="btn sm ghost danger"
                           onClick={async () => {
-                            setVendor(await api.removeManualEntry(vendor.id, entry.id))
+                            try {
+                              setVendor(await api.removeManualEntry(vendor.id, entry.id))
+                            } catch (e) {
+                              toast.error(e, 'That entry could not be removed.')
+                              return
+                            }
                             toast('Entry removed — any SCAN parameter it set has been cleared')
                           }}
                         >

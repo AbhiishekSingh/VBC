@@ -18,15 +18,23 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '@/api'
 import { CHECKS, PILLARS, SCAN_PARAMETERS } from '@/catalog/generated'
 import { Callout, Card, Meter, RatingDot, SourceChip, Tile, toneForScan } from '@/components/ui'
+import { useToast } from '@/hooks/useToast'
 import { DEFAULT_POLICY, applyPolicy, scoreScan } from '@/scoring'
 import type { PageProps } from '@/App'
 import type { PillarKey, Rating, SourceMode } from '@/types/domain'
 
 export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
   const navigate = useNavigate()
+  const toast = useToast()
 
   const score = scoreScan(vendor.scan)
   const gate = applyPolicy(score, DEFAULT_POLICY)
+
+  // Was the sentence "Automation can fill five of them — S1, S2, S3, A3 and
+  // N3". The catalogue now marks ten parameters AUTO, and the Select page
+  // computes its coverage tile from that same list, so the two screens
+  // reported different automation coverage.
+  const autoParams = SCAN_PARAMETERS.filter((p) => p.source === 'AUTO')
 
   useEffect(() => {
     setPrimary(
@@ -38,7 +46,14 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
   }, [vendor.id])
 
   const setRating = async (paramId: string, value: string | null) => {
-    setVendor(await api.setScanRating(vendor.id, paramId, value))
+    // A rating that fails to save is the input to a binding decision. It
+    // used to throw unhandled: the select snapped back and nothing said
+    // why, so the analyst had no way to tell a saved rating from a lost one.
+    try {
+      setVendor(await api.setScanRating(vendor.id, paramId, value))
+    } catch (e) {
+      toast.error(e, 'That rating could not be saved.')
+    }
   }
 
   return (
@@ -86,7 +101,7 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
           <div className="row-between">
             <div>
               <div className="kicker">Verdict</div>
-              <h3 style={{ fontSize: 'var(--step-2)' }}>{gate.verdict}</h3>
+              <h3 className="stat-lg">{gate.verdict}</h3>
             </div>
             <span
               className={`badge b-${
@@ -129,7 +144,7 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
                 <span className="chip">w {pillar.weight}</span>
               </div>
               <div className="small muted">{pillar.subtitle}</div>
-              <div className="nums" style={{ marginTop: 8, fontSize: 'var(--step-2)', fontWeight: 620 }}>
+              <div className="nums stat-lg" style={{ marginTop: 'var(--space-2)' }}>
                 {bucket.weighted.toFixed(2)} / {bucket.max.toFixed(2)}
               </div>
               <div className="small muted">
@@ -231,9 +246,9 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
             <span className="nums">{score.tolerance50.toFixed(2)}</span>.
           </p>
           <p>
-            With all 18 parameters applicable the best achievable is 4.30. Automation can fill five
-            of them — S1, S2, S3, A3 and N3 — worth 1.30, about 34%. The rest is human judgement
-            and field work, by design.
+            With all {SCAN_PARAMETERS.length} parameters applicable the best achievable is 4.30.
+            Automation can fill {autoParams.length} of them — {autoParams.map((p) => p.id).join(', ')} —
+            and the rest is human judgement and field work, by design.
           </p>
         </div>
       </Card>

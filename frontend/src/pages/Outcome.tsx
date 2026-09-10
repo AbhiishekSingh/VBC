@@ -7,7 +7,8 @@
  * not something adjacent to it.
  */
 
-import { Card, Meter, toneForScan } from '@/components/ui'
+import { Card, LoadingBlock, Meter, SkeletonTable, toneForScan } from '@/components/ui'
+import { csvRows, downloadBlob } from '@/lib/download'
 import { useVendorList } from '@/hooks/useVendor'
 import { PILLARS } from '@/catalog/generated'
 import { DEFAULT_POLICY, applyPolicy, scoreScan } from '@/scoring'
@@ -15,7 +16,6 @@ import type { PillarKey } from '@/types/domain'
 
 export default function Outcome() {
   const { vendors, loading } = useVendorList()
-  if (loading) return <p className="muted">Loading…</p>
 
   const csv = () => {
     const header = ['Vendor', 'ID', ...PILLARS.map((p) => `${p.key} weighted`), 'Weighted', 'Best', '%', 'Applicable', 'Verdict', 'Policy']
@@ -29,13 +29,10 @@ export default function Outcome() {
         g.verdict, g.policyVersion,
       ]
     })
-    const body = [header, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob([body], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'vbc-outcome-sheet.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    // Was `"${c}"` with no escaping, so a vendor name containing a double
+    // quote broke the column layout of the sheet this page exists to be
+    // reconciled against. Audit.tsx already escaped correctly.
+    downloadBlob(csvRows([header, ...rows]), 'vbc-outcome-sheet.csv', 'text/csv')
   }
 
   return (
@@ -54,7 +51,7 @@ export default function Outcome() {
         aside={<button type="button" className="btn" onClick={csv}>Export CSV</button>}
         tight
       >
-        <div className="table-wrap">
+        <div className="table-wrap is-tall">
           <table className="table">
             <thead>
               <tr>
@@ -78,7 +75,7 @@ export default function Outcome() {
                 return (
                   <tr key={v.id}>
                     <td>
-                      <div style={{ fontWeight: 550 }}>{v.name}</div>
+                      <div className="cell-strong">{v.name}</div>
                       <div className="small muted mono">#{v.id}</div>
                     </td>
                     {PILLARS.map((p) => {

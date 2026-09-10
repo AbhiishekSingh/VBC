@@ -31,11 +31,23 @@ export default function Surveillance({ vendor, setVendor, setPrimary }: PageProp
   const filed = vendor.surveillanceDone
 
   const setValue = async (paramId: string, value: string | null) => {
-    setVendor(await api.setSurveillance(vendor.id, { [paramId]: value }))
+    try {
+      setVendor(await api.setSurveillance(vendor.id, { [paramId]: value }))
+    } catch (e) {
+      toast.error(e, 'That field could not be saved.')
+    }
   }
 
   const complete = async () => {
-    const result = await api.completeSurveillance(vendor.id)
+    let result
+    try {
+      result = await api.completeSurveillance(vendor.id)
+    } catch (e) {
+      // Filing is the step that writes A2. Failing it silently and then
+      // navigating onward would leave the analyst believing it was filed.
+      toast.error(e, 'The site visit could not be filed.')
+      return
+    }
     setVendor(result)
     toast(
       score.gateFailed
