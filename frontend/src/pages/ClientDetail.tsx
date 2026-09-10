@@ -11,7 +11,15 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { api } from '@/api'
-import { Card, EmptyState, Meter, Tile, toneForScan } from '@/components/ui'
+import {
+  Card,
+  EmptyState,
+  LoadingBlock,
+  Meter,
+  SkeletonTiles,
+  Tile,
+  toneForScan,
+} from '@/components/ui'
 import { useClient } from '@/hooks/useClients'
 import { DEFAULT_POLICY, applyPolicy, scoreRisk, scoreScan } from '@/scoring'
 import type { Vendor } from '@/types/domain'
@@ -47,7 +55,14 @@ export default function ClientDetail() {
     }
   }, [clientId])
 
-  if (loading) return <p className="muted">Loading client…</p>
+  if (loading) {
+    return (
+      <div className="stack">
+        <LoadingBlock label="Loading client…" />
+        <SkeletonTiles />
+      </div>
+    )
+  }
   if (error || !client) return <div className="callout k-adverse">{error ?? 'Client not found.'}</div>
 
   const decided = vendors.filter((v) => v.decision)
@@ -99,9 +114,7 @@ export default function ClientDetail() {
 
       <Card title="Vendors" subtitle={`Under ${client.name}`} tight>
         {loadingVendors ? (
-          <p className="muted" style={{ padding: 14 }}>
-            Loading vendors…
-          </p>
+          <LoadingBlock label="Loading vendors…" />
         ) : vendors.length === 0 ? (
           <EmptyState
             title={`No vendors for ${client.name} yet`}
@@ -135,21 +148,31 @@ export default function ClientDetail() {
                   const gate = applyPolicy(scan, DEFAULT_POLICY)
                   const risk = scoreRisk(v.checks, v.selected)
                   return (
+                    // A pointer cursor and an onClick and nothing else:
+                    // there was no keyboard path at all from a client to
+                    // its vendors. Dashboard does this correctly.
                     <tr
                       key={v.id}
+                      className="row-link"
+                      role="link"
+                      tabIndex={0}
+                      aria-label={`Open ${v.name}`}
                       onClick={() => navigate(`/vendor/${v.id}/findings`)}
-                      style={{ cursor: 'pointer' }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          navigate(`/vendor/${v.id}/findings`)
+                        }
+                      }}
                     >
                       <td>
-                        <div style={{ fontWeight: 550 }}>{v.name}</div>
-                        <div className="small muted mono">
-                          #{v.id} · {v.cin ?? 'no CIN'}
-                        </div>
+                        <div className="cell-strong">{v.name}</div>
+                        <div className="small muted mono">#{v.id}</div>
                       </td>
                       <td>
                         <span className="badge b-neutral">{STAGE_LABEL[v.stage] ?? v.stage}</span>
                       </td>
-                      <td style={{ minWidth: 130 }}>
+                      <td className="col-coverage">
                         {scan.isScored ? (
                           <>
                             <div className="small nums">{scan.pct.toFixed(1)}%</div>
@@ -173,7 +196,20 @@ export default function ClientDetail() {
                       <td className="num nums">{scan.isScored ? risk.score : '—'}</td>
                       <td>
                         {v.decision ? (
-                          <span className="badge b-pass">{v.decision}</span>
+                          // Every non-null decision used to render as a
+                          // green "pass" badge, so a REJECTED vendor read
+                          // as approved on the client's own page.
+                          <span
+                            className={`badge ${
+                              v.decision === 'Rejected'
+                                ? 'b-adverse'
+                                : v.decision === 'Approved'
+                                  ? 'b-pass'
+                                  : 'b-warn'
+                            }`}
+                          >
+                            {v.decision}
+                          </span>
                         ) : (
                           <span className="small muted">Open</span>
                         )}

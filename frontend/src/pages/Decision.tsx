@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/api'
 import { Callout, Card, Field } from '@/components/ui'
+import { errorMessage, errorTitle } from '@/api/http'
 import { useToast } from '@/hooks/useToast'
 import { DEFAULT_POLICY, applyPolicy, scoreRisk, scoreScan } from '@/scoring'
 import type { PageProps } from '@/App'
@@ -34,6 +35,7 @@ export default function Decision({ vendor, setVendor, setPrimary }: PageProps) {
   const [remarks, setRemarks] = useState(vendor.decisionRemarks ?? '')
   const [overrideReason, setOverrideReason] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<unknown>(null)
 
   // The system recommends onboarding only on an ungated positive.
   const systemPositive = gate.verdict === 'Positive for Onboarding'
@@ -46,6 +48,7 @@ export default function Decision({ vendor, setVendor, setPrimary }: PageProps) {
   const submit = async () => {
     if (!canSubmit) return
     setSaving(true)
+    setSaveError(null)
     try {
       setVendor(
         await api.recordDecision(vendor.id, {
@@ -56,6 +59,13 @@ export default function Decision({ vendor, setVendor, setPrimary }: PageProps) {
       )
       toast(`Decision recorded — ${decision}`)
       navigate('/')
+    } catch (e) {
+      // This was a bare try/finally on the ONE screen that records the
+      // binding outcome. A 403 from a user without the permission, a 409,
+      // or a dropped connection stopped the button spinning and said
+      // nothing — indistinguishable from success.
+      setSaveError(e)
+      toast.error(e, 'The decision could not be recorded.')
     } finally {
       setSaving(false)
     }
@@ -110,18 +120,27 @@ export default function Decision({ vendor, setVendor, setPrimary }: PageProps) {
         </p>
       </div>
 
+      {saveError != null && (
+        <Callout kind="adverse" title={errorTitle(saveError)}>
+          {errorMessage(saveError)}
+          <div className="small muted" style={{ marginTop: 'var(--space-2)' }}>
+            Nothing was recorded. The decision is unchanged — fix the cause and submit again.
+          </div>
+        </Callout>
+      )}
+
       <Card title="What the system found">
         <div className="grid-3">
           <div>
             <div className="kicker">SCAN</div>
-            <div className="nums" style={{ fontSize: 'var(--step-2)', fontWeight: 620 }}>
+            <div className="nums stat-lg">
               {scan.weighted.toFixed(2)} / {scan.best.toFixed(2)}
             </div>
             <div className="small muted">{scan.coverageNote}</div>
           </div>
           <div>
             <div className="kicker">Point model</div>
-            <div className="nums" style={{ fontSize: 'var(--step-2)', fontWeight: 620 }}>
+            <div className="nums stat-lg">
               {risk.score}
             </div>
             <div className="small muted">

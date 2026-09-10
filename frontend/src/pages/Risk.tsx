@@ -23,6 +23,13 @@ export default function Risk({ vendor, setPrimary }: PageProps) {
   const scan = scoreScan(vendor.scan)
   const gate = applyPolicy(scan, DEFAULT_POLICY)
 
+  // The swing used to be the literal `Math.abs(-25 - 50 - 15) + 40`, printed
+  // as 130 whatever had actually sat out. Summed from the ledger's own dead
+  // lines instead, so the sentence stays true when the catalogue moves.
+  const deadSwing = risk.ledger
+    .filter((line) => line.state !== 'available')
+    .reduce((total, line) => total + Math.abs(line.points), 0)
+
   useEffect(() => {
     setPrimary(
       <button type="button" className="btn primary" onClick={() => navigate(`/vendor/${vendor.id}/report`)}>
@@ -78,7 +85,7 @@ export default function Risk({ vendor, setPrimary }: PageProps) {
               {risk.baseline} baseline {risk.raw >= 0 ? '+' : '−'} {Math.abs(risk.raw)} from{' '}
               {risk.participating} participating rules
             </span>
-            <strong className="nums" style={{ fontSize: 'var(--step-2)' }}>
+            <strong className="nums stat-lg">
               {risk.score}
             </strong>
           </div>
@@ -88,10 +95,10 @@ export default function Risk({ vendor, setPrimary }: PageProps) {
 
       {risk.dead > 0 && (
         <Callout kind="warn" title={`${risk.dead} of ${risk.ledger.length} rules did not participate`}>
-          The ledger is incomplete for this vendor. Rules with no configured provider — GST and all
-          sanctions screening — carry {Math.abs(-25 - 50 - 15) + 40} points of potential swing
-          between them, and none of it was applied in either direction. A score of {risk.score} here
-          is not the same as a score of {risk.score} from a complete ledger.
+          The ledger is incomplete for this vendor. The rules that did not participate carry{' '}
+          {deadSwing} points of potential swing between them, and none of it was applied in either
+          direction. A score of {risk.score} here is not the same as a score of {risk.score} from a
+          complete ledger.
         </Callout>
       )}
 

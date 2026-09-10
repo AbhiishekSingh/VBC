@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { api } from '@/api'
-import { Callout, Card, Field } from '@/components/ui'
+import { Callout, Card, Field, LoadingBlock } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { useClients } from '@/hooks/useClients'
 import type { Vendor } from '@/types/domain'
@@ -168,7 +168,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
         subtitle="Which client is this vendor being onboarded for"
       >
         {loadingClients ? (
-          <p className="muted">Loading clients…</p>
+          <LoadingBlock label="Loading clients…" />
         ) : clients.length === 0 ? (
           <div className="callout k-warn">
             <div className="callout-h">No clients on file</div>

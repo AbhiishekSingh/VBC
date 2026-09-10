@@ -53,10 +53,33 @@ export function StatusBadge({ status }: { status: CheckStatus }) {
   )
 }
 
+/**
+ * A rating mark.
+ *
+ * This used to be a 7px circle whose ONLY differentiator was hue — green,
+ * amber or red — and the `null` case rendered a grey circle with no
+ * accessible name at all. In a product whose whole premise is that "not
+ * applicable" must never read as "clean", that was the wrong place to lean
+ * on colour alone. Each rating now carries a glyph as well as a hue, and
+ * every state has a name.
+ */
+const RATING_GLYPH: Record<Rating, string> = { G: '✓', Y: '!', R: '✕' }
+const RATING_LABEL: Record<Rating, string> = { G: 'Green', Y: 'Yellow', R: 'Red' }
+
 export function RatingDot({ rating }: { rating: Rating | null }) {
-  if (!rating) return <span className="dot" title="Not applicable" />
-  const label = { G: 'Green', Y: 'Yellow', R: 'Red' }[rating]
-  return <span className={`dot d-${rating}`} title={label} aria-label={label} />
+  if (!rating) {
+    return (
+      <span className="dot" role="img" aria-label="Not applicable" title="Not applicable">
+        –
+      </span>
+    )
+  }
+  const label = RATING_LABEL[rating]
+  return (
+    <span className={`dot d-${rating}`} role="img" aria-label={label} title={label}>
+      {RATING_GLYPH[rating]}
+    </span>
+  )
 }
 
 export function SourceChip({ source, ran }: { source: SourceMode; ran?: boolean }) {
@@ -202,6 +225,138 @@ export function Meter({ pct, tone = 'accent' }: { pct: number; tone?: Tone }) {
         style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: colour }}
       />
     </div>
+  )
+}
+
+/* ---- loading ---------------------------------------------------------
+   There was not one spinner or skeleton in the app. Nine screens showed a
+   bare "Loading…" paragraph that REPLACED the whole page, so the layout
+   jumped when the data landed, and two screens (Audit, Costs) showed an
+   empty table — an audit trail reading "0 entries" while it is still
+   loading is misleading, not merely plain.
+
+   These are presentational only: they render while a caller's existing
+   loading flag is true. No fetch behaviour changes.
+   --------------------------------------------------------------------- */
+
+export function Skeleton({
+  w = '100%',
+  h = 12,
+  radius,
+}: {
+  w?: number | string
+  h?: number | string
+  radius?: number | string
+}) {
+  return (
+    <span
+      className="skeleton"
+      aria-hidden="true"
+      style={{ width: w, height: h, borderRadius: radius }}
+    />
+  )
+}
+
+/** Placeholder rows that match the real table's shape, so nothing shifts. */
+export function SkeletonTable({
+  rows = 6,
+  cols = 4,
+  widths,
+}: {
+  rows?: number
+  cols?: number
+  widths?: (number | string)[]
+}) {
+  return (
+    <tbody aria-hidden="true">
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r}>
+          {Array.from({ length: cols }, (_, c) => (
+            <td key={c}>
+              <Skeleton w={widths?.[c] ?? (c === 0 ? '70%' : '45%')} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </tbody>
+  )
+}
+
+/** Placeholder for the four-tile row that opens seven of the pages. */
+export function SkeletonTiles({ n = 4 }: { n?: number }) {
+  return (
+    <div className="grid-4" aria-hidden="true">
+      {Array.from({ length: n }, (_, i) => (
+        <div className="tile" key={i}>
+          <Skeleton w="55%" h={26} />
+          <div style={{ marginTop: 'var(--space-3)' }}>
+            <Skeleton w="75%" h={10} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function Spinner({ lg }: { lg?: boolean }) {
+  return <span className={`spinner${lg ? ' lg' : ''}`} aria-hidden="true" />
+}
+
+/** A polite, centred block for a whole-panel load. */
+export function LoadingBlock({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="empty-inline" role="status" aria-live="polite">
+      <Spinner lg />
+      <span className="small muted">{label}</span>
+    </div>
+  )
+}
+
+/** An indeterminate bar, for an operation with no progress to report. */
+export function ProgressBar({ label }: { label?: string }) {
+  return (
+    <div role="status" aria-live="polite">
+      <div className="progress" />
+      {label && (
+        <div className="small muted" style={{ marginTop: 'var(--space-2)' }}>
+          {label}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A checkbox with a third, indeterminate state — "some of this group".
+ *
+ * `indeterminate` is a DOM property, not an attribute, so React cannot set
+ * it through JSX; it has to be written on the node.
+ */
+export function TriCheckbox({
+  checked,
+  indeterminate,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean
+  indeterminate: boolean
+  onChange: () => void
+  label: string
+  disabled?: boolean
+}) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      onChange={onChange}
+      ref={(el) => {
+        if (el) el.indeterminate = !checked && indeterminate
+      }}
+    />
   )
 }
 

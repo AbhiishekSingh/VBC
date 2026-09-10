@@ -104,7 +104,16 @@ const rawPanel = (
   }
 }
 
-function formatBytes(n: number): string {
+/**
+ * Size of a payload, in bytes.
+ *
+ * This was called with `panel.text.length` — a count of UTF-16 code units,
+ * not bytes — and labelled the result "B". Any non-ASCII payload, which is
+ * most Indian address data, under-reported its own size.
+ */
+function formatBytes(text: string): string {
+  const n =
+    typeof TextEncoder === 'undefined' ? text.length : new TextEncoder().encode(text).length
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
@@ -333,7 +342,7 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                             {typeof result.costPaisa === 'number' && result.costPaisa > 0 && (
                               <span>₹{(result.costPaisa / 100).toFixed(2)}</span>
                             )}
-                            <span>{formatBytes(panel.text.length)}</span>
+                            <span>{formatBytes(panel.text)}</span>
                             <button
                               type="button"
                               className="btn sm ghost"
