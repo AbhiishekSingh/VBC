@@ -50,7 +50,6 @@ import {
 } from '@/catalog/generated'
 import {
   Callout,
-  Card,
   Field,
   ProgressBar,
   Tile,
@@ -227,13 +226,6 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   }, [selected])
 
   const missing = useMemo(() => missingInputs(vendor), [vendor])
-
-  /** The page copy used to hard-code "thirty-two checks across eight
-   *  groups". The catalogue holds 47, and it will move again. */
-  const totals = useMemo(() => {
-    const groups = CHECK_GROUPS.filter((g) => CHECKS.some((c) => c.group === g.id))
-    return { checks: CHECKS.length, groups: groups.length }
-  }, [])
 
   const run = async () => {
     setRunning(true)

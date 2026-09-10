@@ -426,7 +426,6 @@ export function ActionBar({
   }, [vendor, index, navigate])
 
   const canBack = !!vendor && index > 0
-  const canNext = !!vendor && index >= 0 && index < FLOW.length - 1
 
   return (
     <div className="actionbar">
@@ -438,8 +437,6 @@ export function ActionBar({
       >
         ← Back
       </button>
-
-      
 
       <div className="row">
         {/* The bar had a Back button and no Next. Forward motion was

@@ -7,7 +7,7 @@
  * not something adjacent to it.
  */
 
-import { Card, LoadingBlock, Meter, SkeletonTable, toneForScan } from '@/components/ui'
+import { Card, LoadingBlock, Meter, toneForScan } from '@/components/ui'
 import { csvRows, downloadBlob } from '@/lib/download'
 import { useVendorList } from '@/hooks/useVendor'
 import { PILLARS } from '@/catalog/generated'
@@ -16,6 +16,22 @@ import type { PillarKey } from '@/types/domain'
 
 export default function Outcome() {
   const { vendors, loading } = useVendorList()
+
+  // Without this the sheet renders an empty table while the request is in
+  // flight, which reads as "no vendors" rather than "not loaded yet".
+  if (loading) {
+    return (
+      <div className="stack">
+        <div>
+          <div className="kicker">Governance</div>
+          <h2 className="page-h">Outcome sheet</h2>
+        </div>
+        <Card title="All vendors" tight>
+          <LoadingBlock label="Computing the sheet…" />
+        </Card>
+      </div>
+    )
+  }
 
   const csv = () => {
     const header = ['Vendor', 'ID', ...PILLARS.map((p) => `${p.key} weighted`), 'Weighted', 'Best', '%', 'Applicable', 'Verdict', 'Policy']
