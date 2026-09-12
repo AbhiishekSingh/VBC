@@ -400,6 +400,34 @@ class VendorCheck(Base):
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
     raw_response: Mapped[dict | None] = mapped_column(JsonB, nullable=True)
 
+    #: The renderable projection of ``raw_response`` — see
+    #: ``app.domain.facts``. DERIVED and disposable: it can be dropped and
+    #: rebuilt from the payload above at any time, which is what makes
+    #: fixing a parse defect free. It carries no PAN, no unmasked contact
+    #: detail and no base64 blob, so it is the column a client-facing screen
+    #: reads while ``raw_response`` stays behind narrower grants.
+    #
+    # The ``comment=`` strings must stay byte-identical to migration 0003's,
+    # or ``alembic revision --autogenerate`` emits a spurious modify_comment
+    # migration on the next run.
+    facts: Mapped[dict | None] = mapped_column(
+        JsonB, nullable=True,
+        comment=(
+            "Renderable projection of raw_response. Derived, disposable, "
+            "rebuildable by re-running the parser over the payload. Carries "
+            "no PAN, no unmasked contact detail and no document body."
+        ),
+    )
+    #: Which parser produced ``facts``. Lets a re-parse be told apart from
+    #: the original, and lets a defective vintage be found and rebuilt.
+    parser_version: Mapped[str | None] = mapped_column(
+        String(16), nullable=True,
+        comment=(
+            "Which parser produced `facts`, so a defective vintage can be "
+            "found and rebuilt."
+        ),
+    )
+
     cost_paisa: Mapped[int] = money()
     credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -418,6 +446,13 @@ class VendorCheck(Base):
         ),
         CheckConstraint("cost_paisa >= 0", name="cost_non_negative"),
         Index("ix_vendor_checks_vendor", "vendor_id"),
+        # Finds every row whose facts need rebuilding after a parser fix.
+        # Partial: rows with no facts at all are the "never parsed" case,
+        # answered by `facts IS NULL`, and should not pay for this index.
+        Index(
+            "ix_vendor_checks_parser_version", "parser_version",
+            postgresql_where=text("parser_version IS NOT NULL"),
+        ),
     )
 
 

@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { CHECKS, CHECK_GROUPS } from '@/catalog/generated'
 import { inputValue } from '@/api/mock'
+import Facts from '@/components/Facts'
 import { Card, EmptyState, STATUS_EXPLANATION, StatusBadge, Tile } from '@/components/ui'
 import type { PageProps } from '@/App'
 import type { CheckStatus, Vendor } from '@/types/domain'
@@ -305,7 +306,13 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                         </span>
                       </span>
 
-                      <span className="acc-cta small">{isOpen ? 'Hide' : 'View'} response</span>
+                      {/* "View response" was accurate and unhelpful: what
+                          opened was a JSON dump. It now opens a readable
+                          breakdown for any check whose parser is written,
+                          with the payload still underneath. */}
+                      <span className="acc-cta small">
+                        {isOpen ? 'Hide' : 'View'} {result.facts ? 'details' : 'response'}
+                      </span>
                     </button>
 
                     {isOpen && (
@@ -330,6 +337,12 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                             </dl>
                           </div>
                         )}
+
+                        {/* Tier two. Above the provenance line and the raw
+                            panel, because this is what the reader came for;
+                            the payload below it is what makes the reading
+                            defensible, which is a different job. */}
+                        <Facts facts={result.facts} />
 
                         <div className="acc-meta">
                           <span className={`small ${panel.isReal ? 'muted' : 'warn-text'}`}>

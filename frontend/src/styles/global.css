@@ -1381,6 +1381,61 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   .toast, .toast.toast-error { max-width: none; }
 }
 
+
+/* ---- facts: tier two ---------------------------------------------------
+ *
+ * Sits between the "what was asked" block and the raw payload panel. Tuned
+ * to read as part of the accordion body rather than as a nested card — a
+ * second card border inside an open row makes the page look like a stack of
+ * boxes and nothing like a document.
+ */
+
+.facts { display: flex; flex-direction: column; gap: var(--space-4); margin-bottom: var(--space-4); }
+
+/* Flags first, and visually heavier than what follows: each one is a reason
+   not to trust the figures underneath it. */
+.fact-flags { gap: var(--space-2); }
+
+.fact-stats { gap: var(--space-2); }
+.fact-stats .tile { padding: var(--space-3); }
+.fact-stats .tile-n { font-size: var(--step-2); }
+
+.fact-fields { gap: var(--space-2); }
+.fact-fields .io-key { min-width: 180px; }
+
+/* `.io-list` was built to echo what an analyst TYPED, so every value there
+   is monospaced — right for an identifier, wrong for a company name, an
+   address or a line of prose, which is most of what a fact field holds.
+   Monospace goes back on only where the parser said the value is an id. */
+.fact-fields .io-val {
+  font-family: inherit; font-size: var(--step-0); word-break: normal; overflow-wrap: anywhere;
+}
+.fact-fields .io-val.mono { font-family: var(--font-mono); font-size: var(--step--1); }
+
+/* A tone on a VALUE, not on the row. Colouring the whole row would make an
+   expired certificate look like an adverse finding about the vendor, which
+   is the confusion the flag/status split exists to prevent. */
+.io-val.f-good { color: var(--pass); }
+.io-val.f-warn { color: var(--warn); }
+.io-val.f-bad  { color: var(--adverse); font-weight: var(--weight-semi); }
+
+.fact-table .table-wrap { max-height: 420px; overflow-y: auto; }
+.fact-table .table th { position: sticky; top: 0; z-index: var(--z-sticky); background: var(--surface-2); }
+.fact-table .table td { font-size: var(--step--1); }
+.fact-table .table td.is-empty { color: var(--ink-4); }
+.fact-table-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3); flex-wrap: wrap; padding-top: var(--space-2);
+}
+
+.fact-empty, .fact-note { margin: 0; }
+.fact-note { font-style: italic; }
+
+.fact-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.fact-doc { border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: var(--space-3); }
+.fact-doc-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.fact-excerpt { margin: var(--space-2) 0 0; }
+
 @media (max-width: 600px) {
   .auth-card { padding: var(--space-6) var(--space-5); }
   .user-text { display: none; }
@@ -1392,4 +1447,9 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .client-card, .tile, .actionbar { transition: none; }
+}
+
+@media (max-width: 600px) {
+  .fact-fields .io-key { min-width: 0; }
+  .fact-table-foot { flex-direction: column; align-items: flex-start; }
 }

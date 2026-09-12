@@ -46,6 +46,27 @@ class Settings(BaseSettings):
     #: against a test key is not evidence the live path works.
     filesure_api_key: str = ""
     filesure_base_url: str = "https://api.filesure.in"
+    #: The ₹150 company update is asynchronous — it returns `pending` and the
+    #: data is NOT fresh when it does. Polling has to fit inside the same
+    #: synchronous request as every other check, and nginx cuts at 120s.
+    filesure_update_poll_budget_seconds: float = 45.0
+    filesure_update_poll_interval_seconds: float = 3.0
+    #: Cooldowns the PROVIDER enforces. Held here so a second call inside the
+    #: window can be refused BEFORE it is made: both endpoints bill on
+    #: request and serve the cache when they are still cooling down, so
+    #: discovering the cooldown from the response means discovering it after
+    #: paying. ₹150 and ₹5 respectively.
+    filesure_update_cooldown_hours: float = 48.0
+    filesure_filings_refresh_cooldown_hours: float = 6.0
+    #: Ceiling on director contact lookups when no DIN is given and the whole
+    #: board is resolved. Each one needs a ₹50 unlock plus the ₹0.05 read, so
+    #: a 25-director board is ₹1,250 from one ticked box — the same trap
+    #: `ecourts_max_orders` exists for. (₹50 per DIRECTOR_UNLOCK_PAISA; the
+    #: docstring on `director_contact` still says ₹10 and is stale.)
+    filesure_max_director_contacts: int = 5
+    #: A director on this many boards is the classic mass-director pattern.
+    #: Not adverse on its own, so it raises a flag and never a status.
+    filesure_directorship_alarm: int = 20
 
     # --- WhoisXML ------------------------------------------------------
     #: One key across all products, but credits are per-product POOLS, not

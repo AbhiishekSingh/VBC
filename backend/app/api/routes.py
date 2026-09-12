@@ -79,7 +79,7 @@ def _serialise(session: Session, vendor: Vendor) -> s.VendorOut:
     checks = {
         row.check_id: s.CheckResultOut(
             checkId=row.check_id, status=row.status, value=row.value,
-            detail=row.detail, rawResponse=row.raw_response,
+            detail=row.detail, facts=row.facts, rawResponse=row.raw_response,
             costPaisa=row.cost_paisa, fetchedAt=row.fetched_at,
         )
         for row in session.scalars(
@@ -461,7 +461,11 @@ def _write_auto_ratings(session: Session, vendor: Vendor, result) -> None:
     # N3 — turnover, from filed financials.
     fin = by_id.get("fin")
     if fin and fin.status.was_examined and fin.raw:
-        revenue = (fin.raw or {}).get("revenue")
+        # ``fin.raw`` now holds {"facts", "payload"} like the master check,
+        # so the payload survives a parse defect. The fallback keeps rows
+        # written by the previous shape readable.
+        raw = fin.raw or {}
+        revenue = (raw.get("facts") or raw).get("revenue")
         if isinstance(revenue, (int, float)):
             crore = revenue / 10_000_000
             value = ("2 Cr / 1 Cr" if crore >= 2
