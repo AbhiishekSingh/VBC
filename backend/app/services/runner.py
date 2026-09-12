@@ -32,7 +32,9 @@ FOUR RULES THIS MODULE EXISTS TO ENFORCE
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -43,8 +45,10 @@ from sqlalchemy.orm import Session
 from app.catalog.checks import CHECKS_BY_ID, expand_selection
 from app.config import Settings, get_settings
 from app.db.models import AuditLog, Unlock, Vendor, VendorCheck, VendorCheckInput
+from app.domain.facts import human_date as _human_date
 from app.domain.types import CheckStatus
 from app.providers import archive as archive_mod
+from app.providers import factsets
 from app.providers import filesure as fs_mod
 from app.providers import ecourts as ec_mod
 from app.providers import finagg as fa_mod
@@ -135,6 +139,12 @@ class Finding:
     value: str = ""
     detail: str = ""
     raw: dict | None = None
+    #: The renderable middle tier — see ``app.domain.facts``. DERIVED from
+    #: ``raw`` and rebuildable from it, so a parse defect is fixed by
+    #: re-running the parser over stored payloads rather than re-paying the
+    #: provider. Never load-bearing: a status is decided before this is
+    #: built, and a screen falls back to ``value``/``detail`` without it.
+    facts: dict | None = None
     cost_paisa: int = 0
     credits: int = 0
     error: str | None = None
@@ -153,6 +163,25 @@ def _first_cnr(prior: dict) -> str | None:
         if row.get("cnr"):
             return row["cnr"]
     return None
+
+
+def _dins_from(prior: dict) -> list[str]:
+    """Every DIN the directors list turned up, if it ran.
+
+    Written as a function because the inline comprehension this replaces had
+    a latent crash: the `if prior.get("dirs")` guard sits AFTER the iterable
+    expression in a comprehension, so `prior.get("dirs").raw` was evaluated
+    before the guard could reject a missing finding. With `dirs` absent —
+    deselected, or a wave that reordered — it raised AttributeError, which
+    `_run_one` caught as "Unexpected error" and recorded UNAVAILABLE. That
+    reports an adapter crash when the truth is simply that no DIN was
+    available, and the two call for very different responses.
+    """
+    found = prior.get("dirs")
+    if found is None or not found.raw:
+        return []
+    rows = found.raw.get("directors") or []
+    return [d["din"] for d in rows if isinstance(d, dict) and d.get("din")]
 
 
 def _order_files(detail_raw: dict) -> list[str]:
@@ -393,6 +422,11 @@ class CheckRunner:
         get = lambda key, default="": inputs.get(check_id, {}).get(key, default)  # noqa: E731
         fs, wx, ar, fa = self.filesure, self.whoisxml, self.archive, self.finagg
         ec = self.ecourts
+        # The name every provider's answer is checked back against. A GSTIN
+        # or CIN typed one character wrong resolves cleanly and returns a
+        # real, healthy registration belonging to somebody else; nothing
+        # else in the pipeline looks for that.
+        subject = vendor.legal_name or vendor.name
 
         # ---- MCA ----------------------------------------------------
         if check_id == "ustatus":
@@ -403,6 +437,61 @@ class CheckRunner:
                 f"Expires {status.expires_at}." if status.expires_at
                 else "No active unlock on file.",
                 raw=status.__dict__,
+                facts=factsets.unlock_status(status.__dict__),
+            )
+
+        if check_id == "refresh":
+            if not cin:
+                return Finding(check_id, CheckStatus.SKIP, "N/A", "No CIN.")
+            # ₹150 and a 48-hour cooldown — by a wide margin the most
+            # expensive way to get nothing in this system. Refused before
+            # the call, not diagnosed after it.
+            cooling, until = self._cooling_down(
+                vendor.id, check_id, self.settings.filesure_update_cooldown_hours)
+            if cooling:
+                raise PaidCallRefused(
+                    f"This company was updated from MCA too recently — the "
+                    f"source's 48-hour cooldown lifts {_human_date(until)} "
+                    f"{until:%H:%M} UTC. Calling now bills ₹150 and returns "
+                    f"the same data."
+                )
+
+            triggered = fs.trigger_update(cin)
+            triggered["_fetched_at"] = datetime.now(timezone.utc).isoformat()
+
+            # The data is NOT fresh when trigger_update returns — it answers
+            # `pending`. Polling is free. Reading master data without it
+            # means reading the stale values just paid to replace.
+            budget = self.settings.filesure_update_poll_budget_seconds
+            interval = self.settings.filesure_update_poll_interval_seconds
+            deadline = time.monotonic() + budget
+            state = triggered
+            polls = 0
+            while time.monotonic() < deadline:
+                status_text = str(state.get("status") or "").lower()
+                if status_text in ("completed", "complete", "done", "success", "failed"):
+                    break
+                time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+                state = fs.update_status(cin)
+                polls += 1
+
+            final = str(state.get("status") or "unknown").lower()
+            done = final in ("completed", "complete", "done", "success")
+            payload = {"trigger": triggered, "status": state, "polls": polls,
+                       "_fetched_at": triggered["_fetched_at"]}
+            return Finding(
+                check_id,
+                CheckStatus.PASS if done else CheckStatus.WARN,
+                "Company data refreshed" if done else f"Update {final}",
+                (f"Completed after {polls} poll(s). Re-run the company master "
+                 f"check to read the refreshed record."
+                 if done else
+                 f"Charged and still running after {polls} poll(s) — the poll "
+                 f"budget ({budget:.0f}s) ran out, not the job. It continues "
+                 f"on the source's side; re-run the company master check "
+                 f"later rather than paying for a second update."),
+                raw=payload,
+                facts=factsets.company_update(triggered, state, polls=polls, done=done),
             )
 
         if check_id == "master":
@@ -422,6 +511,7 @@ class CheckRunner:
                 f"₹{(facts.get('paidup_capital') or 0) / 10_000_000:.2f} Cr"
                 + (" · company has been renamed previously" if renamed else ""),
                 raw={"facts": facts, "payload": payload},
+                facts=factsets.master(facts, subject=subject),
             )
 
         if check_id == "dirs":
@@ -439,6 +529,7 @@ class CheckRunner:
                 if disqualified else
                 ", ".join(f"{d['name']} (DIN {d['din']})" for d in directors) or "None listed.",
                 raw={"directors": directors},
+                facts=factsets.directors(directors),
             )
 
         if check_id == "charges":
@@ -449,7 +540,7 @@ class CheckRunner:
             if not open_charges:
                 return Finding(check_id, CheckStatus.PASS, "No open charges",
                                f"{len(charges['closed'])} historical charges, all satisfied.",
-                               raw=charges)
+                               raw=charges, facts=factsets.charges(charges))
             return Finding(
                 check_id, CheckStatus.WARN,
                 f"{len(open_charges)} open charge · ₹{charges['open_total'] / 10_000_000:.2f} Cr",
@@ -459,6 +550,7 @@ class CheckRunner:
                     for c in open_charges
                 ),
                 raw=charges,
+                facts=factsets.charges(charges),
             )
 
         if check_id == "resolve":
@@ -470,7 +562,8 @@ class CheckRunner:
                 return Finding(check_id, CheckStatus.WARN, "No CIN found",
                                "No MCA registration traced — consistent with a "
                                "proprietorship or partnership firm.",
-                               raw={"candidates": []})
+                               raw={"candidates": []},
+                               facts=factsets.resolve_candidates([], subject=subject))
             top = candidates[0]
             strong = [c for c in candidates if (c.get("matchScore") or 0) >= 0.9]
             if len(strong) > 1:
@@ -480,11 +573,14 @@ class CheckRunner:
                     "ambiguity is surfaced rather than resolved automatically — "
                     "auditing the wrong company is worse than auditing none.",
                     raw={"candidates": candidates},
+                    facts=factsets.resolve_candidates(candidates, subject=subject),
                 )
             return Finding(check_id, CheckStatus.PASS,
                            f"{top.get('cin')} · {top.get('company')}",
                            f"Match score {top.get('matchScore')}.",
-                           raw={"candidates": candidates})
+                           raw={"candidates": candidates},
+                           facts=factsets.resolve_candidates(candidates,
+                                                             subject=subject))
 
         if check_id == "filings":
             if not cin:
@@ -497,7 +593,8 @@ class CheckRunner:
             if not rows:
                 return Finding(check_id, CheckStatus.WARN, "No filings returned",
                                "MCA holds no filings matching this filter.",
-                               raw={"rows": [], "meta": meta})
+                               raw={"rows": [], "meta": meta},
+                               facts=factsets.filings([], meta))
             latest = rows[0]
             return Finding(
                 check_id, CheckStatus.PASS, "Filings on record",
@@ -505,6 +602,74 @@ class CheckRunner:
                 f"{latest.get('dateOfFiling')} · {meta.get('total', len(rows))} total "
                 f"(page limit honoured: {meta.get('limit')})",
                 raw={"rows": rows, "meta": meta},
+                facts=factsets.filings(rows, meta),
+            )
+
+        if check_id == "download":
+            filing_id = get("filingId")
+            if not cin or not filing_id:
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No filing selected",
+                               "Pick a filing from the filing history first — "
+                               "the download is by filing ID.")
+            content = fs.download_filing(cin, filing_id)
+            if not content:
+                return Finding(check_id, CheckStatus.UNAVAILABLE, "Empty document",
+                               "The source returned no bytes for this filing. "
+                               "Recorded as unexamined, not as a missing filing.",
+                               raw={"filingId": filing_id, "bytes": 0})
+
+            # The PDF itself cannot go in JSONB and there is no document
+            # store yet. A SHA-256 is kept so the file that was fetched can
+            # still be IDENTIFIED later — which is most of what evidence
+            # needs to do — and the gap is stated rather than implied.
+            digest = hashlib.sha256(content).hexdigest()
+            return Finding(
+                check_id, CheckStatus.PASS, f"Document retrieved · {len(content):,} bytes",
+                f"SHA-256 {digest[:16]}… — the document is identified but NOT "
+                f"retained: no document store is configured, so the bytes are "
+                f"not attached to this report.",
+                raw={
+                    "filingId": filing_id, "cin": cin, "bytes": len(content),
+                    "sha256": digest,
+                    "_note": ("The document body is not stored. This record "
+                              "identifies what was fetched; it is not the "
+                              "document."),
+                },
+                facts=factsets.filing_document(filing_id, len(content), digest),
+            )
+
+        if check_id == "frefresh":
+            if not cin:
+                return Finding(check_id, CheckStatus.SKIP, "N/A", "No CIN.")
+            # BEFORE the call, never after: this endpoint bills on request
+            # and serves the cache while cooling down, so a cooldown read
+            # from the response is a cooldown discovered after paying ₹5.
+            cooling, until = self._cooling_down(
+                vendor.id, check_id, self.settings.filesure_filings_refresh_cooldown_hours)
+            if cooling:
+                raise PaidCallRefused(
+                    f"Filings were last refreshed too recently — the source's "
+                    f"cooldown lifts {_human_date(until)} "
+                    f"{until:%H:%M} UTC. Calling now bills ₹5 and returns the "
+                    f"same cached filings."
+                )
+            data = fs.refresh_filings(cin)
+            data["_fetched_at"] = datetime.now(timezone.utc).isoformat()
+            cached = bool(data.get("fromCache") or data.get("from_cache"))
+            return Finding(
+                check_id,
+                CheckStatus.WARN if cached else CheckStatus.PASS,
+                "Served from cache" if cached else "Refresh requested",
+                ("Billed, but no fresh pull from MCA happened — the source "
+                 "returned its cache. The filings on file are no newer than "
+                 "they were."
+                 if cached else
+                 "MCA filings refresh queued. Re-run the filing history check "
+                 "afterwards to read the new data."),
+                raw=data,
+                facts=factsets.refresh_receipt(data, what="Filings refresh",
+                                               cached=cached),
             )
 
         if check_id == "fin":
@@ -532,14 +697,17 @@ class CheckRunner:
                 f"{facts['scope']} · FY ending {facts['period_end']} · net worth "
                 f"₹{(facts['net_worth'] or 0) / 10_000_000:.2f} Cr"
                 + (f" · filing gaps in {gaps}" if gaps else ""),
-                raw=facts,
+                # Was ``raw=facts``: the normaliser's output was stored and
+                # the provider's own response thrown away. A parse defect
+                # here could not be detected afterwards, let alone corrected,
+                # because the bytes it misread were gone. Both are kept now,
+                # under the same two keys the master check uses.
+                raw={"facts": facts, "payload": data},
+                facts=factsets.financials(facts),
             )
 
         if check_id == "dprof":
-            dins = [get("din")] if get("din") else [
-                d["din"] for d in (prior.get("dirs").raw or {}).get("directors", [])
-                if prior.get("dirs") and prior["dirs"].raw
-            ]
+            dins = [get("din")] if get("din") else _dins_from(prior)
             dins = [d for d in dins if d]
             if not dins:
                 return Finding(check_id, CheckStatus.SKIP, "N/A", "No DIN available.")
@@ -554,7 +722,82 @@ class CheckRunner:
             )
             return Finding(check_id, CheckStatus.PASS, f"{len(profiles)} profiles retrieved",
                            f"{active_elsewhere} active directorships across all profiles.",
-                           raw={"profiles": profiles})
+                           raw={"profiles": profiles},
+                           facts=factsets.director_profiles(profiles))
+
+        if check_id == "dresolve":
+            query = get("q")
+            if not query.strip():
+                return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                               "No name to resolve",
+                               "A DIN lookup needs a director's name as filed "
+                               "with MCA; an informal or shortened name will "
+                               "not match.")
+            candidates = fs.resolve_director(query, limit=int(get("limit", 10) or 10))
+            if not candidates:
+                return Finding(check_id, CheckStatus.WARN, "No DIN found",
+                               f"MCA holds no director matching '{query}'. A "
+                               f"person can hold no DIN and still be an "
+                               f"officer, so this is a gap, not a clearance.",
+                               raw={"candidates": candidates},
+                               facts=factsets.director_candidates(candidates, query=query))
+
+            # totalDirectorshipCount is free and is the one genuinely
+            # interesting number this endpoint returns: an implausible board
+            # count is the classic mass-director / dummy-director pattern.
+            alarm = self.settings.filesure_directorship_alarm
+            loaded = [c for c in candidates
+                      if (c.get("totalDirectorshipCount") or 0) >= alarm]
+            top = candidates[0]
+            return Finding(
+                check_id,
+                CheckStatus.WARN if (len(candidates) > 1 or loaded) else CheckStatus.PASS,
+                f"{top.get('din')} · {top.get('name')}"
+                if len(candidates) == 1 else f"{len(candidates)} possible matches",
+                (f"{len(loaded)} of these sit on {alarm}+ boards — the "
+                 f"mass-director pattern. Confirm which person is meant "
+                 f"before a DIN is used downstream."
+                 if loaded else
+                 f"Directorship counts: "
+                 + ", ".join(f"{c.get('name')} {c.get('totalDirectorshipCount')}"
+                             for c in candidates[:5])),
+                raw={"candidates": candidates},
+                facts=factsets.director_candidates(
+                    candidates, query=query, alarm=alarm),
+            )
+
+        if check_id == "dcontact":
+            # Blank DIN means "every director found on the company", which is
+            # a ₹50 unlock EACH plus the ₹0.05 read — ₹1,250 for a 25-person
+            # board. Capped for the same reason ecourts_max_orders exists:
+            # one ticked box must not become an unbounded bill.
+            dins = ([get("din")] if get("din") else _dins_from(prior))
+            dins = [d for d in dins if d][: self.settings.filesure_max_director_contacts]
+            if not dins:
+                return Finding(check_id, CheckStatus.SKIP, "N/A",
+                               "No DIN available — run the directors list "
+                               "first, or supply one.")
+            contacts, unlocked_now = [], 0
+            for din in dins:
+                _, purchased = fs.ensure_director_unlocked(din)
+                unlocked_now += 1 if purchased else 0
+                record = fs.director_contact(din)
+                record["din"] = din
+                contacts.append(record)
+
+            reachable = sum(1 for c in contacts if c.get("email") or c.get("mobile"))
+            return Finding(
+                check_id,
+                CheckStatus.PASS if reachable else CheckStatus.WARN,
+                f"{reachable} of {len(contacts)} contactable",
+                (f"{unlocked_now} director unlock(s) purchased this run. "
+                 f"Mobile numbers are returned masked by MCA."
+                 if reachable else
+                 "MCA holds no contact details for these directors — common "
+                 "where filings were made through a practitioner."),
+                raw={"contacts": contacts},
+                facts=factsets.director_contacts(contacts),
+            )
 
         # ---- WhoisXML ------------------------------------------------
         if check_id == "whois":
@@ -570,6 +813,7 @@ class CheckRunner:
                 f"{data.get('registrant') or 'privacy-protected'} · "
                 f"{data.get('registrar_changes')} registrar change(s)",
                 raw=data, credits=50 if mode == "purchase" else 0,
+                facts=factsets.whois(data),
             )
 
         if check_id == "reput":
@@ -582,14 +826,16 @@ class CheckRunner:
                 f"Trust score {score}",
                 "; ".join(w["warning"] for w in data["warnings"]) or "No warnings raised.",
                 raw=data, credits=1,
+                facts=factsets.reputation(data),
             )
 
         if check_id == "ssl":
-            data = wx.ssl_certificate(get("domainName", vendor.domain or ""))
+            domain = get("domainName", vendor.domain or "")
+            data = wx.ssl_certificate(domain)
             if not data.get("present"):
                 return Finding(check_id, CheckStatus.FAIL, "No certificate",
                                "No SSL certificate served for this domain.", raw=data,
-                               credits=1)
+                               credits=1, facts=factsets.ssl(data, domain=domain))
             trusted = data.get("trusted_ca")
             return Finding(
                 check_id,
@@ -598,6 +844,11 @@ class CheckRunner:
                 f"{data.get('issuer')} · valid to {data.get('valid_to')}"
                 + (" · wildcard" if data.get("wildcard") else ""),
                 raw=data, credits=1,
+                # Expiry and host mismatch are raised as FLAGS, not as a
+                # status. A certificate issued to a related host is a fact
+                # about the evidence, and a parser does not get to decide it
+                # makes the vendor adverse.
+                facts=factsets.ssl(data, domain=domain),
             )
 
         if check_id == "rwhois":
@@ -610,19 +861,22 @@ class CheckRunner:
             if not data.get("queried"):
                 return Finding(check_id, CheckStatus.SKIP, "No registrant to search",
                                "Ownership history returned no registrant value, so a "
-                               "portfolio search would have been meaningless.", raw=data)
+                               "portfolio search would have been meaningless.", raw=data,
+                               facts=factsets.reverse_whois(data))
             return Finding(check_id, CheckStatus.PASS,
                            f"{data['count']} domains, same owner",
                            f"Searched on '{data['term']}'. A varied portfolio is "
                            f"consistent with an agency; near-identical variants of "
                            f"one brand would suggest typosquatting.",
-                           raw=data, credits=1)
+                           raw=data, credits=1,
+                           facts=factsets.reverse_whois(data))
 
         if check_id == "shot":
-            image = wx.screenshot(get("url", vendor.website or ""),
-                                  image_format=get("imageOutputFormat", "JPG"))
+            url = get("url", vendor.website or "")
+            image = wx.screenshot(url, image_format=get("imageOutputFormat", "JPG"))
             return Finding(check_id, CheckStatus.PASS, "Screenshot captured",
-                           f"{len(image)} bytes.", raw={"bytes": len(image)})
+                           f"{len(image)} bytes.", raw={"bytes": len(image)},
+                           facts=factsets.screenshot(len(image), url or None))
 
         # ---- archive.org --------------------------------------------
         if check_id == "avail":
@@ -631,9 +885,10 @@ class CheckRunner:
             if not data["archived"]:
                 return Finding(check_id, CheckStatus.FAIL, "Never archived",
                                "archived_snapshots is empty — no web presence on record.",
-                               raw=data)
+                               raw=data, facts=factsets.availability(data))
             return Finding(check_id, CheckStatus.PASS, "Archived",
-                           f"Last captured {data.get('last_seen')}.", raw=data)
+                           f"Last captured {data.get('last_seen')}.", raw=data,
+                           facts=factsets.availability(data))
 
         if check_id == "cdx":
             data = ar.timeline(
@@ -646,7 +901,8 @@ class CheckRunner:
             outages = data.get("outages") or []
             if data["captures"] == 0:
                 return Finding(check_id, CheckStatus.FAIL, "No captures",
-                               "No archived snapshots at all.", raw=data)
+                               "No archived snapshots at all.", raw=data,
+                               facts=factsets.timeline(data))
             return Finding(
                 check_id,
                 CheckStatus.PASS if data["continuous"] else CheckStatus.WARN,
@@ -657,19 +913,20 @@ class CheckRunner:
                     f"{o['status']} from {o['from']} to {o['to']}" for o in outages[:3]
                 ) if outages else ""),
                 raw=data,
+                facts=factsets.timeline(data),
             )
 
         if check_id == "mentions":
             data = ar.mentions(get("q", vendor.name), rows=int(get("rows", 50) or 50))
             return Finding(check_id, CheckStatus.PASS, f"{data['found']} loose hits",
-                           data["note"], raw=data)
+                           data["note"], raw=data, facts=factsets.mentions(data))
 
         if check_id == "usage":
             data = fs.account_usage()
             balance = (data.get("wallet") or {}).get("balancePaisa", 0)
             return Finding(check_id, CheckStatus.PASS,
                            f"Wallet ₹{balance / 100:,.2f}", "Account usage retrieved.",
-                           raw=data)
+                           raw=data, facts=factsets.usage(data))
 
         # ---- GST · FinAGG GSP -----------------------------------------
         #
@@ -703,6 +960,10 @@ class CheckRunner:
                    f"place(s) of business"
                    if data.get("additional_place_count") else ""),
                 raw=data,
+                # The entity-mismatch flag lives here. A GSTIN one character
+                # wrong returns a real, active registration belonging to
+                # someone else — PASS, clean detail line, wrong company.
+                facts=factsets.gst(data, subject=subject),
             )
 
         if check_id == "gstret":
@@ -733,7 +994,8 @@ class CheckRunner:
                     f" · read from FY {data['financial_year']}: the current "
                     f"financial year has no filings due yet"
                 )
-            return Finding(check_id, status, value, detail, raw=data)
+            return Finding(check_id, status, value, detail, raw=data,
+                           facts=factsets.gst_returns(data))
 
         if check_id == "courtsearch":
             party = get("parties", vendor.legal_name or vendor.name or "")
@@ -760,6 +1022,11 @@ class CheckRunner:
                  if count else
                  f"Searched {', '.join(data['query'])} with no matches."),
                 raw=data,
+                # Two flags nothing else catches: a search term that drifted
+                # from the vendor's legal name, and results that carry a CNR
+                # and nothing else. Twenty index stubs currently read as
+                # twenty cases found.
+                facts=factsets.case_search(data, subject=subject),
             )
 
         if check_id == "courthearing":
@@ -782,6 +1049,7 @@ class CheckRunner:
                 "historical." if listed else
                 "None of the matched cases are currently listed.",
                 raw=data,
+                facts=factsets.hearings(data),
             )
 
         if check_id == "casedetail":
@@ -812,6 +1080,11 @@ class CheckRunner:
                     f"{data['order_count']} order(s)" if data.get("order_count") else None,
                 ])),
                 raw=data,
+                # The payload carries every field twice — flattened, and
+                # again inside court_case_data under camelCase names. The
+                # reconciliation happens in the parser; the screen sees one
+                # set of fields, not two spellings of the same case.
+                facts=factsets.case_detail(data),
             )
 
         if check_id in ("courtorders", "courtorderai"):
@@ -843,6 +1116,11 @@ class CheckRunner:
                     "— it is a sourced finding, not registry fact."
                     if check_id == "courtorderai" else "")),
                 raw={"cnr": cnr, "orders": fetched},
+                # pdf_base64 stays in raw. The facts blob carries a title, a
+                # size and an excerpt — a 50 KB base64 string per order has
+                # no business reaching a browser inline.
+                facts=factsets.orders(cnr, fetched,
+                                      generated=check_id == "courtorderai"),
             )
 
         if check_id == "causelist":
@@ -868,27 +1146,52 @@ class CheckRunner:
                     if more else ""))
                 if count else "Nothing scheduled under this name.",
                 raw=data,
+                facts=factsets.causelist(data, subject=subject),
             )
         # ---- Admin · reference data. No SCAN parameter, no risk rule. ----
+        #
+        # These are REFERENCE shape on purpose. They are real calls with real
+        # responses, but they describe the API rather than the vendor, and
+        # rendering them among the findings puts a list of sortable field
+        # names in front of a client with no explanation of why it is in
+        # their report.
         if check_id == "courtcaps":
             data = ec.search_capabilities()
             return Finding(check_id, CheckStatus.PASS,
                            f"{len(data['fields'])} searchable field(s)",
                            "The authoritative list of Case Search filters.",
-                           raw=data)
+                           raw=data,
+                           facts=factsets.catalog(
+                               "The filters this account's Case Search accepts. "
+                               "Checked before every search so an unsupported "
+                               "filter fails loudly instead of being ignored.",
+                               list(data.get("fields") or []),
+                           ))
 
         if check_id == "courtenums":
             data = ec.enums(get("types", "caseStatus,benchType") or "caseStatus,benchType")
             return Finding(check_id, CheckStatus.PASS,
                            f"{len(data)} enum group(s)",
-                           "Live codes — fetched rather than hard-coded.", raw=data)
+                           "Live codes — fetched rather than hard-coded.", raw=data,
+                           facts=factsets.catalog(
+                               "Case status and bench type codes, read live from "
+                               "the source rather than hard-coded here.",
+                               list(data.keys()) if isinstance(data, dict) else [],
+                           ))
 
         if check_id == "courtstructure":
             rows = ec.court_structure(get("state") or None,
                                       get("districtCode") or None)
             return Finding(check_id, CheckStatus.PASS, f"{len(rows)} entries",
                            "High courts appear as districts and the Supreme "
-                           "Court as a state.", raw={"rows": rows})
+                           "Court as a state.", raw={"rows": rows},
+                           facts=factsets.catalog(
+                               "The court hierarchy this search covers. High "
+                               "courts appear as districts and the Supreme Court "
+                               "as a state.",
+                               [str(r.get("name") or r.get("district") or r)
+                                for r in rows if isinstance(r, (dict, str))],
+                           ))
 
         if check_id == "courtdates":
             dates = ec.available_dates(
@@ -897,7 +1200,11 @@ class CheckRunner:
                 courtNo=get("courtNo"), court=get("court"),
             )
             return Finding(check_id, CheckStatus.PASS, f"{len(dates)} date(s)",
-                           "Dates holding cause-list data.", raw={"dates": dates})
+                           "Dates holding cause-list data.", raw={"dates": dates},
+                           facts=factsets.catalog(
+                               "Dates for which this court has cause-list data.",
+                               [_human_date(d) or str(d) for d in dates],
+                           ))
 
         if check_id == "caserefresh":
             cnr = get("cnr") or _first_cnr(prior)
@@ -911,6 +1218,7 @@ class CheckRunner:
                 f"{data.get('estimated_time') or 'a few seconds'}. Re-run the "
                 f"case detail check afterwards to see refreshed data.",
                 raw=data,
+                facts=factsets.job_receipt(data, what="A case refresh"),
             )
 
         if check_id == "courtchecks":
@@ -920,7 +1228,14 @@ class CheckRunner:
             )
             return Finding(check_id, CheckStatus.PASS,
                            f"{len(data['items'])} legal check(s)",
-                           "Every check submitted on this account.", raw=data)
+                           "Every check submitted on this account.", raw=data,
+                           facts=factsets.catalog(
+                               "Legal checks submitted on this account — an "
+                               "account-level record, not a finding about this "
+                               "vendor.",
+                               [str((i or {}).get("code") or i)
+                                for i in (data.get("items") or [])],
+                           ))
 
         # ---- Litigation · eCourtsIndia LegalCheck ---------------------
         if check_id == "court":
@@ -976,12 +1291,63 @@ class CheckRunner:
                 detail = (f"{count} matter(s) matched at {confidence}% identity "
                           f"confidence · model {data.get('model')}")
 
-            return Finding(check_id, status, value, detail, raw=data)
+            return Finding(check_id, status, value, detail, raw=data,
+                           facts=factsets.legal_check(data))
 
         return Finding(check_id, CheckStatus.SKIP, "Not implemented",
                        f"No runner is wired for check '{check_id}'.")
 
     # =================================================================
+
+    def _prior_raw(self, vendor_id: str, check_id: str) -> dict:
+        """What a previous run stored for this check, if anything.
+
+        Used by the two cooldown guards. Both refresh endpoints bill on
+        request and serve the cache while they are cooling down, so the
+        cooldown has to be read from what we already know rather than from
+        the response — by then the money is spent.
+        """
+        row = self.session.query(VendorCheck).filter(
+            VendorCheck.vendor_id == vendor_id,
+            VendorCheck.check_id == check_id,
+        ).one_or_none()
+        if row is None or not isinstance(row.raw_response, dict):
+            return {}
+        return row.raw_response
+
+    def _cooling_down(
+        self, vendor_id: str, check_id: str, hours: float,
+    ) -> tuple[bool, datetime | None]:
+        """Is this paid refresh still inside the provider's cooldown?
+
+        Prefers ``cooldownUntil`` as the provider reported it; falls back to
+        the last fetch plus the configured window when the provider did not
+        say. Returns the moment it lifts so the message can name it.
+        """
+        prior = self._prior_raw(vendor_id, check_id)
+        now = datetime.now(timezone.utc)
+
+        stated = prior.get("cooldownUntil") or prior.get("cooldown_until")
+        if stated:
+            try:
+                until = datetime.fromisoformat(str(stated).replace("Z", "+00:00"))
+                if until.tzinfo is None:
+                    until = until.replace(tzinfo=timezone.utc)
+                return until > now, until
+            except ValueError:
+                logger.info("%s: unparseable cooldownUntil %r", check_id, stated)
+
+        fetched = prior.get("_fetched_at")
+        if fetched:
+            try:
+                last = datetime.fromisoformat(str(fetched).replace("Z", "+00:00"))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                until = last + timedelta(hours=hours)
+                return until > now, until
+            except ValueError:
+                pass
+        return False, None
 
     def _prior_legal_check_code(self, vendor_id: str) -> str | None:
         """The LegalCheck code a previous run left behind, if any.
@@ -1007,7 +1373,9 @@ class CheckRunner:
                 if not res.matched:
                     return Finding(check_id, CheckStatus.PASS, "No duplicate",
                                    f"No match across {res.compared_against} vendors.",
-                                   raw=res.as_payload())
+                                   raw=res.as_payload(),
+                                   facts=factsets.inhouse(res.as_payload(),
+                                                          kind="duplicate"))
                 top = res.matches[0]
                 return Finding(
                     check_id,
@@ -1015,6 +1383,7 @@ class CheckRunner:
                     f"Possible duplicate of #{top['vendorId']}",
                     f"{top['rule']} ({top['confidence']}): {top['detail']}",
                     raw=res.as_payload(),
+                    facts=factsets.inhouse(res.as_payload(), kind="duplicate"),
                 )
 
             if check_id == "rp":
@@ -1022,11 +1391,16 @@ class CheckRunner:
                 if not res.matched:
                     return Finding(check_id, CheckStatus.PASS, "No related party",
                                    f"No shared directors or addresses across "
-                                   f"{res.compared_against} vendors.", raw=res.as_payload())
+                                   f"{res.compared_against} vendors.",
+                                   raw=res.as_payload(),
+                                   facts=factsets.inhouse(res.as_payload(),
+                                                          kind="related party"))
                 top = res.matches[0]
                 return Finding(check_id, CheckStatus.WARN,
                                f"Related to #{top['vendorId']}", top["detail"],
-                               raw=res.as_payload())
+                               raw=res.as_payload(),
+                               facts=factsets.inhouse(res.as_payload(),
+                                                      kind="related party"))
 
             if check_id == "conflict":
                 res = inhouse.check_conflict(self.session, vendor)
@@ -1037,15 +1411,20 @@ class CheckRunner:
                         "No employee register is connected, so nothing was compared. "
                         "This is a coverage gap, not a clean result.",
                         raw=res.as_payload(),
+                        facts=factsets.inhouse(res.as_payload(), kind="conflict"),
                     )
                 if not res.matched:
                     return Finding(check_id, CheckStatus.PASS, "No conflict",
                                    f"No overlap across {res.compared_against} employees.",
-                                   raw=res.as_payload())
+                                   raw=res.as_payload(),
+                                   facts=factsets.inhouse(res.as_payload(),
+                                                          kind="conflict"))
                 top = res.matches[0]
                 return Finding(check_id, CheckStatus.FAIL, "Conflict of interest",
                                f"{top['rule']}: director matches employee "
-                               f"{top.get('employee')}.", raw=res.as_payload())
+                               f"{top.get('employee')}.", raw=res.as_payload(),
+                               facts=factsets.inhouse(res.as_payload(),
+                                                      kind="conflict"))
         except Exception as exc:  # noqa: BLE001
             logger.exception("in-house check %s failed", check_id)
             return Finding(check_id, CheckStatus.UNAVAILABLE, "Check failed",
@@ -1173,6 +1552,12 @@ class CheckRunner:
             # The real payload — this is what makes a historical score
             # defensible. Never a template in production.
             row.raw_response = finding.raw
+            # Derived, and deliberately overwritten on every run: facts are a
+            # projection of the payload above, so the newest parser always
+            # wins. Nothing is lost by replacing them — the evidence they
+            # came from is in the column above, under its own trigger.
+            row.facts = finding.facts
+            row.parser_version = (finding.facts or {}).get("parserVersion")
             row.cost_paisa = finding.cost_paisa
             row.credits = finding.credits
             row.error = finding.error

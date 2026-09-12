@@ -23,6 +23,18 @@ class CheckResultOut(ApiModel):
     status: str
     value: str = ""
     detail: str = ""
+    #: The renderable middle tier — see `app.domain.facts`. Without this the
+    #: parser's output stops dead at the API boundary: written to the
+    #: database, never sent, and the screen has nothing between a one-line
+    #: summary and twenty kilobytes of provider JSON. That was the original
+    #: defect; omitting the field here recreates it exactly.
+    #:
+    #: `Any`, deliberately, and not a typed model: the shape is declared once
+    #: in `contract.ts` as `CheckFacts` and validating it a second time here
+    #: would mean two definitions that can disagree. Facts are also derived
+    #: and never load-bearing, so a malformed blob must degrade to "no middle
+    #: tier" rather than fail the whole vendor response.
+    facts: Any | None = None
     rawResponse: Any | None = None
     costPaisa: int = 0
     fetchedAt: datetime | None = None

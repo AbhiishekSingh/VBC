@@ -462,7 +462,11 @@ class FileSureProvider(HttpProvider):
         return self._data(response)
 
     def director_contact(self, din: str) -> dict:
-        """Mobile is returned MASKED. Requires a ₹10 director unlock."""
+        """Mobile is returned MASKED. Requires a ₹50 director unlock.
+
+        Said ₹10 here until 12 Sep 2026. DIRECTOR_UNLOCK_PAISA and the
+        pricing table both say 5_000 paisa, and test_pricing pins it — so
+        the number in this docstring was the only wrong one."""
         response = self._call("GET", f"/v1/directors/{din}/contact", paisa=CHEAP_PAISA)
         return self._data(response)
 
