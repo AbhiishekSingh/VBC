@@ -1434,7 +1434,13 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .fact-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .fact-doc { border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: var(--space-3); }
 .fact-doc-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.fact-excerpt { margin: var(--space-2) 0 0; }
+.fact-excerpt {
+  margin: var(--space-2) 0 0;
+  /* Court orders arrive with real line breaks — numbered paragraphs, a
+     bench line, a date. Collapsing them into one run of prose loses the
+     shape of the document a person is trying to read. */
+  white-space: pre-wrap;
+}
 
 @media (max-width: 600px) {
   .auth-card { padding: var(--space-6) var(--space-5); }

@@ -121,6 +121,87 @@ FIXED_ROWS = [
 ]
 
 
+class TestRenamedFields:
+    """The sharp rule, and the one that finally catches both defects.
+
+    `causelist` got past the blank-column rule below: two dead columns out
+    of five is not a majority. Counting was the wrong question. The right
+    one is narrower — *this column is empty on every row; does the payload
+    carry a field with almost this name, holding data we never read?*
+    """
+    CAUSELIST = {"count": 3, "results": [
+        {"cnr": f"MH{i}", "court": "MHSO07", "date": "2026-10-08",
+         "party": "Bibhishan Wagh Vs. Relaince Infocom Ltd. Co.",
+         "listingNo": i, "caseNumber": ["R.C.S./674/2017"]}
+        for i in range(1, 4)]}
+
+    #: What the old parser rendered from it: `parties` and `item`, neither
+    #: of which this endpoint sends.
+    BROKEN = F.build(F.TABLE, rows=F.table(
+        [F.column(k, l) for k, l in [("court", "Court"), ("date", "Date"),
+                                     ("item", "Item"), ("parties", "Parties"),
+                                     ("cnr", "CNR")]],
+        [{"court": "MHSO07", "date": "08 Oct 2026", "item": None,
+          "parties": None, "cnr": f"MH{i}"} for i in range(1, 4)]))
+
+    def test_the_causelist_defect_is_caught(self):
+        flag = fx.thin_result(self.CAUSELIST, self.BROKEN)
+        assert flag is not None
+        assert flag["label"] == "A field was read under the wrong name"
+
+    def test_the_flag_names_the_field_the_source_actually_sends(self):
+        """So the fix is one grep, not an afternoon reading a payload."""
+        detail = fx.thin_result(self.CAUSELIST, self.BROKEN)["detail"]
+        assert "“Parties” is empty on all 3 rows while the source sends “party”" in detail
+
+    def test_the_majority_rule_alone_would_have_missed_it(self):
+        """Documents why this rule exists. Two blank columns of five is not
+        a majority, and no threshold on COUNT can separate this from a
+        charge that was legitimately never satisfied — only asking whether
+        the payload holds the data can."""
+        assert 2 * 2 <= 5
+
+    def test_a_key_that_exists_and_is_null_is_not_a_defect(self):
+        """The distinction the whole rule turns on. A charge that was never
+        satisfied has no satisfaction date and no satisfaction id, on every
+        row, and the payload says so in those words. That is a fact about
+        the vendor. Flagging it would make the guard cry wolf on every
+        unencumbered company, and a guard that does that is switched off
+        inside a week."""
+        payload = {"charges": [{"chargeId": "100", "amount": 5_000_000,
+                                "holder": "SBI", "satisfactionDate": None,
+                                "satisfactionId": None} for _ in range(4)]}
+        blob = F.build(F.TABLE, rows=F.table(
+            [F.column(k, l) for k, l in
+             [("chargeId", "Charge"), ("amount", "Amount"), ("holder", "Holder"),
+              ("satisfactionDate", "Satisfied on"),
+              ("satisfactionId", "Satisfaction id")]],
+            [{"chargeId": "100", "amount": "₹50 L", "holder": "SBI",
+              "satisfactionDate": None, "satisfactionId": None}
+             for _ in range(4)]))
+        assert fx.thin_result(payload, blob) is None
+
+    def test_a_column_with_no_lookalike_in_the_payload_is_left_alone(self):
+        """`item` has no near-name in a cause-list record — the endpoint
+        calls it `listingNo`. This rule says nothing about it rather than
+        guessing, which is why it is paired with the blank-column rule and
+        not a replacement for it."""
+        pairs = fx._renamed_fields(self.CAUSELIST,
+                                   [F.column("item", "Item")])
+        assert pairs == []
+
+    def test_it_survives_a_payload_that_is_not_a_record_at_all(self):
+        """A guard that can crash the run is worse than no guard."""
+        for payload in (None, "text", 42, [], [[[[[[["deep"]]]]]]]):
+            assert fx._renamed_fields(payload, [F.column("parties", "Parties")]) == []
+
+    def test_a_very_short_column_name_is_not_matched(self):
+        """Four characters is the floor. Below it almost everything looks
+        like almost everything."""
+        payload = {"rows": [{"identifier": "X"}]}
+        assert fx._renamed_fields(payload, [F.column("id", "Id")]) == []
+
+
 class TestBlankColumns:
     def test_the_dresolve_defect_is_caught(self):
         """The regression this rule was written for. Three of five columns

@@ -96,6 +96,10 @@ export interface FactDocument {
   sizeBytes?: number
   href?: string
   excerpt?: string
+  /** The excerpt is a sample, not the document. Set by the parser rather
+   *  than guessed at here, so a short complete note is not rendered with a
+   *  trailing ellipsis that makes it look cut off. */
+  excerptTruncated?: boolean
 }
 
 /**

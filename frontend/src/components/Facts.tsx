@@ -175,7 +175,23 @@ function Documents({ documents }: { documents: FactDocument[] }) {
               <span className="small muted nums">{formatBytes(doc.sizeBytes)}</span>
             )}
           </div>
-          {doc.excerpt && <p className="small muted fact-excerpt">{doc.excerpt}…</p>}
+          {doc.excerpt && (
+            <p className="small muted fact-excerpt">
+              {doc.excerpt}
+              {doc.excerptTruncated && (
+                <>
+                  {'… '}
+                  {doc.href ? (
+                    <a href={doc.href} target="_blank" rel="noreferrer">
+                      read the rest
+                    </a>
+                  ) : (
+                    <span className="muted">(shortened)</span>
+                  )}
+                </>
+              )}
+            </p>
+          )}
         </li>
       ))}
     </ul>

@@ -202,8 +202,36 @@ def thin_result(payload: Any, facts: dict | None) -> dict | None:
     # swallowed it for the second time.
     table = facts.get("table") or {}
     rows, columns = table.get("rows") or [], table.get("columns") or []
-    blank = [c["label"] for c in columns
-             if all(_empty(r.get(c["key"])) for r in rows)] if rows else []
+    blank_cols = [c for c in columns
+                  if all(_empty(r.get(c["key"])) for r in rows)] if rows else []
+    blank = [c["label"] for c in blank_cols]
+
+    # --- the sharp version: a blank column the payload could have filled ---
+    #
+    # Two field-rename defects got past the majority rule below, because two
+    # dead columns out of five is not a majority. Counting was the wrong
+    # question. The right one is narrower and almost never wrong:
+    #
+    #   this column is empty on every row — does the payload contain a field
+    #   with almost this name, carrying data we did not read?
+    #
+    # `causelist` rendered a Parties column of dashes while every record
+    # carried `party`. That is unambiguous. Contrast a charge with no
+    # satisfaction date: the payload HAS `satisfactionDate`, and it is null,
+    # which is the source telling us the charge was never satisfied. One is
+    # a parser reading the wrong name; the other is a fact. Only the first
+    # fires here.
+    if rows and columns:
+        missed = _renamed_fields(payload, blank_cols)
+        if missed:
+            return F.flag(
+                "warn", "A field was read under the wrong name",
+                _join([f"“{label}” is empty on all {len(rows)} rows while the "
+                       f"source sends “{key}”" for label, key in missed])
+                + ". The data is in the stored response and the parser is "
+                  "looking for it under a name the source does not use. "
+                  "Treat those columns as unread, not as absent.",
+            )
 
     if (len(columns) >= 3
             and len(rows) >= THIN_BLANK_COLUMN_MIN_ROWS
@@ -267,6 +295,79 @@ def _join(labels: list[str]) -> str:
     if len(labels) <= 1:
         return "".join(labels)
     return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
+#: How much of two field names must agree before they are "the same field
+#: under another name". Four characters: enough that `party`/`parties` and
+#: `item`/`itemNumber` match, short enough to stay readable, long enough
+#: that `date`/`dateModified` is the only kind of collision it invites —
+#: and a collision here costs a flag a person reads, not a status.
+_RENAME_PREFIX = 4
+
+#: The walk over an unknown payload is bounded. A response is nested JSON of
+#: unknown depth, and a guard that can spend real time on a 500 KB document
+#: is a guard someone will switch off.
+_RENAME_MAX_RECORDS = 60
+_RENAME_MAX_DEPTH = 6
+
+
+def _normalise_key(key: str) -> str:
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+def _records(value: Any, depth: int = 0) -> list[dict]:
+    """Every dict inside the payload that looks like a record."""
+    if depth > _RENAME_MAX_DEPTH:
+        return []
+    found: list[dict] = []
+    if isinstance(value, dict):
+        found.append(value)
+        for inner in value.values():
+            found.extend(_records(inner, depth + 1))
+    elif isinstance(value, list):
+        for inner in value[:_RENAME_MAX_RECORDS]:
+            found.extend(_records(inner, depth + 1))
+    return found[:_RENAME_MAX_RECORDS]
+
+
+def _renamed_fields(payload: Any, blank_columns: list[dict]) -> list[tuple[str, str]]:
+    """Blank columns the payload could have filled, and the field it sends.
+
+    Returns ``(column label, the key the source actually uses)``. Empty when
+    nothing matches — which is the common case and must stay cheap.
+
+    The value test is what keeps this honest. A key that exists and is null
+    everywhere is the source saying "there is none of this", and that is a
+    fact about the vendor, not a defect in us.
+    """
+    if not blank_columns:
+        return []
+
+    records = _records(payload)
+    if not records:
+        return []
+
+    #: field name -> does any record carry a real value for it
+    populated: dict[str, str] = {}
+    for record in records:
+        for key, value in record.items():
+            if value in (None, "", [], {}):
+                continue
+            populated.setdefault(_normalise_key(key), str(key))
+
+    out: list[tuple[str, str]] = []
+    for column in blank_columns:
+        want = _normalise_key(column.get("key", ""))
+        if len(want) < _RENAME_PREFIX:
+            continue
+        for norm, original in populated.items():
+            if norm == want:
+                continue  # same name, so the parser is not the problem
+            if (norm.startswith(want[:_RENAME_PREFIX])
+                    or want.startswith(norm[:_RENAME_PREFIX])):
+                out.append((column.get("label") or original, original))
+                break
+    return out
 
 
 def _today() -> date:
@@ -1481,6 +1582,11 @@ def hearings(data: dict) -> dict:
     )
 
 
+def _stem(filename: str) -> str:
+    """``order-1.pdf`` → ``order-1``. The extension is already the badge."""
+    return filename.rsplit(".", 1)[0] if "." in filename else filename
+
+
 def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
     """Order text and PDFs.
 
@@ -1491,17 +1597,41 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
     docs = []
     for order in fetched:
         text = order.get("markdown") or order.get("content") or ""
-        docs.append(F.document(
-            order.get("filename") or order.get("order") or "Order",
-            "pdf" if order.get("pdf_base64") else "text",
-            size_bytes=(len(order["pdf_base64"]) * 3 // 4)
-            if order.get("pdf_base64") else (len(text) or None),
-            excerpt=text or None,
-            # Set once the PDF has been decoded out of its base64 and
-            # written to the store. Without it the row named a document
-            # nobody could open.
-            href=order.get("href"),
-        ))
+        name = str(order.get("filename") or order.get("order") or "Order")
+
+        if order.get("pdf_base64") or order.get("href"):
+            docs.append(F.document(
+                name, "pdf",
+                size_bytes=(len(order["pdf_base64"]) * 3 // 4)
+                if order.get("pdf_base64") else order.get("bytes"),
+                # Set once the PDF has been decoded out of its base64 and
+                # written to the store. Without it the row named a document
+                # nobody could open.
+                href=order.get("href"),
+            ))
+
+        # The readable half, and the one most people actually want. The PDF
+        # is a signed scan of a court order; this is the same order as text
+        # a person can read without downloading anything. It gets its own
+        # entry rather than riding along as an excerpt because an excerpt is
+        # capped at 400 characters and a court order is not 400 characters —
+        # truncating it to a paragraph with a trailing ellipsis and calling
+        # that "the order" is how a finding ends up looking answered when it
+        # has only been sampled.
+        if text:
+            docs.append(F.document(
+                f"{_stem(name)} — readable text", "text",
+                size_bytes=len(text),
+                excerpt=text,
+                href=order.get("text_href"),
+            ))
+        elif order.get("pdf_base64") or order.get("href"):
+            docs.append(F.document(
+                f"{_stem(name)} — no text available", "text",
+                excerpt="This order came back as a scanned PDF the provider "
+                        "could not convert to text. Open the PDF above to "
+                        "read it.",
+            ))
     return F.build(
         F.DOCUMENT,
         fields=[F.field("CNR", cnr, format="id")],
@@ -1517,13 +1647,60 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
 
 
 def causelist(data: dict, *, subject: str | None = None) -> dict:
-    rows = data.get("results") or data.get("items") or []
+    """Who is listed in court this week, and for what.
+
+    The field names here were wrong and two columns rendered as dashes on
+    every row. This endpoint sends `listingNo`, not `item_number`, and
+    `party` — singular — not `parties`. Losing them cost the two things
+    this check exists to show: WHICH case, and WHO is on each side of it.
+
+    `court` is the registry code (`MHSO07`). `courtLabel` is the court a
+    person would recognise ("Civil Court Junior Division, Pandhurpur,
+    Solapur"). The label leads; the code is not worth a column of its own.
+    """
+    rows = [r for r in (data.get("results") or data.get("items") or [])
+            if isinstance(r, dict)]
+
+    def _party(r: dict) -> str | None:
+        """The provider pre-joins this as "A Vs. B". Where it hasn't, the
+        two sides are still there as lists and can be joined here."""
+        if r.get("party"):
+            return str(r["party"])
+        left = ", ".join(str(p) for p in (r.get("petitioners") or []) if p)
+        right = ", ".join(str(p) for p in (r.get("respondents") or []) if p)
+        if left and right:
+            return f"{left} Vs. {right}"
+        return left or right or r.get("parties") or r.get("litigant")
+
+    def _case(r: dict) -> str | None:
+        numbers = r.get("caseNumber") or r.get("case_number")
+        if isinstance(numbers, list):
+            return ", ".join(str(n) for n in numbers if n) or None
+        return str(numbers) if numbers else r.get("internalCaseNo") or None
+
     flags = [F.flag(
         "info", "Name matching is fuzzy",
         "This list includes any party whose name CONTAINS the search term. "
         "For a group name that returns unrelated companies. An analyst must "
         "confirm which rows are this vendor before any of it counts.",
     )] if data.get("count") else []
+
+    # Worth stating separately. A motor-accident claim against an insurer is
+    # ordinary trading; a criminal listing is not, and an auditor should not
+    # have to read thirteen rows to find out one of them is.
+    criminal = [r for r in rows
+                if str(r.get("listType") or "").strip().upper() == "CRIMINAL"]
+    if criminal:
+        flags.append(F.flag(
+            "warn", f"{F.plural(len(criminal), 'criminal listing')}",
+            ", ".join(f"{_case(r) or r.get('cnr')} at "
+                      f"{r.get('courtLabel') or r.get('court')}"
+                      for r in criminal[:4])
+            + ". Listed as CRIMINAL by the court, which says nothing about "
+              "who is accused — the vendor may be the complainant. Read the "
+              "parties before this counts either way.",
+        ))
+
     if data.get("truncated"):
         flags.append(F.flag(
             "warn", "Results were capped",
@@ -1532,26 +1709,38 @@ def causelist(data: dict, *, subject: str | None = None) -> dict:
 
     return F.build(
         F.TABLE,
-        stats=[F.stat("Listings", f"{data.get('count')}"
-                      f"{'+' if data.get('truncated') else ''}",
-                      tone="warn" if data.get("count") else "good")],
+        stats=[
+            F.stat("Listings", f"{data.get('count')}"
+                   f"{'+' if data.get('truncated') else ''}",
+                   tone="warn" if data.get("count") else "good"),
+            F.stat("Criminal", len(criminal),
+                   tone="bad" if criminal else "good"),
+        ] if rows else None,
         rows=F.table(
             [
+                F.column("date", "Listed on", format="date"),
                 F.column("court", "Court"),
-                F.column("date", "Date", format="date"),
-                F.column("item", "Item", align="right"),
+                F.column("case", "Case no"),
                 F.column("parties", "Parties"),
+                F.column("listed", "Listed for"),
+                F.column("item", "Item", align="right", format="count"),
                 F.column("cnr", "CNR", format="id"),
             ],
             [
                 {
-                    "court": r.get("court_name") or r.get("court"),
                     "date": F.human_date(r.get("date") or r.get("causelist_date")),
-                    "item": r.get("item_number") or r.get("serial"),
-                    "parties": r.get("parties") or r.get("litigant"),
+                    "court": r.get("courtLabel") or r.get("court_name")
+                    or r.get("court"),
+                    "case": _case(r),
+                    "parties": _party(r),
+                    # Null on a third of the live rows — the court simply has
+                    # not said yet. A dash there is the truth, not a gap.
+                    "listed": r.get("listingFor") or r.get("purpose"),
+                    "item": r.get("listingNo") or r.get("item_number")
+                    or r.get("serial"),
                     "cnr": r.get("cnr"),
                 }
-                for r in rows if isinstance(r, dict)
+                for r in rows
             ],
             total=data.get("count"),
             empty_note="Nothing scheduled under this name.",
