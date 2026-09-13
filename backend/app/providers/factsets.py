@@ -450,6 +450,27 @@ def director_contacts(contacts: list[dict]) -> dict:
     )
 
 
+def refresh_pending(check_id: str, stage: str) -> dict:
+    """The unlock landed; the documents behind it have not.
+
+    Rendered as a flag rather than a bare status line because the reader
+    needs to know this row will look different in half an hour. Without it,
+    "Documents not ready" reads like a permanent property of the vendor.
+    """
+    return F.build(
+        F.NONE,
+        flags=[F.flag(
+            "info", "Waiting on the provider's document refresh",
+            f"Unlocking a company queues a download and extraction that takes "
+            f"10–30 minutes (current stage: {stage}). Until it finishes the "
+            f"source returns nothing here, so this check is recorded as "
+            f"unexamined rather than as an absence. Re-run it shortly — the "
+            f"unlock fee is not charged again.",
+        )],
+        note=f"{check_id} depends on documents the unlock is still preparing.",
+    )
+
+
 def filing_document(filing_id: str, size_bytes: int, digest: str) -> dict:
     """A filing PDF that was fetched but is not retained.
 

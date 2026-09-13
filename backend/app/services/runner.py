@@ -211,6 +211,16 @@ class RunResult:
     ambiguous_candidates: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
+    #: False while the provider's background download/extraction is still
+    #: running. Unlocking is ASYNCHRONOUS — the POST returns in
+    #: milliseconds, the documents land ten to thirty minutes later, and
+    #: until they do the provider answers filings and extractions with
+    #: nothing. Read by the checks that depend on those documents so an
+    #: unfinished job is never reported as a vendor with no filings.
+    documents_ready: bool = True
+    #: The stage the provider last reported, for the note on those rows.
+    refresh_stage: str | None = None
+
     @property
     def examined(self) -> int:
         return sum(1 for f in self.findings if f.status.was_examined)
@@ -427,6 +437,26 @@ class CheckRunner:
         # real, healthy registration belonging to somebody else; nothing
         # else in the pipeline looks for that.
         subject = vendor.legal_name or vendor.name
+
+        # The unlock's document job is asynchronous and takes 10–30 minutes.
+        # These three checks read what it produces, so running them before
+        # it finishes returns an empty answer that is indistinguishable from
+        # a company with no filings and no filed accounts. UNAVAILABLE is
+        # excluded from `was_examined`, so this can never become a positive
+        # in SCAN or the risk ledger — which an empty-but-PASS result could.
+        if (result is not None and not result.documents_ready
+                and check_id in self._NEEDS_DOCUMENTS):
+            stage = result.refresh_stage or "in progress"
+            return Finding(
+                check_id, CheckStatus.UNAVAILABLE, "Documents not ready",
+                f"The company unlock is complete but the provider is still "
+                f"downloading and extracting its documents (stage: {stage}); "
+                f"that takes 10–30 minutes. The source returns nothing for "
+                f"this check until it finishes, so this is recorded as "
+                f"unexamined — NOT as a company with none. Re-run this check "
+                f"shortly; the unlock is not charged again.",
+                facts=factsets.refresh_pending(check_id, stage),
+            )
 
         # ---- MCA ----------------------------------------------------
         if check_id == "ustatus":
@@ -1454,6 +1484,37 @@ class CheckRunner:
             return cin
         return None
 
+    #: Checks that read documents the unlock's background job produces.
+    #: Until that job finishes the provider returns nothing for them, and
+    #: "nothing" from these three is indistinguishable from a company that
+    #: genuinely has no filings and no filed accounts.
+    _NEEDS_DOCUMENTS = ("filings", "download", "fin")
+
+    def _apply_refresh_state(self, status, result: RunResult) -> None:
+        """Record whether the unlock's document job has finished."""
+        if status is None or status.sandbox:
+            return
+        result.refresh_stage = status.download_status
+        if status.refresh_running:
+            result.documents_ready = False
+            result.notes.append(
+                f"The provider is still preparing this company's documents "
+                f"(download stage: {status.download_status}). Filings and "
+                f"financials are recorded as UNAVAILABLE rather than absent."
+            )
+
+    def _note_refresh_progress(self, cin: str, result: RunResult) -> None:
+        """Free status call, purely to find out whether documents have landed.
+
+        Wrapped because it must never be the reason a run fails: not knowing
+        the stage leaves today's behaviour in place, which is the safe
+        direction — the checks still run and still report what they find.
+        """
+        try:
+            self._apply_refresh_state(self.filesure.unlock_status(cin), result)
+        except ProviderError as exc:
+            logger.info("%s: could not read unlock progress: %s", cin, exc)
+
     def _ensure_unlock(self, vendor: Vendor, cin: str, result: RunResult) -> None:
         """STEP 2 then STEP 3 — never the other way round."""
         try:
@@ -1469,12 +1530,19 @@ class CheckRunner:
                     f"₹330 not spent again."
                 )
                 vendor.unlocked = True
+                # The unlock is on file, but the refresh it kicked off may
+                # still be running — an unlock five minutes old is recorded
+                # exactly like one from last year. The status call is FREE
+                # (the provider's docs say so explicitly), so ask rather
+                # than assume the documents have landed.
+                self._note_refresh_progress(cin, result)
                 return
 
             status, paid = self.filesure.ensure_unlocked(cin)
             vendor.unlocked = status.unlocked
             if not paid:
                 result.notes.append("Unlock already active at the provider — no charge.")
+                self._apply_refresh_state(status, result)
                 return
             if status.sandbox:
                 result.notes.append(
@@ -1484,6 +1552,20 @@ class CheckRunner:
                 return
 
             result.unlock_purchased = True
+            # Certain, not inferred: the provider's docs say `data.job` is
+            # null immediately after the POST because the job has not been
+            # registered yet. So a fresh unlock CANNOT have its documents —
+            # no status call would tell us otherwise, and asking one would
+            # only get a null job back and read as "ready".
+            result.documents_ready = False
+            result.refresh_stage = "just queued"
+            result.notes.append(
+                "Unlock purchased — the provider is now downloading this "
+                "company's documents, which takes 10–30 minutes. Filings, "
+                "filing downloads and filed financials are recorded as "
+                "UNAVAILABLE on this run rather than as absent. Re-run them "
+                "once the refresh completes; the unlock is not charged again."
+            )
             expires = datetime.now(timezone.utc) + timedelta(days=365)
             if status.expires_at:
                 try:

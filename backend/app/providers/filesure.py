@@ -92,9 +92,48 @@ class UnlockStatus:
     #: to per-filing downloads when many documents are needed.
     zip_urls: list[str] = None  # type: ignore[assignment]
 
+    #: ``processingStages.documentDownloadV3.status`` — the provider's own
+    #: primary progress signal, documented as
+    #: ``pending`` → ``in_progress`` → ``success`` over ~10–30 MINUTES after
+    #: the unlock POST. ``None`` when no job is attached (never unlocked, a
+    #: sandbox response, or an unlock old enough that the job record is gone).
+    download_status: str | None = None
+    #: Every stage the job reports, for the evidence panel.
+    stages: dict[str, str] = None  # type: ignore[assignment]
+
     def __post_init__(self):
         if self.zip_urls is None:
             self.zip_urls = []
+        if self.stages is None:
+            self.stages = {}
+
+    @property
+    def refresh_running(self) -> bool:
+        """Is the background download/extraction still in flight?
+
+        THE reason this property exists: unlocking is asynchronous. The POST
+        returns 202 in milliseconds, but filings and extractions do not
+        become queryable for ten to thirty minutes — until then the provider
+        answers them with ``unlocked: false`` or ``404 DOC_NOT_AVAILABLE``.
+
+        A run that unlocks a company and immediately reads its filings
+        therefore gets nothing, and "no filings on record" is a finding
+        ABOUT THE VENDOR. It is the exact failure this product exists to
+        prevent: a gap wearing the clothes of a clean result. Checks that
+        depend on the refresh consult this and record UNAVAILABLE instead.
+        """
+        return self.download_status in ("pending", "in_progress", "queued", "running")
+
+    @property
+    def documents_ready(self) -> bool:
+        """Safe to read filings and extractions.
+
+        ``None`` counts as ready on purpose. A company unlocked last month
+        carries no live job, and treating "no job" as "not ready" would
+        block every returning vendor. Only an explicitly in-flight job
+        blocks; the uncertain case keeps today's behaviour.
+        """
+        return self.unlocked and not self.refresh_running
 
 
 class FileSureProvider(HttpProvider):
@@ -345,11 +384,35 @@ class FileSureProvider(HttpProvider):
 
         zips: list[str] = []
         stages = dig(data, "job", "processingStages", default={}) or {}
-        for stage in stages.values() if isinstance(stages, dict) else []:
-            if isinstance(stage, dict):
-                for zf in stage.get("zipFiles", []) or []:
-                    if isinstance(zf, dict) and zf.get("blob_url"):
-                        zips.append(zf["blob_url"])
+        stage_states: dict[str, str] = {}
+        for name, stage in (stages.items() if isinstance(stages, dict) else []):
+            if not isinstance(stage, dict):
+                continue
+            state = stage.get("status") or stage.get("state")
+            if state:
+                stage_states[str(name)] = str(state)
+            for zf in stage.get("zipFiles", []) or []:
+                if isinstance(zf, dict) and zf.get("blob_url"):
+                    zips.append(zf["blob_url"])
+
+        # documentDownloadV3 is named in the provider's docs as THE progress
+        # signal. Named explicitly rather than "whichever stage looks like a
+        # download", because a rename here must fail loudly (the guard
+        # below), not silently start reporting every refresh as finished.
+        download_status = stage_states.get("documentDownloadV3")
+
+        # A job exists and reports stages, but not the one we steer on. That
+        # is a renamed field, which is how four adapter defects have already
+        # reached production — every one of them read as "clean".
+        guard = ParseGuard("filesure.unlock")
+        if stage_states:
+            guard.expect(
+                "documentDownloadV3 stage", raw=stages, parsed=download_status,
+                hint="job.processingStages.documentDownloadV3.status · "
+                     "pending → in_progress → success · gates filings and "
+                     "extractions",
+            )
+            guard.raise_if_gaps(payload=data)
 
         return UnlockStatus(
             unlocked=as_bool(data.get("unlocked")),
@@ -358,6 +421,8 @@ class FileSureProvider(HttpProvider):
             unlock_price_paisa=data.get("unlockPrice"),
             sandbox=as_bool(data.get("sandbox")),
             zip_urls=zips,
+            download_status=download_status,
+            stages=stage_states,
         )
 
     def unlock_company(self, cin: str) -> UnlockStatus:
