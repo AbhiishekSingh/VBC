@@ -783,10 +783,10 @@
           },
           {
             "id": "r13",
-            "state": "not_selected",
+            "state": "not_configured",
             "applied": false,
             "contribution": 0,
-            "explanation": "check not selected for this vendor"
+            "explanation": "source not configured"
           }
         ]
       }
@@ -813,7 +813,7 @@
       "checks": {
         "master": {
           "status": "pass",
-          "value": "ACTIVE · U21029MH2013PTC245119"
+          "value": "ACTIVE \u00b7 U21029MH2013PTC245119"
         },
         "dirs": {
           "status": "pass",
@@ -825,7 +825,7 @@
         },
         "charges": {
           "status": "warn",
-          "value": "1 open charge ₹2.4 Cr"
+          "value": "1 open charge \u20b92.4 Cr"
         },
         "filings": {
           "status": "pass",
@@ -833,7 +833,7 @@
         },
         "fin": {
           "status": "pass",
-          "value": "Revenue ₹41.2 Cr · PAT ₹1.8 Cr"
+          "value": "Revenue \u20b941.2 Cr \u00b7 PAT \u20b91.8 Cr"
         },
         "whois": {
           "status": "pass",
@@ -966,10 +966,10 @@
           },
           {
             "id": "r13",
-            "state": "not_selected",
+            "state": "not_configured",
             "applied": false,
             "contribution": 0,
-            "explanation": "check not selected for this vendor"
+            "explanation": "source not configured"
           }
         ]
       }
@@ -1114,10 +1114,10 @@
           },
           {
             "id": "r13",
-            "state": "not_selected",
+            "state": "not_configured",
             "applied": false,
             "contribution": 0,
-            "explanation": "check not selected for this vendor"
+            "explanation": "source not configured"
           }
         ]
       }
@@ -1219,10 +1219,10 @@
           },
           {
             "id": "r13",
-            "state": "not_selected",
+            "state": "not_configured",
             "applied": false,
             "contribution": 0,
-            "explanation": "check not selected for this vendor"
+            "explanation": "source not configured"
           }
         ]
       }
@@ -1324,12 +1324,12 @@
       },
       "policy": "default",
       "expected": {
-        "verdict": "Insufficient Coverage — Senior Review",
+        "verdict": "Insufficient Coverage \u2014 Senior Review",
         "rawVerdict": "Positive for Onboarding",
         "gated": true,
         "policyVersion": "1.0",
         "reasonCount": 2,
-        "headline": "Insufficient Coverage — Senior Review — 60.0% achieved, based on 6 of 18 parameters"
+        "headline": "Insufficient Coverage \u2014 Senior Review \u2014 60.0% achieved, based on 6 of 18 parameters"
       }
     },
     "azahanPrototype": {
@@ -1360,7 +1360,7 @@
         "gated": false,
         "policyVersion": "0.0-prototype",
         "reasonCount": 0,
-        "headline": "Positive for Onboarding — 60.0% achieved, based on 6 of 18 parameters"
+        "headline": "Positive for Onboarding \u2014 60.0% achieved, based on 6 of 18 parameters"
       }
     },
     "meridianDefault": {
@@ -1391,7 +1391,7 @@
         "gated": false,
         "policyVersion": "1.0",
         "reasonCount": 0,
-        "headline": "Positive for Onboarding — 97.4% achieved, based on 14 of 18 parameters"
+        "headline": "Positive for Onboarding \u2014 97.4% achieved, based on 14 of 18 parameters"
       }
     },
     "kaveriDefault": {
@@ -1422,7 +1422,7 @@
         "gated": false,
         "policyVersion": "1.0",
         "reasonCount": 0,
-        "headline": "Negative for Onboarding — 36.4% achieved, based on 6 of 18 parameters"
+        "headline": "Negative for Onboarding \u2014 36.4% achieved, based on 6 of 18 parameters"
       }
     }
   }

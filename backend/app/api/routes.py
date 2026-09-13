@@ -36,13 +36,14 @@ from app.db.models import (
     Vendor,
     VendorCheck,
     VendorCheckInput,
+    StoredDocument,
     VendorManualEntry,
 )
 from app.db.scoring_store import latest_score, record_score
 from app.db.session import get_session
 from app.domain.policy import DEFAULT_POLICY, Verdict, apply_policy
 from app.domain.scoring import score_scan, score_surveillance
-from app.services import auth
+from app.services import auth, documents
 from app.services.runner import CheckRunner
 
 logger = logging.getLogger(__name__)
@@ -806,3 +807,52 @@ def catalog():
             for p in SURVEILLANCE_PARAMETERS
         ],
     }
+
+
+# =====================================================================
+# Documents
+# =====================================================================
+
+@router.get("/documents/{digest}", tags=["documents"])
+def get_document(
+    digest: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> Response:
+    """Serve a stored filing or order PDF.
+
+    Behind `current_user` deliberately. These are MCA filings and court
+    orders about a named company, fetched under this customer's account —
+    not public documents, and not something a guessed URL should reach.
+
+    Served through the API rather than by nginx for the same reason: the
+    store sits outside `frontend/dist` precisely so that no static handler
+    can reach it.
+    """
+    record = session.scalar(
+        select(StoredDocument).where(StoredDocument.sha256 == digest.lower())
+    )
+    path = documents.path_for(digest)
+    if record is None or path is None:
+        # One 404 for both cases on purpose. Distinguishing "no such
+        # document" from "exists but you cannot have it" would confirm a
+        # digest to someone probing for one.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such document.")
+
+    _audit(session, record.vendor_id, user.email, "DOCUMENT_READ",
+           f"{record.check_id or 'document'} · {record.filename or digest[:12]}")
+    session.commit()
+
+    return Response(
+        content=path.read_bytes(),
+        media_type=record.media_type or "application/octet-stream",
+        headers={
+            # inline, not attachment: an analyst reading a case wants it in
+            # the panel, not in their downloads folder.
+            "Content-Disposition":
+                f'inline; filename="{(record.filename or digest[:12])}"',
+            # Content-addressed, so the bytes behind this URL can never
+            # change. Safe to cache hard, and private because it is.
+            "Cache-Control": "private, max-age=31536000, immutable",
+        },
+    )

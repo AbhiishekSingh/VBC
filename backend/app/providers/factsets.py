@@ -16,12 +16,16 @@ behind it.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
 from app.domain import facts as F
+# Pure helper. FileSure sends slashed dates as MM/DD/YYYY, and this is
+# the one place that knows it.
+from app.providers.base import parse_date
 
 # Suffixes that carry no identity. "RELIANCE INDUSTRIES LIMITED" and
 # "Reliance Industries Ltd" are the same company; a comparison that says
@@ -103,6 +107,168 @@ def entity_mismatch(returned: Any, expected: Any, *, source: str) -> list[dict]:
     )]
 
 
+def _yn(value: Any) -> str | None:
+    """MCA's ``"Y"`` / ``"N"`` → ``Yes`` / ``No``.
+
+    Separate from ``F.yes_no``, which takes a real boolean. MCA sends these
+    as single-character STRINGS, and every non-empty string is truthy — so
+    passing them through ``yes_no`` would render "N" as "Yes", which is the
+    worst possible failure for a field like this. Anything unrecognised is
+    passed through untouched rather than guessed at.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return F.yes_no(value)
+    text = str(value).strip()
+    return {"y": "Yes", "n": "No", "yes": "Yes", "no": "No",
+            "true": "Yes", "false": "No"}.get(text.lower(), text)
+
+
+#: A payload smaller than this said little, so extracting little from it is
+#: not suspicious. Roughly the size of a terse "nothing found" response.
+THIN_PAYLOAD_FLOOR_BYTES = 1_500
+
+#: Below this share of populated fields, against a substantial payload, the
+#: parser is probably reading keys that are no longer there.
+THIN_FIELD_RATIO = 0.34
+
+#: Fewer fields than this and the ratio is noise — two of five nulls is not
+#: evidence of anything.
+THIN_MIN_FIELDS = 5
+
+#: A column empty on EVERY row is the sharpest signal there is that a field
+#: name has moved, and it does not survive an average. Four rows of DINs
+#: beside three dead columns and two live ones scores 0.40 — comfortably
+#: above the ratio floor, and wrong. So whole-blank columns are counted on
+#: their own, and it takes a strict majority of the table's columns: two of
+#: four is an ordinary pair of optional fields (a charge with no
+#: satisfaction date has two), three of five is a parser that has lost its
+#: place.
+THIN_BLANK_COLUMN_MIN = 2
+
+#: …and never on a single row, where "blank in every row" means "blank
+#: once", which is just a quiet record.
+THIN_BLANK_COLUMN_MIN_ROWS = 2
+
+
+def thin_result(payload: Any, facts: dict | None) -> dict | None:
+    """Did the provider say a lot while the parser heard almost nothing?
+
+    `ParseGuard` protects about fifteen fields across eight endpoints, each
+    one declared by hand. The facts layer reads several times that many. So
+    a provider renaming a field nobody thought to guard produces a check
+    that still passes, a guard that never fires, and a row quietly reading
+    "not returned" — the same silent failure the guards exist to stop, one
+    level further out.
+
+    This is the general form of that question, and it needs no list of
+    field names to maintain. Two rules, because one was not enough:
+
+    * **Yield** — a 40 KB response that fills two fields out of fourteen,
+      or two table cells in six, is not a quiet company. Averaged, and so
+      gated on payload size.
+    * **Whole-blank columns** — half the table's columns silent on every
+      single row. `dresolve` passed the yield rule comfortably (two live
+      columns out of five averages 0.40, above the 0.34 floor) while the
+      director's company names, the reason anyone opens that check, were
+      missing entirely. An average lets one healthy column carry three
+      dead ones, so this rule is counted separately and is not averaged.
+
+    Deliberately conservative. It raises a flag for a person, never a
+    status, and it stays silent on short field lists, on single rows, and
+    — for the yield rule — on small payloads, because a flag that cries
+    wolf gets switched off inside a week and is then protecting nothing.
+    """
+    if not facts or facts.get("shape") in (None, "none", "reference"):
+        return None
+
+    try:
+        size = len(json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return None
+
+    def _empty(value: Any) -> bool:
+        return value in (None, "", "—")
+
+    # --- whole-blank columns -------------------------------------------
+    #
+    # Tested BEFORE the size floor, and deliberately. The floor exists
+    # because extracting little from a terse response is not suspicious —
+    # that is an argument about YIELD, and it does not apply here. Rows
+    # present with half the columns dead says the payload held records
+    # whatever its size, and the real `dresolve` reproduction is 934 bytes:
+    # four candidates, three columns of dashes, and the floor would have
+    # swallowed it for the second time.
+    table = facts.get("table") or {}
+    rows, columns = table.get("rows") or [], table.get("columns") or []
+    blank = [c["label"] for c in columns
+             if all(_empty(r.get(c["key"])) for r in rows)] if rows else []
+
+    if (len(columns) >= 3
+            and len(rows) >= THIN_BLANK_COLUMN_MIN_ROWS
+            and len(blank) >= THIN_BLANK_COLUMN_MIN
+            and len(blank) * 2 > len(columns)):
+        return F.flag(
+            "warn", "Whole columns came back empty",
+            f"{_join(blank)} are empty in all {len(rows)} rows. A column "
+            f"blank on every single row is the shape of a field name that "
+            f"has moved, not a fact the source does not hold — the rows "
+            f"below are real, but treat those columns as unread, not as "
+            f"absent, until someone has compared them against the stored "
+            f"response.",
+        )
+
+    if size < THIN_PAYLOAD_FLOOR_BYTES:
+        return None
+
+    # --- fields ------------------------------------------------------
+    fields = facts.get("fields") or []
+    if len(fields) >= THIN_MIN_FIELDS:
+        filled = sum(1 for f in fields if not _empty(f.get("value")))
+        if filled / len(fields) < THIN_FIELD_RATIO:
+            return F.flag(
+                "warn", "Most fields came back empty",
+                f"The source returned {size:,} bytes but only {filled} of "
+                f"{len(fields)} fields could be read from it. That is the "
+                f"shape of a renamed or moved field rather than a quiet "
+                f"record — treat the blanks below as unverified, not as "
+                f"absent, until someone has compared this against the stored "
+                f"response.",
+            )
+
+    # --- table cells --------------------------------------------------
+    #
+    # Rows used to be taken as proof the parser knew its way around the
+    # payload. They are not — see the blank-column rule above, which is the
+    # sharper form of this same question. This one catches the diffuse
+    # version: no single column entirely dead, but the table mostly holes.
+    if len(columns) >= 3 and rows:
+        cells = len(rows) * len(columns)
+        filled = sum(1 for r in rows for c in columns if not _empty(r.get(c["key"])))
+
+        if filled / cells < THIN_FIELD_RATIO:
+            return F.flag(
+                "warn", "Most table cells came back empty",
+                f"The source returned {size:,} bytes and {len(rows)} rows, but "
+                f"only {filled} of {cells} cells could be read"
+                + (f" — {_join(blank)} " +
+                   ("is" if len(blank) == 1 else "are") + " empty in every row"
+                   if blank else "")
+                + ". That is the shape of a renamed or moved field rather "
+                  "than a quiet record.",
+            )
+
+    return None
+
+
+def _join(labels: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c`` — this text is read by auditors."""
+    if len(labels) <= 1:
+        return "".join(labels)
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
 def _today() -> date:
     return datetime.now(timezone.utc).date()
 
@@ -146,8 +312,9 @@ def master(parsed: dict, *, subject: str | None = None) -> dict:
             F.field("Registered name", parsed.get("company")),
             F.field("Class", parsed.get("class_of_company")),
             F.field("Company type", parsed.get("company_type")),
-            F.field("Listed", F.yes_no(parsed.get("listed"))
-                    if isinstance(parsed.get("listed"), bool) else parsed.get("listed")),
+            F.field("Listed", _yn(parsed.get("listed")),
+                    note="Whether the company's shares are listed on a "
+                         "recognised stock exchange."),
             F.field("Incorporated", F.human_date(parsed.get("incorporated_on")), format="date"),
             F.field("Paid-up capital", F.crore(parsed.get("paidup_capital")), format="money"),
             F.field("Authorised capital", F.crore(parsed.get("authorised_capital")),
@@ -334,54 +501,131 @@ def director_profiles(profiles: list[dict]) -> dict:
     )
 
 
+def company_names(candidate: dict) -> list[str]:
+    """The company names on a director-resolve candidate, whatever shape
+    they arrive in.
+
+    `companies` comes back either as plain strings or as objects carrying a
+    name and a CIN, depending on the account. Joining the list blind raised
+    ``TypeError: expected str instance, dict found`` — and a parser that
+    crashes is worse than the blank column it was written to fix, because
+    the call has already been paid for and the whole check dies with it.
+
+    Module-level rather than a closure because the runner's summary line
+    reads the same list for the same reason, and two copies of a coercion
+    is how one of them ends up not fixed.
+    """
+    out: list[str] = []
+    for entry in candidate.get("companies") or []:
+        if isinstance(entry, dict):
+            entry = (entry.get("name") or entry.get("companyName")
+                     or entry.get("cin") or "")
+        text = str(entry or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def director_candidates(
     candidates: list[dict], *, query: str = "", alarm: int = 20,
 ) -> dict:
-    """Name → DIN, with the free red-flag metric this endpoint hands over.
+    """Name → DIN. Which of the same-named people is actually meant.
 
-    ``totalDirectorshipCount`` costs nothing extra and is the most useful
-    number here: a person sitting on dozens of boards is the classic
-    mass-director pattern. It is raised as a FLAG, never as a status — a
-    busy professional director and a rented signature look identical from
-    a count alone, and only a person can tell them apart.
+    The field names here were wrong and the table rendered as a column of
+    DINs beside four columns of dashes — `name`, `fatherName`, `dateOfBirth`
+    are not what this endpoint returns. It sends `fullName`, `status`,
+    `companies` and `dinAllocationDate`.
+
+    `companies` was the costly omission. A search for "Mukesh Dhirubhai
+    Ambani" returns four DINs: three **Lapsed** with no companies, and one
+    **Approved** sitting on RELIANCE INDUSTRIES LIMITED, JIO PLATFORMS and
+    eight others. The answer is obvious the moment those two columns are on
+    screen and impossible without them — and picking the wrong DIN here
+    poisons every director check downstream.
+
+    `matchScore` is deliberately NOT shown. This endpoint returns it as
+    1736172819525404700 — identical for every candidate, and no more a
+    ranking than a row number is.
     """
-    loaded = [c for c in candidates if (c.get("totalDirectorshipCount") or 0) >= alarm]
+    def _count(c: dict) -> int:
+        return int(c.get("totalDirectorshipCount") or 0)
+
+    def _name(c: dict) -> str:
+        return str(c.get("fullName") or c.get("name") or c.get("din") or "?")
+
+    def _active(c: dict) -> bool:
+        return str(c.get("status") or "").strip().lower() == "approved"
+
+    _companies = company_names
+
     flags = []
+
+    # The disambiguation, stated rather than left to the reader. An
+    # Approved DIN holding directorships and a Lapsed one holding none are
+    # not equally likely to be the person being audited.
+    live = [c for c in candidates if _active(c) and _count(c)]
+    if len(candidates) > 1 and len(live) == 1:
+        winner = live[0]
+        flags.append(F.flag(
+            "info", f"One candidate is active: DIN {winner.get('din')}",
+            f"{_name(winner)} — status {winner.get('status')}, "
+            f"{F.plural(_count(winner), 'directorship')}"
+            + (f", including {_companies(winner)[0]}" if _companies(winner) else "")
+            + f". The other {len(candidates) - 1} are lapsed and hold none. "
+              f"Still confirm before the DIN is used downstream — MCA does "
+              f"not disambiguate names, and this is an inference from status, "
+              f"not an identification.",
+        ))
+    elif len(candidates) > 1:
+        flags.append(F.flag(
+            "warn", f"{len(candidates)} people match this name",
+            "Director names are not unique and MCA does not disambiguate "
+            "them. Nothing in the response separates these candidates, so a "
+            "person must pick before the DIN is used anywhere downstream.",
+        ))
+
+    loaded = [c for c in candidates if _count(c) >= alarm]
     if loaded:
         flags.append(F.flag(
             "warn", "Unusually high directorship count",
-            ", ".join(f"{c.get('name')} sits on {c.get('totalDirectorshipCount')} boards"
-                      for c in loaded)
+            ", ".join(f"{_name(c)} sits on {_count(c)} boards" for c in loaded)
             + f". At {alarm}+ this is the mass-director pattern — often a "
               f"nominee lending a signature rather than a person exercising "
               f"judgement. Not adverse on its own.",
         ))
-    if len(candidates) > 1:
-        flags.append(F.flag(
-            "info", f"{len(candidates)} people match this name",
-            "Director names are not unique and MCA does not disambiguate "
-            "them. Confirm which person is meant before the DIN is used "
-            "anywhere downstream.",
-        ))
 
     return F.build(
         F.TABLE,
+        stats=[
+            F.stat("Candidates", len(candidates)),
+            F.stat("Active DINs", sum(1 for c in candidates if _active(c)),
+                   tone="good" if len(live) == 1 else "warn"),
+        ] if candidates else None,
         fields=[F.field("Searched for", query, format="id")] if query else None,
         rows=F.table(
             [
                 F.column("din", "DIN", format="id"),
                 F.column("name", "Name"),
+                F.column("status", "DIN status"),
                 F.column("boards", "Boards", align="right", format="count"),
-                F.column("father", "Father's name"),
-                F.column("dob", "Date of birth", format="date"),
+                F.column("companies", "Companies"),
+                F.column("allocated", "DIN allocated", format="date"),
             ],
             [
                 {
                     "din": c.get("din") or c.get("DIN"),
-                    "name": c.get("name"),
-                    "boards": c.get("totalDirectorshipCount"),
-                    "father": c.get("fatherName") or c.get("father_name"),
-                    "dob": F.human_date(c.get("dateOfBirth") or c.get("dob")),
+                    "name": c.get("fullName") or c.get("name"),
+                    "status": c.get("status"),
+                    "boards": _count(c),
+                    # The whole point of this row. Truncated because a
+                    # conglomerate director can hold dozens and the count
+                    # beside it already says how many there are.
+                    "companies": (
+                        ", ".join(_companies(c)[:4])
+                        + (f" … and {len(_companies(c)) - 4} more"
+                           if len(_companies(c)) > 4 else "")
+                    ) or None,
+                    "allocated": F.human_date(parse_date(c.get("dinAllocationDate"))),
                 }
                 for c in candidates
             ],
@@ -471,12 +715,15 @@ def refresh_pending(check_id: str, stage: str) -> dict:
     )
 
 
-def filing_document(filing_id: str, size_bytes: int, digest: str) -> dict:
-    """A filing PDF that was fetched but is not retained.
+def filing_document(
+    filing_id: str, size_bytes: int, digest: str, *,
+    href: str | None = None, note: str = "",
+) -> dict:
+    """A filing PDF, with a link to it when it was successfully stored.
 
-    The gap is stated rather than implied. A row saying "document retrieved"
-    with nothing to open would read as an attachment that failed to load,
-    when the truth is that no document store is configured yet.
+    When it was not, the gap is stated rather than implied: a row reading
+    "document retrieved" with nothing to open looks like an attachment that
+    failed to load, when the truth is that the file was never kept.
     """
     return F.build(
         F.DOCUMENT,
@@ -484,15 +731,17 @@ def filing_document(filing_id: str, size_bytes: int, digest: str) -> dict:
             F.field("Filing ID", filing_id, format="id"),
             F.field("Size", f"{size_bytes:,} bytes", format="count"),
             F.field("SHA-256", digest, format="id",
-                    note="Identifies the exact file that was fetched, so it "
-                         "can be matched against a copy obtained later."),
+                    note="The digest is the storage key AND the integrity "
+                         "check — a stored file cannot be altered without "
+                         "changing its own name."),
         ],
-        documents=[F.document(f"Filing {filing_id}", "pdf", size_bytes=size_bytes)],
-        flags=[F.flag(
-            "info", "Document is identified, not retained",
-            "No document store is configured, so the file itself is not "
-            "attached to this report. The digest above proves which document "
-            "was fetched; it is not a substitute for the document.",
+        documents=[F.document(f"Filing {filing_id}", "pdf",
+                              size_bytes=size_bytes, href=href)],
+        flags=None if href else [F.flag(
+            "warn", "Document is identified, not retained",
+            (note or "The file itself was not stored.") + " The digest above "
+            "proves which document was fetched; it is not a substitute for "
+            "the document.",
         )],
     )
 
@@ -1248,6 +1497,10 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
             size_bytes=(len(order["pdf_base64"]) * 3 // 4)
             if order.get("pdf_base64") else (len(text) or None),
             excerpt=text or None,
+            # Set once the PDF has been decoded out of its base64 and
+            # written to the store. Without it the row named a document
+            # nobody could open.
+            href=order.get("href"),
         ))
     return F.build(
         F.DOCUMENT,
@@ -1256,6 +1509,10 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
         note=("Analysis is produced by the PROVIDER's model, not by VBC. It is "
               "a sourced finding, not registry fact." if generated else
               "Order text as filed. PDFs are stored and linked, never inlined."),
+        flags=[F.flag("warn", "Some orders were not retained",
+                      "; ".join(sorted({str(o["store_note"]) for o in fetched
+                                        if o.get("store_note")})))]
+        if any(o.get("store_note") for o in fetched) else None,
     )
 
 

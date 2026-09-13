@@ -456,6 +456,40 @@ class VendorCheck(Base):
     )
 
 
+class StoredDocument(Base):
+    """Index of the PDFs on disk — provenance, not content.
+
+    The bytes live in the content-addressed store (see
+    ``app.services.documents``); this says WHOSE they are, which check
+    fetched them, and when. Without it a digest is just a number: the
+    serving route could not tell whether the person asking is entitled to
+    this vendor's documents.
+
+    ``sha256`` is UNIQUE because the store is content-addressed. The same
+    filing fetched for two vendors is one file and one row — so the row
+    records the FIRST vendor to fetch it, and access is authorised by
+    session rather than by ownership of the row.
+    """
+
+    __tablename__ = "stored_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    vendor_id: Mapped[str | None] = mapped_column(
+        ForeignKey("vendors.id", ondelete="SET NULL"), nullable=True
+    )
+    check_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    media_type: Mapped[str] = mapped_column(String(64), nullable=False,
+                                            default="application/pdf")
+    bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stored_at: Mapped[datetime] = created_at()
+
+    __table_args__ = (
+        Index("ix_stored_documents_vendor", "vendor_id"),
+    )
+
+
 class ScanRating(Base):
     """One SCAN parameter's value for one vendor.
 

@@ -32,6 +32,7 @@ FOUR RULES THIS MODULE EXISTS TO ENFORCE
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import time
@@ -45,10 +46,14 @@ from sqlalchemy.orm import Session
 from app.catalog.checks import CHECKS_BY_ID, expand_selection
 from app.config import Settings, get_settings
 from app.db.models import AuditLog, Unlock, Vendor, VendorCheck, VendorCheckInput
+from app.db.models import StoredDocument as StoredDocumentRow
+from app.domain.facts import crore as _crore
+from app.domain.facts import paisa as _paisa
 from app.domain.facts import human_date as _human_date
 from app.domain.types import CheckStatus
 from app.providers import archive as archive_mod
 from app.providers import factsets
+from app.services import documents as docs
 from app.providers import filesure as fs_mod
 from app.providers import ecourts as ec_mod
 from app.providers import finagg as fa_mod
@@ -351,7 +356,9 @@ class CheckRunner:
     ) -> Finding:
         """Isolate every failure so one bad source cannot stop the rest."""
         try:
-            return self._dispatch(check_id, vendor, cin, inputs, master, result, prior or {})
+            return self._flag_thin(
+                self._dispatch(check_id, vendor, cin, inputs, master, result, prior or {})
+            )
         except NotConfigured as exc:
             return Finding(check_id, CheckStatus.NOT_CONFIGURED, "Not configured", str(exc))
         except PaidCallRefused as exc:
@@ -528,7 +535,15 @@ class CheckRunner:
             if not cin:
                 return Finding(check_id, CheckStatus.FAIL, "Not a registered company",
                                "No CIN — MCA holds no record for this entity.")
-            payload = fs.company_master(cin)
+            # Blank / "Auto-detect" means send no idType at all, which is
+            # what lets an LLPIN or an FCIN through. Pinning "cin" made the
+            # provider apply CIN validation to every identifier, so an LLP
+            # could not be audited at all.
+            id_type = get("idType", "")
+            if str(id_type).strip().lower() in ("", "auto-detect", "auto"):
+                id_type = None
+
+            payload = fs.company_master(cin, id_type)
             facts = fs_mod.normalise_master(payload)
             active = str(facts.get("status", "")).lower() == "active"
             renamed = bool(facts.get("name_history"))
@@ -536,9 +551,14 @@ class CheckRunner:
                 check_id,
                 CheckStatus.PASS if active else CheckStatus.WARN,
                 f"{facts.get('status', 'Unknown')} · {facts.get('cin')}",
-                f"Incorporated {facts.get('incorporated_on')} · "
+                # Through the same formatters the detail panel uses. These
+                # were raw: the summary line read "Incorporated 1973-05-08 ·
+                # paid-up ₹13532.54 Cr" directly above a panel saying
+                # "08 May 1973" and "₹13,532.54 Cr" — one screen, one fact,
+                # two spellings.
+                f"Incorporated {_human_date(facts.get('incorporated_on')) or '—'} · "
                 f"{facts.get('class_of_company')} · paid-up "
-                f"₹{(facts.get('paidup_capital') or 0) / 10_000_000:.2f} Cr"
+                f"{_crore(facts.get('paidup_capital')) or '—'}"
                 + (" · company has been renamed previously" if renamed else ""),
                 raw={"facts": facts, "payload": payload},
                 facts=factsets.master(facts, subject=subject),
@@ -558,7 +578,10 @@ class CheckRunner:
                  f"{', '.join(d['name'] for d in disqualified)}. ")
                 if disqualified else
                 ", ".join(f"{d['name']} (DIN {d['din']})" for d in directors) or "None listed.",
-                raw={"directors": directors},
+                # Derived from the master payload — no call of its own, so
+                # no payload of its own. Named explicitly so the row points
+                # at the evidence instead of looking like it lost it.
+                raw={"directors": directors, "_derived_from": "master"},
                 facts=factsets.directors(directors),
             )
 
@@ -573,10 +596,10 @@ class CheckRunner:
                                raw=charges, facts=factsets.charges(charges))
             return Finding(
                 check_id, CheckStatus.WARN,
-                f"{len(open_charges)} open charge · ₹{charges['open_total'] / 10_000_000:.2f} Cr",
+                f"{len(open_charges)} open charge · {_crore(charges['open_total'])}",
                 "; ".join(
-                    f"{c['holder']} ₹{(c['amount'] or 0) / 10_000_000:.2f} Cr "
-                    f"created {c['created_on']}, not satisfied"
+                    f"{c['holder']} {_crore(c['amount']) or '—'} "
+                    f"created {_human_date(c['created_on']) or '—'}, not satisfied"
                     for c in open_charges
                 ),
                 raw=charges,
@@ -584,7 +607,7 @@ class CheckRunner:
             )
 
         if check_id == "resolve":
-            candidates = fs.resolve_company(
+            candidates, resolve_payload = fs.resolve_company(
                 get("q", vendor.name), state=get("state"), city=get("city"),
                 limit=int(get("limit", 10) or 10),
             )
@@ -592,7 +615,7 @@ class CheckRunner:
                 return Finding(check_id, CheckStatus.WARN, "No CIN found",
                                "No MCA registration traced — consistent with a "
                                "proprietorship or partnership firm.",
-                               raw={"candidates": []},
+                               raw={"candidates": [], "payload": resolve_payload},
                                facts=factsets.resolve_candidates([], subject=subject))
             top = candidates[0]
             strong = [c for c in candidates if (c.get("matchScore") or 0) >= 0.9]
@@ -602,13 +625,13 @@ class CheckRunner:
                     "More than one company matches this name closely. The "
                     "ambiguity is surfaced rather than resolved automatically — "
                     "auditing the wrong company is worse than auditing none.",
-                    raw={"candidates": candidates},
+                    raw={"candidates": candidates, "payload": resolve_payload},
                     facts=factsets.resolve_candidates(candidates, subject=subject),
                 )
             return Finding(check_id, CheckStatus.PASS,
                            f"{top.get('cin')} · {top.get('company')}",
                            f"Match score {top.get('matchScore')}.",
-                           raw={"candidates": candidates},
+                           raw={"candidates": candidates, "payload": resolve_payload},
                            facts=factsets.resolve_candidates(candidates,
                                                              subject=subject))
 
@@ -616,22 +639,29 @@ class CheckRunner:
             if not cin:
                 return Finding(check_id, CheckStatus.SKIP, "N/A", "No CIN.")
             year = get("year")
-            rows, meta = fs.filings(
+            # 200 is the provider's ceiling, and one call costs ₹5 whatever
+            # the limit — so the old default of 50 bought a quarter of the
+            # data for the same money. `page` was never wired at all, which
+            # meant page 1 was the only page anyone could ever reach.
+            rows, meta, filings_payload = fs.filings(
                 cin, form_id=get("formId", ""), year=int(year) if year else None,
-                limit=int(get("limit", 50) or 50),
+                limit=min(int(get("limit", 200) or 200), 200),
+                page=max(int(get("page", 1) or 1), 1),
             )
             if not rows:
                 return Finding(check_id, CheckStatus.WARN, "No filings returned",
                                "MCA holds no filings matching this filter.",
-                               raw={"rows": [], "meta": meta},
+                               raw={"rows": [], "meta": meta,
+                                    "payload": filings_payload},
                                facts=factsets.filings([], meta))
             latest = rows[0]
             return Finding(
                 check_id, CheckStatus.PASS, "Filings on record",
                 f"Most recent {latest.get('formId')} filed "
-                f"{latest.get('dateOfFiling')} · {meta.get('total', len(rows))} total "
+                f"{_human_date(latest.get('dateOfFiling')) or '—'} · "
+                f"{meta.get('total', len(rows))} total "
                 f"(page limit honoured: {meta.get('limit')})",
-                raw={"rows": rows, "meta": meta},
+                raw={"rows": rows, "meta": meta, "payload": filings_payload},
                 facts=factsets.filings(rows, meta),
             )
 
@@ -653,20 +683,24 @@ class CheckRunner:
             # store yet. A SHA-256 is kept so the file that was fetched can
             # still be IDENTIFIED later — which is most of what evidence
             # needs to do — and the gap is stated rather than implied.
-            digest = hashlib.sha256(content).hexdigest()
+            stored, note = self._keep_document(
+                content, vendor.id, check_id, f"{filing_id}.pdf")
+            digest = stored.sha256 if stored else hashlib.sha256(content).hexdigest()
             return Finding(
-                check_id, CheckStatus.PASS, f"Document retrieved · {len(content):,} bytes",
-                f"SHA-256 {digest[:16]}… — the document is identified but NOT "
-                f"retained: no document store is configured, so the bytes are "
-                f"not attached to this report.",
+                check_id, CheckStatus.PASS,
+                f"Document retrieved · {len(content):,} bytes",
+                (f"SHA-256 {digest[:16]}… — stored and attached to this report."
+                 if stored else
+                 f"SHA-256 {digest[:16]}… — identified but NOT retained: {note}"),
                 raw={
                     "filingId": filing_id, "cin": cin, "bytes": len(content),
                     "sha256": digest,
-                    "_note": ("The document body is not stored. This record "
-                              "identifies what was fetched; it is not the "
-                              "document."),
+                    "stored": bool(stored),
+                    "url": stored.url if stored else None,
                 },
-                facts=factsets.filing_document(filing_id, len(content), digest),
+                facts=factsets.filing_document(
+                    filing_id, len(content), digest,
+                    href=stored.url if stored else None, note=note),
             )
 
         if check_id == "frefresh":
@@ -723,9 +757,10 @@ class CheckRunner:
             return Finding(
                 check_id,
                 CheckStatus.PASS if facts["positive_net_worth"] else CheckStatus.WARN,
-                (f"Revenue ₹{revenue / 10_000_000:.2f} Cr" if revenue else "Filed financials"),
-                f"{facts['scope']} · FY ending {facts['period_end']} · net worth "
-                f"₹{(facts['net_worth'] or 0) / 10_000_000:.2f} Cr"
+                (f"Revenue {_crore(revenue)}" if revenue else "Filed financials"),
+                f"{facts['scope']} · FY ending "
+                f"{_human_date(facts['period_end']) or '—'} · net worth "
+                f"{_crore(facts['net_worth']) or '₹0'}"
                 + (f" · filing gaps in {gaps}" if gaps else ""),
                 # Was ``raw=facts``: the normaliser's output was stored and
                 # the provider's own response thrown away. A parse defect
@@ -779,18 +814,33 @@ class CheckRunner:
             loaded = [c for c in candidates
                       if (c.get("totalDirectorshipCount") or 0) >= alarm]
             top = candidates[0]
+            # `fullName`, not `name` — the latter is not a key this endpoint
+            # returns, and the summary line read "None 0, None 0, None 10".
+            # `status` is the field that actually separates these people: a
+            # search for one name returns several DINs, of which typically
+            # one is Approved and holding directorships and the rest are
+            # Lapsed and holding none.
+            live = [c for c in candidates
+                    if str(c.get("status") or "").lower() == "approved"
+                    and (c.get("totalDirectorshipCount") or 0)]
             return Finding(
                 check_id,
                 CheckStatus.WARN if (len(candidates) > 1 or loaded) else CheckStatus.PASS,
-                f"{top.get('din')} · {top.get('name')}"
+                f"{top.get('din')} · {top.get('fullName') or top.get('name')}"
                 if len(candidates) == 1 else f"{len(candidates)} possible matches",
                 (f"{len(loaded)} of these sit on {alarm}+ boards — the "
                  f"mass-director pattern. Confirm which person is meant "
                  f"before a DIN is used downstream."
                  if loaded else
-                 f"Directorship counts: "
-                 + ", ".join(f"{c.get('name')} {c.get('totalDirectorshipCount')}"
-                             for c in candidates[:5])),
+                 (f"One is active: DIN {live[0].get('din')}, "
+                  f"{live[0].get('totalDirectorshipCount')} directorships "
+                  f"including {(factsets.company_names(live[0]) or ['—'])[0]}. "
+                  f"The rest are lapsed."
+                  if len(live) == 1 and len(candidates) > 1 else
+                  " · ".join(
+                      f"{c.get('din')} {c.get('status') or '?'} "
+                      f"({c.get('totalDirectorshipCount') or 0} boards)"
+                      for c in candidates[:5]))),
                 raw={"candidates": candidates},
                 facts=factsets.director_candidates(
                     candidates, query=query, alarm=alarm),
@@ -955,7 +1005,7 @@ class CheckRunner:
             data = fs.account_usage()
             balance = (data.get("wallet") or {}).get("balancePaisa", 0)
             return Finding(check_id, CheckStatus.PASS,
-                           f"Wallet ₹{balance / 100:,.2f}", "Account usage retrieved.",
+                           f"Wallet {_paisa(balance)}", "Account usage retrieved.",
                            raw=data, facts=factsets.usage(data))
 
         # ---- GST · FinAGG GSP -----------------------------------------
@@ -1146,11 +1196,13 @@ class CheckRunner:
                     "— it is a sourced finding, not registry fact."
                     if check_id == "courtorderai" else "")),
                 raw={"cnr": cnr, "orders": fetched},
-                # pdf_base64 stays in raw. The facts blob carries a title, a
-                # size and an excerpt — a 50 KB base64 string per order has
-                # no business reaching a browser inline.
-                facts=factsets.orders(cnr, fetched,
-                                      generated=check_id == "courtorderai"),
+                # pdf_base64 stays in raw AND is now written to the document
+                # store, so the link in the panel opens the actual order
+                # rather than describing one. The base64 never reaches the
+                # browser either way — 50 KB per order, and unreadable.
+                facts=factsets.orders(
+                    cnr, self._keep_orders(fetched, vendor.id, check_id),
+                    generated=check_id == "courtorderai"),
             )
 
         if check_id == "causelist":
@@ -1328,6 +1380,96 @@ class CheckRunner:
                        f"No runner is wired for check '{check_id}'.")
 
     # =================================================================
+
+    def _keep_document(
+        self, content: bytes, vendor_id: str, check_id: str, filename: str,
+        *, kind: str = "pdf",
+    ) -> tuple[docs.StoredDocument | None, str]:
+        """Write a fetched document to the store and index it.
+
+        Returns ``(stored, note)``. A failure returns ``(None, why)`` and is
+        NEVER allowed to fail the check: the provider answered, the call was
+        paid for, and the finding it produced is still true. Losing the file
+        is our housekeeping problem, and the row says so in those words
+        rather than reporting an adverse result about the vendor.
+        """
+        try:
+            stored = docs.store(content, kind=kind, settings=self.settings)
+        except docs.DocumentStoreFull as exc:
+            logger.error("document store full: %s", exc)
+            return None, str(exc)
+        except (ValueError, OSError) as exc:
+            logger.error("could not store document for %s: %s", check_id, exc)
+            return None, f"the document could not be written ({exc})."
+
+        if not stored.deduplicated:
+            self.session.add(StoredDocumentRow(
+                sha256=stored.sha256, vendor_id=vendor_id, check_id=check_id,
+                filename=filename, bytes=stored.bytes,
+                media_type=docs.MEDIA_TYPES.get(kind, "application/octet-stream"),
+            ))
+        return stored, ""
+
+    def _keep_orders(self, fetched: list[dict], vendor_id: str,
+                     check_id: str) -> list[dict]:
+        """Decode each order's base64 PDF to a real file, and link it.
+
+        Each order arrives as a ~50 KB base64 string. Held only in
+        `raw_response` it is unreadable to everyone; written out, it is the
+        document a court actually issued. The base64 stays in raw as the
+        evidence it always was.
+        """
+        out = []
+        for order in fetched:
+            row = dict(order)
+            blob = row.get("pdf_base64")
+            if blob:
+                try:
+                    content = base64.b64decode(blob, validate=False)
+                except (ValueError, TypeError) as exc:
+                    logger.warning("%s: undecodable pdf_base64: %s", check_id, exc)
+                    content = b""
+                if content:
+                    name = str(row.get("filename") or "order").rsplit("/", 1)[-1]
+                    stored, note = self._keep_document(
+                        content, vendor_id, check_id,
+                        name if name.lower().endswith(".pdf") else f"{name}.pdf")
+                    if stored:
+                        row["href"] = stored.url
+                        row["sha256"] = stored.sha256
+                    else:
+                        row["store_note"] = note
+            out.append(row)
+        return out
+
+    @staticmethod
+    def _flag_thin(finding: Finding) -> Finding:
+        """Attach the thin-result flag, if this response earned one.
+
+        Applied at the ONE point every finding passes through, rather than
+        in each of the thirty-odd dispatch branches — a guard that has to be
+        remembered per check is a guard that will be forgotten on the
+        thirty-first.
+
+        Never changes a status. It appends a flag a person reads, because
+        "the parser probably missed something" is a suspicion, and a
+        suspicion must not move a score.
+        """
+        if not finding.facts or not finding.status.was_examined:
+            return finding
+        raw = finding.raw or {}
+        payload = raw.get("payload", raw) if isinstance(raw, dict) else raw
+        flag = factsets.thin_result(payload, finding.facts)
+        if flag:
+            finding.facts.setdefault("flags", []).insert(0, flag)
+            logger.warning(
+                "%s: %d fields populated from a %s-byte payload — possible "
+                "renamed field", finding.check_id,
+                sum(1 for f in finding.facts.get("fields") or []
+                    if f.get("value") not in (None, "", "—")),
+                len(str(payload)),
+            )
+        return finding
 
     def _prior_raw(self, vendor_id: str, check_id: str) -> dict:
         """What a previous run stored for this check, if anything.

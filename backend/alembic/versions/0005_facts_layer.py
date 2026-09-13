@@ -1,7 +1,7 @@
 """Facts layer: a renderable projection of each check's stored payload.
 
-Revision ID: 0003
-Revises: 0002
+Revision ID: 0005_facts_layer
+Revises: 0004_clients_auth
 Create Date: 2026-09-12
 
 WHAT THIS ADDS, AND WHY IT IS TWO COLUMNS RATHER THAN A TABLE
@@ -29,11 +29,14 @@ before or after the application is deployed, in either order, with no window
 where anything is broken. Rows written before this migration simply keep the
 behaviour they have today until their check is next run.
 
-BEFORE RUNNING
---------------
-``down_revision`` below assumes ``0002`` (the immutability triggers) is
-still head. Confirm with ``python -m alembic heads`` and correct it if this
-branch has picked up another migration in between.
+PLACE IN THE CHAIN
+------------------
+0001_initial -> 0002_immutability -> 0003_timestamptz -> 0004_clients_auth
+-> 0005_facts_layer (this one, head).
+
+Numbered 0005 and not 0004: `0004_clients_auth` already exists. It is also
+deliberately NOT called 0003 — `0003 timestamptz.py` holds that number, and
+two files claiming one revision id is how a chain becomes unresolvable.
 
 A NOTE ON GRANTS — the DPDP question in db/README.md
 ----------------------------------------------------
