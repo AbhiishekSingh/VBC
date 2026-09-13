@@ -1,6 +1,7 @@
 """Rebuild `vendor_checks.facts` from payloads already on file.
 
-NO NETWORK. NO CREDITS. NOT ONE PAISA.
+NO NETWORK. NO CREDITS. NOT ONE PAISA — unless you pass `--ocr`, which is
+the single exception and is spelled out below.
 
 This is the property the whole facts design exists for. `facts` is a
 projection of `raw_response`, so it can be thrown away and rebuilt at any
@@ -16,10 +17,20 @@ cost ₹5 to ₹330 each.
     python -m scripts.backfill_facts                    # every vendor
     python -m scripts.backfill_facts --vendor 234485    # just one
     python -m scripts.backfill_facts --check gst --force
+    python -m scripts.backfill_facts --ocr              # COSTS MONEY: see below
 
 By default a row is skipped when its facts are already at the current parser
 version. `--force` rebuilds regardless, which is what you want after fixing a
 parser without bumping PARSER_VERSION.
+
+`--ocr` IS THE ONE EXCEPTION
+---------------------------
+Two eCourts orders in three come back as scans, with `markdown: null`. The
+only way to read them is to put the page through OCR, and that is a real
+external call at about 14 paisa a page — against the ₹5 to ₹330 already
+spent fetching the order it recovers. It is opt-in, it refuses to run
+without VBC_ALLOW_PAID_CALLS, and it labels what it produces: OCR text is a
+MACHINE'S READING of an image, never what the court filed.
 
 SAFETY
 ------
@@ -41,7 +52,9 @@ from sqlalchemy.orm import Session
 from app.db.models import StoredDocument, Vendor, VendorCheck
 from app.db.session import get_engine
 from app.domain.facts import PARSER_VERSION
+from app.config import get_settings
 from app.providers import factsets as fx
+from app.providers.vision import VisionProvider
 from app.services import documents as docs
 
 
@@ -151,12 +164,14 @@ _DOCUMENT_CHECKS = ("courtorders", "courtorderai")
 
 def materialise_orders(
     fetched: list[dict], vendor_id: str, check_id: str, session: Session,
+    *, ocr: "VisionProvider | None" = None,
 ) -> tuple[list[dict], int]:
     """Write the PDFs and the order text that are sitting inside the payload.
 
-    NO NETWORK, NO CREDITS — same as the rest of this script. Every byte
-    here was already paid for and stored; it is just base64 inside
-    `raw_response`, which means unreadable to everyone.
+    Free, with one exception. Every byte here was already paid for and
+    stored; it is just base64 inside `raw_response`, which means unreadable
+    to everyone. The exception is `ocr`: when a reader is passed in, orders
+    that have NO filed text are sent to Vision at about 14 paisa a page.
 
     Rows fetched before the document store existed named an order with
     nothing to open. Rebuilding their facts alone does not fix that: a
@@ -186,6 +201,28 @@ def materialise_orders(
                     written += 1
 
         text = str(row.get("markdown") or row.get("content") or "")
+        if text.strip():
+            row["text_source"] = "filed"
+        elif ocr is not None and blob and not row.get("text_href"):
+            # The ONE thing in this script that costs money, and the only
+            # reason it is opt-in. ~14 paisa a page against the ₹5-₹330
+            # already spent fetching the order it recovers.
+            try:
+                content = base64.b64decode(blob, validate=False)
+                result = ocr.read_pdf(content) if content else None
+            except Exception as exc:  # noqa: BLE001
+                print(f"  OCR failed for {row.get('filename')}: {exc}",
+                      file=sys.stderr)
+                result = None
+            if result and result.get("text"):
+                text = str(result["text"])
+                row["text_source"] = "ocr"
+                row["ocr_language"] = result.get("language")
+                row["ocr_truncated"] = bool(result.get("truncated"))
+            elif result:
+                row["ocr_note"] = ("read, but no text on any page — a "
+                                   "signature sheet or a blank page.")
+
         if text.strip() and not row.get("text_href"):
             base = str(row.get("filename") or "order").rsplit("/", 1)[-1]
             stored = _store(text.encode("utf-8"), vendor_id, check_id, session,
@@ -223,6 +260,7 @@ def backfill(
     force: bool = False,
     dry_run: bool = False,
     write_documents: bool = True,
+    ocr: "VisionProvider | None" = None,
 ) -> dict[str, int]:
     stmt = select(VendorCheck)
     if vendor_id:
@@ -257,7 +295,8 @@ def backfill(
             if (write_documents and not dry_run
                     and row.check_id in _DOCUMENT_CHECKS):
                 enriched, written = materialise_orders(
-                    raw.get("orders") or [], row.vendor_id, row.check_id, session)
+                    raw.get("orders") or [], row.vendor_id, row.check_id,
+                    session, ocr=ocr)
                 raw = dict(raw, orders=enriched)
                 tally["documents"] += written
 
@@ -295,6 +334,12 @@ def main() -> int:
                     help="rebuild even rows already at the current parser version")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change and write nothing")
+    ap.add_argument("--ocr", action="store_true",
+                    help="read SCANNED orders with Google Vision. THIS COSTS "
+                         "MONEY — about 14 paisa a page, against the ₹5-₹330 "
+                         "already spent fetching the order. Needs "
+                         "VBC_GOOGLE_VISION_API_KEY. Everything else in this "
+                         "script stays free.")
     ap.add_argument("--no-documents", action="store_true",
                     help="rebuild facts only; do not write the PDFs and order "
                          "text that are sitting base64-encoded inside the "
@@ -304,10 +349,24 @@ def main() -> int:
     # get_engine(), not a module-level `engine`: session.py builds it
     # lazily on purpose, and importing the attribute would open a
     # connection at import time.
+    reader = None
+    if args.ocr:
+        settings = get_settings()
+        if not settings.vision_configured:
+            print("--ocr needs VBC_GOOGLE_VISION_API_KEY set on this box.",
+                  file=sys.stderr)
+            return 2
+        if not settings.allow_paid_calls:
+            print("--ocr spends real money and VBC_ALLOW_PAID_CALLS is false. "
+                  "Set it deliberately, or run without --ocr.", file=sys.stderr)
+            return 2
+        reader = VisionProvider(settings)
+        print("OCR is ON. Scanned orders will be read at ~14 paisa a page.")
+
     with Session(get_engine()) as session:
         tally = backfill(session, vendor_id=args.vendor, check_id=args.check,
                          force=args.force, dry_run=args.dry_run,
-                         write_documents=not args.no_documents)
+                         write_documents=not args.no_documents, ocr=reader)
 
     print(f"\nparser version {PARSER_VERSION}"
           f"{'  (DRY RUN — nothing written)' if args.dry_run else ''}")

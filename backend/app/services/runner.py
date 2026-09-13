@@ -58,6 +58,7 @@ from app.providers import filesure as fs_mod
 from app.providers import ecourts as ec_mod
 from app.providers import finagg as fa_mod
 from app.providers import inhouse
+from app.providers import vision as vision_mod
 from app.providers import whoisxml as wx_mod
 from app.providers.base import (
     NotConfigured,
@@ -247,10 +248,11 @@ class CheckRunner:
         self.archive = archive_mod.ArchiveProvider(self.settings, spend=self.spend)
         self.finagg = fa_mod.FinaggProvider(self.settings, spend=self.spend)
         self.ecourts = ec_mod.EcourtsProvider(self.settings, spend=self.spend)
+        self.vision = vision_mod.VisionProvider(self.settings, spend=self.spend)
 
     def close(self) -> None:
         for provider in (self.filesure, self.whoisxml, self.archive,
-                         self.finagg, self.ecourts):
+                         self.finagg, self.ecourts, self.vision):
             provider.close()
 
     # =================================================================
@@ -1410,6 +1412,28 @@ class CheckRunner:
             ))
         return stored, ""
 
+    def _ocr(self, content: bytes, check_id: str) -> dict | None:
+        """Read a scanned order, when that is switched on and configured.
+
+        Returns None when OCR did not happen — off, no key, refused, or it
+        failed. None is not an error state: the order keeps its PDF and the
+        row says no text was available, which was true before this existed
+        and is still true.
+
+        Nothing here may raise. The order was fetched and paid for; failing
+        the whole check because a reading aid was unavailable would turn a
+        successful retrieval into an unexamined one, which is the one thing
+        this codebase refuses to do.
+        """
+        if not self.settings.vision_ocr_orders:
+            return None
+        try:
+            return self.vision.read_pdf(content)
+        except (ProviderError, ValueError) as exc:
+            logger.warning("%s: OCR unavailable (%s): %s",
+                           check_id, type(exc).__name__, exc)
+            return None
+
     def _keep_orders(self, fetched: list[dict], vendor_id: str,
                      check_id: str) -> list[dict]:
         """Decode each order's base64 PDF to a real file, and link it.
@@ -1446,6 +1470,23 @@ class CheckRunner:
             # in a panel rather than a viewer. Stored on the same terms as
             # the PDF so both survive a re-render of the facts.
             text = str(row.get("markdown") or row.get("content") or "")
+            if text.strip():
+                row["text_source"] = "filed"
+            elif content:
+                # Nothing filed as text — the order is a scan. OCR is the
+                # only way to read it, and what comes back is a MACHINE'S
+                # READING of an image, not what the court wrote. The flag
+                # travels with it so nothing downstream can lose that.
+                ocr = self._ocr(content, check_id)
+                if ocr and ocr.get("text"):
+                    text = str(ocr["text"])
+                    row["text_source"] = "ocr"
+                    row["ocr_language"] = ocr.get("language")
+                    row["ocr_truncated"] = bool(ocr.get("truncated"))
+                elif ocr:
+                    row["ocr_note"] = ("read, but no text on any page — a "
+                                       "signature sheet or a blank page.")
+
             if text.strip():
                 base = str(row.get("filename") or "order").rsplit("/", 1)[-1]
                 stored, note = self._keep_document(
