@@ -1619,8 +1619,16 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
         # that "the order" is how a finding ends up looking answered when it
         # has only been sampled.
         if text:
+            # "as filed" and "read off a scan by OCR" are NOT the same
+            # claim, and the difference has to survive all the way to the
+            # screen. A misread digit in an amount or a misread name in a
+            # party puts something in an audit report that no court wrote.
+            machine_read = order.get("text_source") == "ocr"
             docs.append(F.document(
-                f"{_stem(name)} — readable text", "text",
+                f"{_stem(name)} — "
+                + ("text read from the scan (OCR)" if machine_read
+                   else "readable text"),
+                "text",
                 size_bytes=len(text),
                 excerpt=text,
                 href=order.get("text_href"),
@@ -1628,9 +1636,10 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
         elif order.get("pdf_base64") or order.get("href"):
             docs.append(F.document(
                 f"{_stem(name)} — no text available", "text",
-                excerpt="This order came back as a scanned PDF the provider "
-                        "could not convert to text. Open the PDF above to "
-                        "read it.",
+                excerpt=str(order.get("ocr_note") or
+                            "This order came back as a scanned PDF the "
+                            "provider could not convert to text. Open the "
+                            "PDF above to read it."),
             ))
     return F.build(
         F.DOCUMENT,
@@ -1639,11 +1648,46 @@ def orders(cnr: str, fetched: list[dict], *, generated: bool = False) -> dict:
         note=("Analysis is produced by the PROVIDER's model, not by VBC. It is "
               "a sourced finding, not registry fact." if generated else
               "Order text as filed. PDFs are stored and linked, never inlined."),
-        flags=[F.flag("warn", "Some orders were not retained",
-                      "; ".join(sorted({str(o["store_note"]) for o in fetched
-                                        if o.get("store_note")})))]
-        if any(o.get("store_note") for o in fetched) else None,
+        flags=_order_flags(fetched),
     )
+
+
+def _order_flags(fetched: list[dict]) -> list[dict] | None:
+    """What is true of these order documents, as opposed to of the case."""
+    flags = []
+
+    scanned = [o for o in fetched if o.get("text_source") == "ocr"]
+    if scanned:
+        languages = sorted({str(o.get("ocr_language")) for o in scanned
+                            if o.get("ocr_language")})
+        flags.append(F.flag(
+            "warn",
+            f"{F.plural(len(scanned), 'order')} read by OCR, not as filed",
+            f"{_join([_stem(str(o.get('filename') or 'order')) for o in scanned])} "
+            f"came back as scanned images, so the text shown is a MACHINE'S "
+            f"READING of the page"
+            + (f" (detected {', '.join(languages)})" if languages else "")
+            + ". OCR misreads digits and names. The PDF is the document; "
+              "quote the PDF, not this, and check any figure or party name "
+              "against it before it goes in a report.",
+        ))
+
+    cut = [o for o in scanned if o.get("ocr_truncated")]
+    if cut:
+        flags.append(F.flag(
+            "warn", "Only the first pages were read",
+            f"{_join([_stem(str(o.get('filename') or 'order')) for o in cut])} "
+            f"ran to the page limit, so the text below stops partway through "
+            f"the order. The full document is in the PDF.",
+        ))
+
+    if any(o.get("store_note") for o in fetched):
+        flags.append(F.flag(
+            "warn", "Some orders were not retained",
+            "; ".join(sorted({str(o["store_note"]) for o in fetched
+                              if o.get("store_note")}))))
+
+    return flags or None
 
 
 def causelist(data: dict, *, subject: str | None = None) -> dict:

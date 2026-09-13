@@ -88,6 +88,14 @@ def health():
             ),
             "ecourts": "live" if settings.ecourts_configured else "not_configured",
             "archive": "live",
+            # Three states, not two. A key that is present but switched off
+            # is a different situation from no key at all, and "why is this
+            # order still unreadable" has a different answer in each.
+            "vision": (
+                "live" if settings.vision_configured and settings.vision_ocr_orders
+                else "configured_off" if settings.vision_configured
+                else "not_configured"
+            ),
         },
         "paidCallsEnabled": settings.allow_paid_calls,
     }

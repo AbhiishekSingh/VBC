@@ -82,6 +82,26 @@ class Settings(BaseSettings):
     #: people's sites going down.
     document_min_free_bytes: int = 5 * 1024 * 1024 * 1024   # 5 GB
 
+    # --- Google Cloud Vision (OCR) -------------------------------------
+    #: Reads text off a SCANNED order, for the two orders in three where
+    #: eCourts returns `markdown: null` because the order was filed as an
+    #: image. A plain API key, restricted to the Vision API in the Google
+    #: console — it is sent as a query parameter, so a key with wider scope
+    #: is a key in an access log.
+    google_vision_api_key: str = ""
+
+    #: How far into one document to read. Google's synchronous endpoint
+    #: stops at 5 pages regardless; this exists so the DEFAULT can be lower
+    #: than the ceiling. Most orders are 1-3 pages, and the useful part of a
+    #: long one is almost always at the front.
+    vision_max_pages_per_document: int = 5
+
+    #: OCR every scanned order automatically as it is fetched. Off by
+    #: default: it is a real external call that costs real money, and an
+    #: audit tool should not start spending because a dependency appeared.
+    #: Turn it on deliberately, or run the backfill with `--ocr`.
+    vision_ocr_orders: bool = False
+
     # --- WhoisXML ------------------------------------------------------
     #: One key across all products, but credits are per-product POOLS, not
     #: one balance. The screenshot pool is the tightest at 10.
@@ -200,6 +220,10 @@ class Settings(BaseSettings):
     @property
     def whoisxml_configured(self) -> bool:
         return bool(self.whoisxml_api_key)
+
+    @property
+    def vision_configured(self) -> bool:
+        return bool(self.google_vision_api_key)
 
     @property
     def ecourts_configured(self) -> bool:
