@@ -1,4 +1,4 @@
-"""The check catalog: all 32 checks, including the 9 that have no provider.
+"""The check catalog: all 47 checks, including the 8 that have no live provider.
 
 The unconfigured checks are NOT omitted. They are seeded with
 ``state=NOT_CONFIGURED`` so that a gap in coverage is a visible row rather
@@ -65,16 +65,24 @@ CHECKS: tuple[CheckDefinition, ...] = (
         id="master",
         group=CheckGroup.MCA,
         name="Company master",
-        endpoint="GET /v1/companies/{cin}?idType=cin",
+        endpoint="GET /v1/companies/{id}",
         provider=FS,
-        note="Status, incorporation date, capital, registered address",
+        note=("Status, incorporation date, capital, registered address. "
+              "Accepts a CIN, an LLPIN or an FCIN — the source detects which."),
         cost_paisa=500,    # ₹5.00  companies.master
         feeds=("S1", "S2"),
         params=(
-            _p("cin", "CIN", required=True, from_vendor="cin",
-               placeholder="U21029MH2013PTC245119"),
-            _p("idType", "Look up by", type="select",
-               options=("cin", "name"), default="cin"),
+            _p("cin", "CIN / LLPIN / FCIN", required=True, from_vendor="cin",
+               placeholder="U21029MH2013PTC245119 · ACK-2998"),
+            # "Auto-detect" is the default and should stay that way. This
+            # was a cin/name select: "name" is not a value the API accepts,
+            # and the adapter pinned "cin" regardless — so the control did
+            # nothing whichever way it was set, while quietly making every
+            # LLP un-auditable. Now it only tightens validation when a
+            # caller is sure.
+            _p("idType", "Identifier type", type="select",
+               options=("Auto-detect", "cin", "llpin", "fcin"),
+               default="Auto-detect"),
         ),
     ),
     CheckDefinition(
@@ -172,7 +180,12 @@ CHECKS: tuple[CheckDefinition, ...] = (
                options=("All forms", "AOC-4", "MGT-7", "CHG-9", "CHG-4", "ADT-1"),
                default="All forms"),
             _p("year", "Year", type="number", placeholder="2024"),
-            _p("limit", "Results per page", type="number", default="50"),
+            # 200 is the provider's maximum and one call costs ₹5 whatever
+            # the limit, so 50 was paying full price for a quarter of the
+            # data. A company can hold thousands of filings — Reliance has
+            # 3,209 — and page 1 of 50 was all anyone ever saw.
+            _p("limit", "Results per page", type="number", default="200"),
+            _p("page", "Page", type="number", default="1"),
         ),
     ),
     CheckDefinition(
@@ -728,10 +741,12 @@ def expand_selection(selected: list[str]) -> list[str]:
     return out
 
 
-#: 34 before GST. The FinAGG integration replaced the single `gst` hook
-#: with two live checks — `gst` (search) and `gstret` (returns metadata) —
-#: because the two facts come from two endpoints, so 35 checks and one
-#: fewer hook.
+#: 47 = 39 live + 8 hooks. History, because the count has been misquoted
+#: in three project docs: 32 originally; 34 after the FileSure additions
+#: (`dresolve`, `frefresh`); 35 when the FinAGG integration replaced the
+#: single `gst` hook with two live checks — `gst` (search) and `gstret`
+#: (returns metadata), the two facts coming from two endpoints; then 47
+#: when the twelve live eCourts checks landed.
 assert len(CHECKS) == 47, f"expected 47 checks, got {len(CHECKS)}"
 #: 8, not 7: `court` went back to a hook on 2026-09-08 when LegalCheck
 #: submit could not be made to accept any request body. The other twelve

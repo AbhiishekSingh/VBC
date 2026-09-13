@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.catalog.checks import CHECKS
 from app.db.base import Base
 from app.db.models import (
     AuditLog,
@@ -91,7 +92,7 @@ def make_vendor(session, fixture_id="234479", **overrides) -> Vendor:
 class TestSeeding:
     def test_seeds_the_whole_catalog(self, session, seeded):
         assert session.scalar(select(CheckDefinitionRow).where(CheckDefinitionRow.id == "master"))
-        assert len(session.scalars(select(CheckDefinitionRow)).all()) == 34
+        assert len(session.scalars(select(CheckDefinitionRow)).all()) == len(CHECKS)
         assert len(session.scalars(select(ScanParameterRow)).all()) == 18
         assert len(session.scalars(select(ManualFieldTemplate)).all()) == 17
 
@@ -100,13 +101,22 @@ class TestSeeding:
         hooks = session.scalars(
             select(CheckDefinitionRow).where(CheckDefinitionRow.state == "not_configured")
         ).all()
-        assert len(hooks) == 9
-        assert {h.id for h in hooks} >= {"gst", "ofac", "rbi", "news", "court"}
+        assert len(hooks) == 8
+        assert {h.id for h in hooks} >= {"ofac", "rbi", "news", "court"}
+        # `gst` is NOT a hook any more — FinAGG went live on 2026-09-09.
+        assert "gst" not in {h.id for h in hooks}
 
-    def test_gst_hook_still_declares_what_it_would_fill(self, session, seeded):
+    def test_gst_is_live_and_split_across_two_checks(self, session, seeded):
+        """The single `gst` hook became two checks: the facts come from
+        two endpoints, so C2 cannot be filled by the search call."""
         gst = session.get(CheckDefinitionRow, "gst")
-        assert gst.feeds_params == ["C1", "C2", "C3", "C4", "C5"]
-        assert gst.state == "not_configured"
+        assert gst.state == "active"
+        assert gst.feeds_params == ["C1", "C3", "C4", "C5"]
+
+        gstret = session.get(CheckDefinitionRow, "gstret")
+        assert gstret.state == "active"
+        assert gstret.feeds_params == ["C2"]
+        assert gstret.requires == ["gst"]
 
     def test_is_idempotent(self, session, seeded):
         before = session.scalars(select(CatalogVersion)).all()
@@ -386,8 +396,15 @@ class TestRoundTrip:
         score = record_score(session, "234479")
         assert len(score.risk_ledger) == 13
         gst_rule = next(r for r in score.risk_ledger if r["id"] == "r10")
-        assert gst_rule["state"] == "not_configured"
-        assert gst_rule["explanation"] == "source not configured"
+        # `not_selected`, not `not_configured`: this expectation predates GST
+        # being wired. r10 reads the `gst` check, which HAS a provider now —
+        # it simply was not selected for this fixture. The two states are
+        # different sentences in a report ("no provider exists" vs "the
+        # analyst did not run it"), which is why the test pins it at all.
+        assert gst_rule["state"] == "not_selected"
+        # The explanation has to move with the state, or the report says one
+        # thing in its status column and the opposite in its prose.
+        assert gst_rule["explanation"] == "check not selected for this vendor"
         assert score.risk_dead_rules == 4
 
     def test_pillar_breakdown_is_stored(self, session, seeded):

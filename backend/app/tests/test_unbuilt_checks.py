@@ -296,6 +296,118 @@ class TestDirectorResolve:
 
 
 # =====================================================================
+# dresolve, against what the endpoint actually sends
+#
+# The fixtures above use `name` and `totalDirectorshipCount`, and passed
+# for a year while the live check rendered a column of DINs beside four
+# columns of dashes. The endpoint sends `fullName`, `status`, `companies`
+# and `dinAllocationDate`. These tests use the real keys.
+# =====================================================================
+
+#: Trimmed from the live response for "Mukesh Dhirubhai Ambani" — four
+#: DINs on one name, which is the whole reason this check exists.
+AMBANI = [
+    {"din": "00001691", "fullName": "MUKESH DHIRUBHAI AMBANI", "status": "Lapsed",
+     "totalDirectorshipCount": 0, "companies": [],
+     "matchScore": 1736172819525404700},
+    {"din": "00001695", "fullName": "MUKESH DHIRUBHAI AMBANI", "status": "Approved",
+     "totalDirectorshipCount": 10, "dinAllocationDate": "05/25/2006",
+     "companies": ["SHIVANGI COMMERCIALS LLP", "RELIANCE INDUSTRIES LIMITED",
+                   "JIO PLATFORMS LIMITED", "RELIANCE RETAIL VENTURES LIMITED",
+                   "RELIANCE STRATEGIC BUSINESS VENTURES LIMITED"],
+     "matchScore": 1736172819525404700},
+    {"din": "02366382", "fullName": "MUKESH DHIRUBHAI AMBANI", "status": "Lapsed",
+     "totalDirectorshipCount": 0, "companies": []},
+    {"din": "07626087", "fullName": "MUKESH DHIRUBHAI AMBANI", "status": "Lapsed",
+     "totalDirectorshipCount": 0, "companies": []},
+]
+
+
+def ambani_table():
+    from app.providers.factsets import director_candidates
+    return director_candidates(AMBANI)["table"]
+
+
+def cell(table, din, key):
+    return next(r[key] for r in table["rows"] if r["din"] == din)
+
+
+class TestDirectorResolveRealKeys:
+    def test_the_name_is_read(self):
+        assert cell(ambani_table(), "00001695", "name") == "MUKESH DHIRUBHAI AMBANI"
+
+    def test_the_companies_are_read(self):
+        """The user's report, in one assertion: "it's not showing company's
+        name … which is important thing". Four identical names and four
+        DINs are not a result; the companies are what tells you which
+        Mukesh Ambani this is."""
+        assert "RELIANCE INDUSTRIES LIMITED" in cell(ambani_table(), "00001695", "companies")
+
+    def test_a_long_list_is_truncated_with_a_count(self):
+        """A conglomerate director holds dozens. The count column already
+        says how many, so the cell shows the first few and how many more."""
+        assert "and 1 more" in cell(ambani_table(), "00001695", "companies")
+
+    def test_companies_may_arrive_as_objects(self):
+        """Some accounts get `[{"name": …, "cin": …}]` instead of plain
+        strings. Joining blind raised `TypeError: expected str instance,
+        dict found` — and a parser that crashes is worse than the blank
+        column it was written to fix, because the call has already been
+        paid for and the whole check dies with it."""
+        rich = [dict(c, companies=[{"name": n, "cin": "X"} for n in c["companies"]])
+                for c in AMBANI]
+        from app.providers.factsets import director_candidates
+        table = director_candidates(rich)["table"]
+        assert "RELIANCE INDUSTRIES LIMITED" in cell(table, "00001695", "companies")
+
+    def test_the_lapsed_dins_are_named_as_lapsed(self):
+        assert cell(ambani_table(), "00001691", "status") == "Lapsed"
+
+    def test_the_allocation_date_is_read_as_month_day_year(self):
+        """FileSure sends slashed dates MM/DD/YYYY. Read as DD/MM this
+        would be the 5th of an impossible 25th month, or silently the
+        wrong date on any day under 13."""
+        assert cell(ambani_table(), "00001695", "allocated") == "25 May 2006"
+
+    def test_the_one_active_din_is_called_out(self):
+        """Three lapsed and one approved is an answerable question. Stated,
+        not left for the reader to work out from the table."""
+        from app.providers.factsets import director_candidates
+        flags = director_candidates(AMBANI)["flags"]
+        assert any("00001695" in f["label"] for f in flags)
+
+    def test_the_callout_is_an_inference_not_an_identification(self):
+        from app.providers.factsets import director_candidates
+        flag = director_candidates(AMBANI)["flags"][0]
+        assert "not an identification" in flag["detail"]
+        assert flag["level"] == "info"
+
+    def test_the_summary_line_names_a_company_too(self):
+        """The one line that appears in the findings list without opening
+        anything. It used to read "None 0, None 0, None 10"."""
+        runner, _ = make_runner(FakeSession(None), resolve_director=AMBANI)
+        finding = dispatch(runner, "dresolve",
+                           {"dresolve": {"q": "Mukesh Dhirubhai Ambani"}})
+        assert "SHIVANGI COMMERCIALS LLP" in finding.detail
+        assert "None" not in finding.detail
+
+    def test_the_summary_line_survives_object_companies(self):
+        """Same coercion as the table, and the reason it lives at module
+        level: two copies is how one of them ends up not fixed."""
+        rich = [dict(c, companies=[{"name": n} for n in c["companies"]])
+                for c in AMBANI]
+        runner, _ = make_runner(FakeSession(None), resolve_director=rich)
+        finding = dispatch(runner, "dresolve", {"dresolve": {"q": "M Ambani"}})
+        assert "SHIVANGI COMMERCIALS LLP" in finding.detail
+
+    def test_match_score_is_not_shown(self):
+        """It comes back as 1736172819525404700 — identical on every
+        candidate. Rendering it would put a number that looks like a
+        ranking next to four rows it does not rank."""
+        assert not any(c["key"] == "matchScore" for c in ambani_table()["columns"])
+
+
+# =====================================================================
 # dcontact — PII, and an unbounded bill
 # =====================================================================
 
@@ -349,16 +461,45 @@ class TestDirectorContact:
 # =====================================================================
 
 class TestFilingDownload:
-    def test_the_document_is_identified_and_the_gap_is_stated(self):
-        """No document store exists yet. A row saying "retrieved" with
-        nothing to open would read as an attachment that failed to load."""
+    def test_the_document_is_stored_and_linked(self, tmp_path):
+        """It used to record a size and a digest and throw the bytes away,
+        so the row said "document retrieved" with nothing to open."""
         runner, _ = make_runner(FakeSession(None),
                                 download_filing=b"%PDF-1.4 body" * 100)
+        runner.settings = Settings(document_root=str(tmp_path))
         finding = dispatch(runner, "download", {"download": {"filingId": "flg_1"}})
         assert finding.status is CheckStatus.PASS
         assert len(finding.raw["sha256"]) == 64
         assert finding.raw["bytes"] == 1300
+        assert finding.raw["stored"] is True
+        # A link the panel can actually open.
+        assert finding.facts["documents"][0]["href"] == finding.raw["url"]
+        # ...and no "not retained" warning, because it was retained.
+        assert not flags_of(finding)
+
+    def test_a_full_disk_is_our_problem_not_the_vendor_s(self, tmp_path):
+        """The check still passes and still reports what it found. Losing
+        the file is housekeeping — it must not read as an adverse finding,
+        and it must not fail a paid call that already succeeded."""
+        runner, _ = make_runner(FakeSession(None),
+                                download_filing=b"%PDF-1.4 body" * 100)
+        runner.settings = Settings(
+            document_root=str(tmp_path),
+            document_min_free_bytes=10 ** 18,      # nothing will ever fit
+        )
+        finding = dispatch(runner, "download", {"download": {"filingId": "flg_1"}})
+        assert finding.status is CheckStatus.PASS
+        assert finding.raw["stored"] is False
         assert "Document is identified, not retained" in flags_of(finding)
+
+    def test_the_same_document_twice_is_stored_once(self, tmp_path):
+        """Content-addressed: re-running a check costs no extra disk."""
+        body = b"%PDF-1.4 body" * 100
+        for _ in range(2):
+            runner, _ = make_runner(FakeSession(None), download_filing=body)
+            runner.settings = Settings(document_root=str(tmp_path))
+            dispatch(runner, "download", {"download": {"filingId": "flg_1"}})
+        assert len(list(tmp_path.rglob("*.pdf"))) == 1
 
     def test_the_document_body_never_reaches_facts_or_raw(self):
         body = b"%PDF-1.4 SENSITIVE" * 200

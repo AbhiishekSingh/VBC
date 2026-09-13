@@ -264,8 +264,11 @@ class TestFileSureTransport:
             })
 
         with FileSureProvider(settings(), mock_client(handler)) as fs:
-            rows, meta = fs.filings("U1", limit=50)
+            rows, meta, payload = fs.filings("U1", limit=50)
         assert isinstance(rows, list) and rows[0]["formId"] == "AOC-4"
+        # The provider's own response is handed back, not discarded — it is
+        # the evidence this finding was computed from.
+        assert payload["meta"]["total"] == 653
         # The server capped it at 20 despite the request for 50 — the caller
         # must read meta back rather than trusting its own request.
         assert meta["limit"] == 20

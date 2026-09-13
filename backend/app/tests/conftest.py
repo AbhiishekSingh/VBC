@@ -108,3 +108,27 @@ def seeded(session):
     version = seed(session, note="test")
     session.commit()
     return version
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_document_store(tmp_path_factory):
+    """No test ever writes a PDF into the repository.
+
+    `Settings.document_root` defaults to `backend/storage/documents`, which
+    is right in production and wrong in a test run — a check that stores a
+    document would leave files in the working tree, and they would be
+    committed by whoever ran `git add .` next.
+
+    Session-scoped and autouse, so it cannot be forgotten by a test that
+    happens to exercise a storing check: the environment variable is read
+    by every `Settings()` construction, including the ones built deep
+    inside the runner where a fixture could not reach.
+    """
+    root = tmp_path_factory.mktemp("documents")
+    previous = os.environ.get("VBC_DOCUMENT_ROOT")
+    os.environ["VBC_DOCUMENT_ROOT"] = str(root)
+    yield root
+    if previous is None:
+        os.environ.pop("VBC_DOCUMENT_ROOT", None)
+    else:
+        os.environ["VBC_DOCUMENT_ROOT"] = previous

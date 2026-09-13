@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     #: Not adverse on its own, so it raises a flag and never a status.
     filesure_directorship_alarm: int = 20
 
+    # --- document store -------------------------------------------------
+    #: Where filing and order PDFs are kept. MUST stay outside
+    #: `frontend/dist`, which nginx serves directly — documents are reached
+    #: through the authenticated API, never by guessing a URL.
+    document_root: str = str(BACKEND_ROOT / "storage" / "documents")
+    #: Per-file ceiling. A filing PDF is normally well under this; anything
+    #: larger is more likely a wrong endpoint than a real document.
+    document_max_bytes: int = 25 * 1024 * 1024        # 25 MB
+    #: Refuse to write when this little would be left. This box is SHARED —
+    #: Frappe, gridlines, diacare, abgip and steelx live on the same volume,
+    #: at ~86% used. A missing PDF is a nuisance; a full disk is six other
+    #: people's sites going down.
+    document_min_free_bytes: int = 5 * 1024 * 1024 * 1024   # 5 GB
+
     # --- WhoisXML ------------------------------------------------------
     #: One key across all products, but credits are per-product POOLS, not
     #: one balance. The screenshot pool is the tightest at 10.

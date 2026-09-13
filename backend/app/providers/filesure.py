@@ -201,7 +201,7 @@ class FileSureProvider(HttpProvider):
 
     def resolve_company(
         self, query: str, *, state: str = "", city: str = "", limit: int = 10
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict]:
         """Name → CIN. Ranked by ``matchScore``.
 
         Most candidate fields come back NULL — this returns identity and a
@@ -209,6 +209,13 @@ class FileSureProvider(HttpProvider):
         more than one candidate scores high the AMBIGUITY IS THE FINDING:
         the caller surfaces it rather than auto-picking, because picking the
         wrong company silently audits the wrong business.
+
+        Returns ``(candidates, payload)``. The payload is handed back — not
+        thrown away as it used to be — because it is the evidence the
+        finding was computed from. Storing only the extracted candidates
+        meant a defect in this method could never be diagnosed afterwards:
+        the bytes it misread were gone, and re-fetching them costs ₹5 and
+        returns whatever MCA says TODAY, not what it said then.
         """
         params: dict[str, Any] = {"q": query, "limit": limit}
         if state:
@@ -216,20 +223,59 @@ class FileSureProvider(HttpProvider):
         if city:
             params["city"] = city
         response = self._call("GET", "/v1/companies/resolve", paisa=READ_PAISA, params=params)
-        return self._data(response).get("candidates", []) or []
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        return (self._data(response).get("candidates", []) or []), payload
 
-    def company_master(self, cin: str) -> dict:
-        """Master data: status, capital, address, directors, charges — one call."""
+    #: The identifier types MCA issues, and the provider accepts. Not just
+    #: CIN: an LLP has an LLPIN (``ACK-2998``) and a foreign company an
+    #: FCIN, and both are perfectly ordinary vendors to audit.
+    ID_TYPES = ("cin", "fcin", "llpin")
+
+    def company_master(self, identifier: str, id_type: str | None = None) -> dict:
+        """Master data: status, capital, address, directors, charges — one call.
+
+        ``idType`` is OMITTED by default, which is what makes LLPs and
+        foreign companies work at all.
+
+        It used to be pinned to ``"cin"``. The provider then applied CIN
+        validation to whatever was sent, so an LLPIN — a perfectly valid
+        identifier the same endpoint accepts — came back
+        ``400 INVALID_CIN``, and an LLP simply could not be audited. The
+        provider's own documentation says of this parameter: *"Optional.
+        Tighter validation when set; auto-detect when omitted."* Omitting
+        it is both more permissive and the documented default.
+
+        Pass ``id_type`` only to opt INTO the stricter check, when the
+        caller genuinely knows which kind of identifier it holds.
+        """
+        params: dict[str, Any] = {}
+        if id_type:
+            wanted = str(id_type).strip().lower()
+            if wanted not in self.ID_TYPES:
+                # Refused here rather than sent: the provider answers
+                # `400 INVALID_ID_TYPE`, which costs a call to learn.
+                raise ValueError(
+                    f"'{id_type}' is not an identifier type this API accepts. "
+                    f"Use one of {', '.join(self.ID_TYPES)}, or leave it blank "
+                    f"to let the source detect it."
+                )
+            params["idType"] = wanted
+
         response = self._call(
-            "GET", f"/v1/companies/{cin}", paisa=READ_PAISA, params={"idType": "cin"}
+            "GET", f"/v1/companies/{identifier}", paisa=READ_PAISA,
+            params=params or None,
         )
         return self._data(response)
 
     def filings(
         self, cin: str, *, form_id: str = "", year: int | None = None,
         limit: int = 50, page: int = 1,
-    ) -> tuple[list[dict], dict]:
-        """Filing history. Returns (rows, pagination).
+    ) -> tuple[list[dict], dict, dict]:
+        """Filing history. Returns (rows, pagination, payload).
+
+        The payload is returned so the caller can store the provider's own
+        response rather than only this method's reading of it. Keeping just
+        `rows` meant a parse defect here left nothing to diagnose it with.
 
         ``data`` is a BARE ARRAY here — unlike every other endpoint — and
         pagination lives in ``meta``. The server may cap ``limit`` below what
@@ -274,7 +320,7 @@ class FileSureProvider(HttpProvider):
                 if isinstance(r, dict)
                 and normalise_form_id(r.get("formId") or r.get("formType")) == wanted
             ]
-        return rows, meta
+        return rows, meta, (payload if isinstance(payload, dict) else {})
 
     def download_filing(self, cin: str, filing_id: str) -> bytes:
         """Raw document bytes. Not JSON. Company must be unlocked."""
