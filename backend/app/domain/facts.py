@@ -199,7 +199,15 @@ def document(
     if href:
         out["href"] = href
     if excerpt:
+        # The cap is the point: a fact blob is loaded with every findings
+        # page, and a court order is pages long. The FULL text lives behind
+        # `href` as its own stored document.
         out["excerpt"] = excerpt[:400]
+        # Stated rather than guessed at by the renderer, which previously
+        # appended an ellipsis to every excerpt — including the short ones
+        # that were complete, so a one-line note read as a truncation.
+        if len(excerpt) > 400:
+            out["excerptTruncated"] = True
     return out
 
 

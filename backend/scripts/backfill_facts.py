@@ -31,16 +31,18 @@ backfill of three thousand.
 from __future__ import annotations
 
 import argparse
+import base64
 import sys
 from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Vendor, VendorCheck
+from app.db.models import StoredDocument, Vendor, VendorCheck
 from app.db.session import get_engine
 from app.domain.facts import PARSER_VERSION
 from app.providers import factsets as fx
+from app.services import documents as docs
 
 
 def _subject(vendor: Vendor | None) -> str | None:
@@ -142,12 +144,85 @@ BUILDERS: dict[str, Callable[[dict, Any], dict]] = {
 }
 
 
+#: Checks whose payload carries a real document inside it, base64-encoded.
+#: These are the only ones where a rebuild can also produce FILES.
+_DOCUMENT_CHECKS = ("courtorders", "courtorderai")
+
+
+def materialise_orders(
+    fetched: list[dict], vendor_id: str, check_id: str, session: Session,
+) -> tuple[list[dict], int]:
+    """Write the PDFs and the order text that are sitting inside the payload.
+
+    NO NETWORK, NO CREDITS — same as the rest of this script. Every byte
+    here was already paid for and stored; it is just base64 inside
+    `raw_response`, which means unreadable to everyone.
+
+    Rows fetched before the document store existed named an order with
+    nothing to open. Rebuilding their facts alone does not fix that: a
+    document entry without an `href` is still a document nobody can read.
+    So the rebuild writes the files too.
+
+    `raw_response` is NOT modified — it is the evidence, and it is immutable
+    by design. The enriched copy exists only long enough to build the facts.
+    """
+    out, written = [], 0
+    for order in fetched:
+        row = dict(order)
+
+        blob = row.get("pdf_base64")
+        if blob and not row.get("href"):
+            try:
+                content = base64.b64decode(blob, validate=False)
+            except (ValueError, TypeError):
+                content = b""
+            if content:
+                name = str(row.get("filename") or "order").rsplit("/", 1)[-1]
+                stored = _store(content, vendor_id, check_id, session,
+                                name if name.lower().endswith(".pdf")
+                                else f"{name}.pdf")
+                if stored:
+                    row["href"], row["bytes"] = stored.url, stored.bytes
+                    written += 1
+
+        text = str(row.get("markdown") or row.get("content") or "")
+        if text.strip() and not row.get("text_href"):
+            base = str(row.get("filename") or "order").rsplit("/", 1)[-1]
+            stored = _store(text.encode("utf-8"), vendor_id, check_id, session,
+                            f"{base.rsplit('.', 1)[0]}.txt", kind="text")
+            if stored:
+                row["text_href"] = stored.url
+                written += 1
+
+        out.append(row)
+    return out, written
+
+
+def _store(content: bytes, vendor_id: str, check_id: str, session: Session,
+           filename: str, *, kind: str = "pdf"):
+    """One file. A failure is logged and skipped, never raised — a full disk
+    must not abandon a backfill of three thousand rows partway through."""
+    try:
+        stored = docs.store(content, kind=kind, settings=None)
+    except (docs.DocumentStoreFull, ValueError, OSError) as exc:
+        print(f"  could not store {filename}: {exc}", file=sys.stderr)
+        return None
+    if not stored.deduplicated:
+        session.add(StoredDocument(
+            sha256=stored.sha256, vendor_id=vendor_id, check_id=check_id,
+            filename=filename, bytes=stored.bytes,
+            media_type=docs.MEDIA_TYPES.get(kind, "application/octet-stream"),
+        ))
+    return stored
+
+
 def backfill(
     session: Session, *,
     vendor_id: str | None = None,
     check_id: str | None = None,
     force: bool = False,
     dry_run: bool = False,
+    write_documents: bool = True,
 ) -> dict[str, int]:
     stmt = select(VendorCheck)
     if vendor_id:
@@ -157,7 +232,7 @@ def backfill(
 
     vendors: dict[str, Vendor | None] = {}
     tally = {"built": 0, "skipped_current": 0, "no_payload": 0,
-             "no_builder": 0, "failed": 0}
+             "no_builder": 0, "failed": 0, "documents": 0}
     failures: list[str] = []
 
     for row in session.scalars(stmt):
@@ -177,8 +252,16 @@ def backfill(
         if row.vendor_id not in vendors:
             vendors[row.vendor_id] = session.get(Vendor, row.vendor_id)
 
+        raw = row.raw_response
         try:
-            blob = builder(row.raw_response, vendors[row.vendor_id])
+            if (write_documents and not dry_run
+                    and row.check_id in _DOCUMENT_CHECKS):
+                enriched, written = materialise_orders(
+                    raw.get("orders") or [], row.vendor_id, row.check_id, session)
+                raw = dict(raw, orders=enriched)
+                tally["documents"] += written
+
+            blob = builder(raw, vendors[row.vendor_id])
         except Exception as exc:  # noqa: BLE001 — one bad payload must not stop 3000
             tally["failed"] += 1
             failures.append(f"  {row.vendor_id}/{row.check_id}: "
@@ -212,6 +295,10 @@ def main() -> int:
                     help="rebuild even rows already at the current parser version")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change and write nothing")
+    ap.add_argument("--no-documents", action="store_true",
+                    help="rebuild facts only; do not write the PDFs and order "
+                         "text that are sitting base64-encoded inside the "
+                         "stored payloads (still no network, still no credits)")
     args = ap.parse_args()
 
     # get_engine(), not a module-level `engine`: session.py builds it
@@ -219,7 +306,8 @@ def main() -> int:
     # connection at import time.
     with Session(get_engine()) as session:
         tally = backfill(session, vendor_id=args.vendor, check_id=args.check,
-                         force=args.force, dry_run=args.dry_run)
+                         force=args.force, dry_run=args.dry_run,
+                         write_documents=not args.no_documents)
 
     print(f"\nparser version {PARSER_VERSION}"
           f"{'  (DRY RUN — nothing written)' if args.dry_run else ''}")
@@ -228,6 +316,7 @@ def main() -> int:
     print(f"  no stored payload  {tally['no_payload']}")
     print(f"  no parser yet      {tally['no_builder']}")
     print(f"  failed             {tally['failed']}")
+    print(f"  files written      {tally['documents']}")
     return 1 if tally["failed"] else 0
 
 

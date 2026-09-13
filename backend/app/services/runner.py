@@ -1437,8 +1437,24 @@ class CheckRunner:
                     if stored:
                         row["href"] = stored.url
                         row["sha256"] = stored.sha256
+                        row["bytes"] = stored.bytes
                     else:
                         row["store_note"] = note
+
+            # The text half. A signed PDF is the evidence; the text is what
+            # a person reads, and it is the only one of the two that opens
+            # in a panel rather than a viewer. Stored on the same terms as
+            # the PDF so both survive a re-render of the facts.
+            text = str(row.get("markdown") or row.get("content") or "")
+            if text.strip():
+                base = str(row.get("filename") or "order").rsplit("/", 1)[-1]
+                stored, note = self._keep_document(
+                    text.encode("utf-8"), vendor_id, check_id,
+                    f"{base.rsplit('.', 1)[0]}.txt", kind="text")
+                if stored:
+                    row["text_href"] = stored.url
+                elif not row.get("store_note"):
+                    row["store_note"] = note
             out.append(row)
         return out
 

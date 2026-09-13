@@ -140,6 +140,84 @@ class TestLookup:
         assert docs.path_for(result.sha256.upper(), store) is not None
 
 
+# =====================================================================
+# What the reader actually gets
+#
+# Storing the bytes is half the job. A court order reached the screen as a
+# 232 KB wall of base64 with a status line above it — the document was
+# there, retrieved, paid for, and unreadable. Two things fix that: a link
+# to the PDF, and the order as TEXT, which is the half most people want.
+# =====================================================================
+
+from app.providers import factsets as fx
+
+ORDERS = [
+    {"filename": "order-1.pdf", "markdown": None, "pdf_base64": "JVBERi0K" * 100,
+     "href": "/api/documents/" + "a" * 64},
+    {"filename": "order-3.pdf", "pdf_base64": "JVBERi0K" * 100,
+     "markdown": "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n\n1. At the outset, "
+                 "learned counsel for the petitioner seeks leave to amend.",
+     "href": "/api/documents/" + "c" * 64,
+     "text_href": "/api/documents/" + "d" * 64},
+]
+
+
+def titles(blob, kind):
+    return [d["title"] for d in blob["documents"] if d["kind"] == kind]
+
+
+class TestOrdersReachTheReader:
+    def test_each_order_offers_its_pdf(self):
+        blob = fx.orders("HCBM010380062022", ORDERS)
+        assert titles(blob, "pdf") == ["order-1.pdf", "order-3.pdf"]
+
+    def test_the_pdf_is_linked_not_inlined(self):
+        """The base64 stays in `raw_response` as evidence. What the panel
+        gets is a URL — 50 KB of base64 per order in the facts blob would
+        arrive in the browser as unreadable text inside an already-large
+        response."""
+        doc = fx.orders("X", ORDERS)["documents"][0]
+        assert doc["href"].startswith("/api/documents/")
+        assert "JVBERi0K" not in str(doc)
+
+    def test_the_readable_text_is_its_own_document(self):
+        """Not an excerpt. Excerpts are capped at 400 characters and a court
+        order is not 400 characters — a paragraph with a trailing ellipsis
+        presented as "the order" is a finding that looks answered when it
+        has only been sampled."""
+        blob = fx.orders("X", ORDERS)
+        assert "order-3 — readable text" in titles(blob, "text")
+        text = next(d for d in blob["documents"]
+                    if d["title"] == "order-3 — readable text")
+        assert text["href"].endswith("d" * 64)
+
+    def test_an_order_with_no_text_says_so_rather_than_going_quiet(self):
+        """Two of the three orders on this case are scans the provider could
+        not convert. Silence there reads as "nothing to see"; it is in fact
+        "there is a PDF and you will have to open it"."""
+        blob = fx.orders("X", ORDERS)
+        assert "order-1 — no text available" in titles(blob, "text")
+        note = next(d for d in blob["documents"]
+                    if d["title"] == "order-1 — no text available")
+        assert "Open the PDF above" in note["excerpt"]
+        assert "href" not in note
+
+    def test_the_extension_is_not_repeated_in_the_text_title(self):
+        """The badge already says TEXT. "order-3.pdf — readable text" reads
+        like a PDF that is somehow also text."""
+        assert all(".pdf" not in t for t in titles(fx.orders("X", ORDERS), "text"))
+
+    def test_an_unstored_pdf_still_appears_without_a_link(self):
+        """A full disk loses the file, never the finding. The order was
+        retrieved and that stays true — it just cannot be opened here."""
+        blob = fx.orders("X", [{"filename": "order-9.pdf",
+                                "pdf_base64": "JVBERi0K" * 10,
+                                "store_note": "the disk is too close to full."}])
+        pdf = blob["documents"][0]
+        assert pdf["title"] == "order-9.pdf" and "href" not in pdf
+        assert blob["flags"][0]["label"] == "Some orders were not retained"
+
+
 class TestStoreLocation:
     def test_the_store_is_outside_the_web_root(self):
         """nginx serves `frontend/dist` directly. Documents are MCA filings
