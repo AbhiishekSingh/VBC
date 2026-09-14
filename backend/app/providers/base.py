@@ -19,6 +19,7 @@ a refused call and a loud error, not a surprise invoice.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,6 +58,23 @@ class NotConfigured(ProviderError):
 
 class PaidCallRefused(ProviderError):
     """A call that costs money, with paid calls disabled."""
+
+    transient = False
+
+
+class ProviderOutOfCredits(ProviderRejected):
+    """The account has no balance. HTTP 402.
+
+    Its own class because it is neither of the things it would otherwise be
+    filed as. Not `ProviderUnavailable` — the provider is perfectly healthy
+    and a retry will fail identically until somebody pays. Not a finding
+    about the vendor — nothing was examined and nothing was charged.
+
+    It is an ACCOUNT problem, and the only useful response is to top up. A
+    row reading "Check failed · HTTP 402" sends an engineer to the logs; a
+    row reading "provider account out of credits" sends the right person to
+    the billing page.
+    """
 
     transient = False
 
@@ -226,6 +244,21 @@ class HttpProvider:
                     continue
                 raise last
 
+            if response.status_code == 402:
+                # An empty wallet is not a provider outage and says nothing
+                # whatever about the vendor. Separated so the finding can
+                # read "top this account up" instead of "check failed",
+                # which is what sent an hour into diagnosing a 40-paisa
+                # shortfall on 14 Sep.
+                detail = self._error_detail(response)
+                self._note_quoted_price(url, detail)
+                raise ProviderOutOfCredits(
+                    f"{self.name}: out of credits — {detail}. The call was "
+                    f"never made and nothing was charged. Top the account "
+                    f"up and re-run; this is an account problem, not a "
+                    f"finding about the vendor."
+                )
+
             if response.status_code >= 400:
                 raise ProviderRejected(
                     f"{self.name}: HTTP {response.status_code} on {url} — "
@@ -246,6 +279,36 @@ class HttpProvider:
         delay = self.settings.http_backoff_base_seconds * (2 ** (attempt - 1))
         logger.warning("%s: retry %d in %.1fs", self.name, attempt, delay)
         time.sleep(delay)
+
+    #: "Required: ₹1.50, Available: ₹1.10" — the provider quoting its own
+    #: price while refusing the call. Rupees, with or without decimals.
+    _PRICE_QUOTED = re.compile(r"required:?\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)",
+                               re.IGNORECASE)
+
+    def _note_quoted_price(self, url: str, detail: str) -> None:
+        """Log the real price when a 402 happens to state it.
+
+        Several per-call prices in `config.py` are inferred rather than
+        quoted, and an inferred price is a number nobody will revisit. A
+        402 is the one moment a provider says out loud what a call costs —
+        worth capturing at WARNING so it reaches whoever reads the logs,
+        rather than being thrown away with the error.
+
+        Never raises. A price-parsing helper that can break a request is a
+        worse problem than the one it solves.
+        """
+        try:
+            match = self._PRICE_QUOTED.search(detail or "")
+            if not match:
+                return
+            rupees = float(match.group(1).replace(",", ""))
+            logger.warning(
+                "%s: the provider quotes %.2f rupees (%d paisa) for %s — "
+                "check the matching *_paisa setting in config.py",
+                self.name, rupees, round(rupees * 100), url,
+            )
+        except (ValueError, TypeError, AttributeError):
+            return
 
     def _error_detail(self, response: httpx.Response) -> str:
         try:

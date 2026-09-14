@@ -64,6 +64,7 @@ from app.providers.base import (
     NotConfigured,
     PaidCallRefused,
     ProviderError,
+    ProviderOutOfCredits,
     ProviderParseGap,
     ProviderRejected,
     ProviderUnavailable,
@@ -428,6 +429,22 @@ class CheckRunner:
             return Finding(
                 check_id, CheckStatus.UNAVAILABLE, "Source unavailable",
                 f"{exc} — recorded as unexamined, not as a pass.", error=str(exc),
+            )
+        except ProviderOutOfCredits as exc:
+            # Before the generic ProviderError branch — it is a subclass, so
+            # order is what makes this reachable at all.
+            #
+            # Deliberately its own row wording. "Check failed" sent an hour
+            # into diagnosing what turned out to be a 40-paisa shortfall on
+            # the eCourts wallet. The provider is healthy, the vendor is
+            # not implicated, and the fix is a top-up by a person who will
+            # never read a stack trace.
+            return Finding(
+                check_id, CheckStatus.UNAVAILABLE,
+                "Provider account out of credits",
+                f"{exc} Nothing about this vendor was examined, and this is "
+                f"NOT a clean result — the check simply never ran.",
+                error=str(exc),
             )
         except ProviderError as exc:
             return Finding(check_id, CheckStatus.UNAVAILABLE, "Check failed", str(exc),
