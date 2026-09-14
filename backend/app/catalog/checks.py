@@ -664,14 +664,19 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Litigation exposure",
         endpoint="POST /legal-check → GET /legal-check/{code}/report",
         provider=EC,
-        state=HOOK,
-        note=("Risk band with an identity-confidence score. NOT CONFIGURED: "
-              "POST /legal-check returns 400 VALIDATION_ERROR with an empty "
-              "details[] on every documented body shape, and the submit "
-              "endpoint is absent from the published API docs. Awaiting the "
-              "schema from eCourts. /legal-check/models confirms the account "
-              "has model eCI-1.2 with company support, so this is a contract "
-              "gap, not an entitlement one."),
+        state=ACTIVE,
+        note=("Risk band with an identity-confidence score — the only court "
+              "check that produces a SCORED result rather than rows for an "
+              "analyst. ₹99 a submit; reads afterwards are free, and an "
+              "unfinished job resumes on the next run rather than paying "
+              "twice.\n\n"
+              "Was NOT CONFIGURED until 14 Sep 2026: six submits returned "
+              "400 VALIDATION_ERROR with an empty details[]. The cause was "
+              "one field — a company subject takes subject.company_name, "
+              "not subject.name, which is individual-only. The body now "
+              "matches the published schema and carries the CIN and board "
+              "as well, because identity_confidence is what decides whether "
+              "a match is scored at all."),
         params=(
             _p("subjectName", "Legal name to search", required=True,
                from_vendor="legal_name",
@@ -741,15 +746,22 @@ def expand_selection(selected: list[str]) -> list[str]:
     return out
 
 
-#: 47 = 39 live + 8 hooks. History, because the count has been misquoted
+#: 47 = 40 live + 7 hooks. History, because the count has been misquoted
 #: in three project docs: 32 originally; 34 after the FileSure additions
 #: (`dresolve`, `frefresh`); 35 when the FinAGG integration replaced the
 #: single `gst` hook with two live checks — `gst` (search) and `gstret`
 #: (returns metadata), the two facts coming from two endpoints; then 47
 #: when the twelve live eCourts checks landed.
 assert len(CHECKS) == 47, f"expected 47 checks, got {len(CHECKS)}"
-#: 8, not 7: `court` went back to a hook on 2026-09-08 when LegalCheck
-#: submit could not be made to accept any request body. The other twelve
-#: eCourts checks are live, so litigation EVIDENCE still reaches the
-#: analyst — only the scored band is missing, and it says so.
-assert sum(1 for c in CHECKS if not c.is_configured) == 8
+#: 7, down from 8 on 2026-09-14: `court` came back from hook to ACTIVE.
+#: It had been demoted on 2026-09-08 when LegalCheck submit rejected every
+#: body shape tried — the cause turned out to be a single field, a company
+#: subject taking `subject.company_name` where `subject.name` is
+#: individual-only.
+#:
+#: It is the only eCourts check that produces a SCORED result, so this
+#: assertion moving is the moment litigation stopped being evidence an
+#: analyst reads and started being something the ledger can count. If it
+#: goes back to 8, the scored band is gone again and r13 is inert — check
+#: why before assuming the number is simply stale.
+assert sum(1 for c in CHECKS if not c.is_configured) == 7

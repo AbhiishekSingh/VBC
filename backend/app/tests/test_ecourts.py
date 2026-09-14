@@ -28,6 +28,18 @@ def _settings(**kw) -> Settings:
         ecourts_base_url="https://webapi.ecourtsindia.com/api/partner",
         ecourts_poll_budget_seconds=0.3,
         ecourts_poll_interval_seconds=0.01,
+        # Every eCourts call used to slip past `guard_paid`, because the
+        # adapter never invoked it AND every price was 0 — either alone
+        # would have disarmed it. These tests passed against a mock
+        # transport without ever asking to spend, which is exactly how the
+        # gap stayed invisible.
+        #
+        # Now that the guard is wired, a test exercising a BILLED endpoint
+        # has to say so. Against a MockTransport nothing is really charged;
+        # what this asserts is that the call is one the guard would let
+        # through. `test_the_spend_guard_now_covers_ecourts` below checks
+        # the other half — that it refuses when paid calls are off.
+        allow_paid_calls=True,
     )
     base.update(kw)
     return Settings(**base)

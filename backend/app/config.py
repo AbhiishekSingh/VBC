@@ -160,11 +160,38 @@ class Settings(BaseSettings):
     #: finding, because a score computed against one floor is not
     #: comparable to one computed against another.
     ecourts_min_score: int = 40
-    #: Per-call prices in paisa, once eCourts quotes them. At 0 a call
-    #: passes the spend guard untouched and a run under-reports its cost.
-    ecourts_check_paisa: int = 0
-    ecourts_search_paisa: int = 0
-    ecourts_case_paisa: int = 0
+    # --- eCourts prices, in paisa -------------------------------------
+    #
+    # These were ALL 0 until 14 Sep 2026, and zero is not a neutral
+    # placeholder: `guard_paid()` returns immediately at `paisa <= 0`, so
+    # every eCourts call skipped the spend guard entirely and every run
+    # reported ₹0.00 for work that billed. The guard was off and the log
+    # was wrong, quietly, in the same direction.
+    #
+    # Two of the three are now known from the provider's own mouth. The
+    # third is inferred and marked as such — and `ProviderOutOfCredits`
+    # logs the real figure whenever a 402 quotes one, so the guess gets
+    # corrected by use rather than by hoping someone remembers.
+
+    #: LegalCheck submit. ₹99 pay-as-you-go per the published pricing;
+    #: ₹33 on a subscription. Set to the PAYG figure deliberately — an
+    #: account on the cheaper plan over-reports its spend, which is the
+    #: harmless direction. Drop to 3300 once a subscription is confirmed.
+    ecourts_check_paisa: int = 9_900
+
+    #: Case Search. NOT confirmed. Case detail is ₹1.50 and the docs price
+    #: both as "credits per request", so this assumes parity. A wrong-but-
+    #: close number keeps the guard armed; 0 disarmed it completely.
+    ecourts_search_paisa: int = 150
+
+    #: Case detail. CONFIRMED 14 Sep 2026 by a 402 from the provider:
+    #: "INSUFFICIENT_CREDITS: Required: ₹1.50, Available: ₹1.10".
+    ecourts_case_paisa: int = 150
+
+    #: Order fetch — `order-md`, `order-ai` and the plain PDF. Also
+    #: unconfirmed, also assumed at parity with case detail. Each order is
+    #: a separate billed call, which is what `ecourts_max_orders` caps.
+    ecourts_order_paisa: int = 150
     #: Refuse a Case Search filter the capability catalog does not list.
     #: On by default: the published parameter list was truncated, and a
     #: filter the server silently ignores produces a WIDER result set than

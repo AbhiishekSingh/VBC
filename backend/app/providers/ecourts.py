@@ -128,6 +128,46 @@ class EcourtsProvider(HttpProvider):
             headers.update(extra)
         return headers
 
+
+    # -----------------------------------------------------------------
+    # Paid calls
+    # -----------------------------------------------------------------
+
+    def _paid(self, endpoint: str, paisa: int, method: str, url: str,
+              *, units: int = 1, **kwargs):
+        """Guard, call, record — in that order, in one place.
+
+        Nothing in this adapter called `guard_paid` until 14 Sep 2026, and
+        every price sat at 0. Either alone disarms the guard: it returns
+        immediately at `paisa <= 0`, and a guard never invoked cannot fire.
+        Together they meant `VBC_ALLOW_PAID_CALLS=false` did not stop a
+        single eCourts call, and four paid endpoints — orders, refresh,
+        cause list, hearings batch — recorded no spend at all. A run could
+        bill real money and report ₹0.00 while claiming paid calls were off.
+
+        This is ONE method rather than a guard-then-record pair on purpose.
+        The pair was written first and immediately got half-applied: every
+        new endpoint had the guard and none had the record, so the guard
+        worked and the ledger stayed empty. A pair that must be used twice
+        will eventually be used once.
+
+        Order matters and is the whole contract:
+
+        * the guard runs BEFORE the request — a refusal after the money is
+          gone is a log line, not a guard;
+        * the spend is recorded AFTER a success — a 500 must not appear in
+          the ledger as money spent.
+
+        `units` is for endpoints that bill per item rather than per request:
+        the cause-list batch charges per distinct CNR, so ten CNRs is ten
+        charges inside one call.
+        """
+        total = max(paisa, 0) * max(units, 1)
+        self.guard_paid(endpoint, total)
+        response = self.request(method, url, **kwargs)
+        self.spend.record(endpoint, paisa=total)
+        return response
+
     # -----------------------------------------------------------------
     # Free — capability discovery
     # -----------------------------------------------------------------
@@ -237,9 +277,9 @@ class EcourtsProvider(HttpProvider):
         if notes:
             subject["notes"] = notes
 
-        response = self.request(
-            "POST",
-            self._url("legal-check"),
+        response = self._paid(
+            "ecourts.legal-check", self.settings.ecourts_check_paisa,
+            "POST", self._url("legal-check"),
             headers=self._headers({
                 "Content-Type": "application/json",
                 "Idempotency-Key": idempotency_key,
@@ -254,7 +294,6 @@ class EcourtsProvider(HttpProvider):
                 },
             },
         )
-        self.spend.record("ecourts.legal-check", paisa=self.settings.ecourts_check_paisa)
 
         data = (response.payload or {}).get("data") or {}
         code = data.get("code")
@@ -470,9 +509,9 @@ class EcourtsProvider(HttpProvider):
                 f"VBC_ECOURTS_STRICT_SEARCH=false to send them anyway."
             )
 
-        response = self.request("GET", self._url("search"),
+        response = self._paid("ecourts.search", self.settings.ecourts_search_paisa,
+                              "GET", self._url("search"),
                                 headers=self._headers(), params=params)
-        self.spend.record("ecourts.search", paisa=self.settings.ecourts_search_paisa)
 
         data = (response.payload or {}).get("data") or {}
         results = data.get("results")
@@ -518,9 +557,9 @@ class EcourtsProvider(HttpProvider):
         """
         self._require_key()
         cnr = _cnr(cnr)
-        response = self.request("GET", self._url(f"case/{cnr}"),
+        response = self._paid("ecourts.case", self.settings.ecourts_case_paisa,
+                              "GET", self._url(f"case/{cnr}"),
                                 headers=self._headers())
-        self.spend.record("ecourts.case", paisa=self.settings.ecourts_case_paisa)
 
         data = (response.payload or {}).get("data") or {}
         case = data.get("courtCaseData") or {}
@@ -592,7 +631,8 @@ class EcourtsProvider(HttpProvider):
     def order_download(self, cnr: str, filename: str) -> dict:
         """File reference for one order. Returns metadata, not the bytes."""
         self._require_key()
-        response = self.request(
+        response = self._paid(
+            "ecourts.order", self.settings.ecourts_order_paisa,
             "GET", self._url(f"case/{_cnr(cnr)}/order/{filename}"),
             headers=self._headers(),
         )
@@ -607,7 +647,8 @@ class EcourtsProvider(HttpProvider):
         worth paying for when the watermarked PDF is needed for submission.
         """
         self._require_key()
-        response = self.request(
+        response = self._paid(
+            "ecourts.order-md", self.settings.ecourts_order_paisa,
             "GET", self._url(f"case/{_cnr(cnr)}/order-md/{filename}"),
             headers=self._headers(),
             params=None if signed else {"signed": "false"},
@@ -635,7 +676,8 @@ class EcourtsProvider(HttpProvider):
         method is available and no check calls it by default.
         """
         self._require_key()
-        response = self.request(
+        response = self._paid(
+            "ecourts.order-ai", self.settings.ecourts_order_paisa,
             "GET", self._url(f"case/{_cnr(cnr)}/order-ai/{filename}"),
             headers=self._headers(),
         )
@@ -659,7 +701,8 @@ class EcourtsProvider(HttpProvider):
     def case_refresh(self, cnr: str) -> dict:
         """Ask the provider to re-pull one case. Async — 202, then wait."""
         self._require_key()
-        response = self.request("POST", self._url(f"case/{_cnr(cnr)}/refresh"),
+        response = self._paid("ecourts.case-refresh", self.settings.ecourts_case_paisa,
+                              "POST", self._url(f"case/{_cnr(cnr)}/refresh"),
                                 headers=self._headers())
         data = (response.payload or {}).get("data") or {}
         return {
@@ -670,11 +713,24 @@ class EcourtsProvider(HttpProvider):
         }
 
     def bulk_refresh(self, cnrs: list[str]) -> dict:
+        """Re-scrape 2-50 cases in one request. BILLED PER CNR.
+
+        No check reaches this today. Guarded anyway: an unguarded paid
+        method sitting in an adapter is one wiring-up away from spending
+        money nobody authorised, and that is exactly how every eCourts call
+        came to bypass `guard_paid` in the first place.
+        """
         self._require_key()
-        response = self.request(
+        unique = list(dict.fromkeys(_cnr(c) for c in cnrs if c))
+        if not unique:
+            return {"refreshed": [], "queued": [], "invalid": []}
+
+        response = self._paid(
+            "ecourts.bulk-refresh", self.settings.ecourts_case_paisa,
             "POST", self._url("case/bulk-refresh"),
+            units=len(unique),
             headers=self._headers({"Content-Type": "application/json"}),
-            json={"cnrs": [_cnr(c) for c in cnrs]},
+            json={"cnrs": unique},
         )
         data = (response.payload or {}).get("data") or {}
         # Three outcomes, not two — an invalid CNR is neither refreshed nor
@@ -763,7 +819,8 @@ class EcourtsProvider(HttpProvider):
         params: dict = {"litigant": query, "limit": limit, "offset": offset}
         if state:
             params["state"] = state
-        response = self.request("GET", self._url("causelist/search"),
+        response = self._paid("ecourts.causelist", self.settings.ecourts_search_paisa,
+                              "GET", self._url("causelist/search"),
                                 headers=self._headers(), params=params)
         data = (response.payload or {}).get("data") or {}
         rows = data.get("results") or []
@@ -791,12 +848,23 @@ class EcourtsProvider(HttpProvider):
 
         An upcoming listing says the matter is ACTIVE — a stronger signal
         than a historical case count, which may all be long disposed.
+
+        BILLED PER DISTINCT CNR, not per request. One call with fifty CNRs
+        is fifty charges, so the count is deduplicated before it is sent —
+        the same CNR twice in the list is the same case, and paying twice
+        for it buys nothing.
         """
         self._require_key()
-        response = self.request(
+        unique = list(dict.fromkeys(_cnr(c) for c in cnrs if c))
+        if not unique:
+            return {"rows": [], "listed": [], "listed_count": 0, "checked": 0}
+
+        response = self._paid(
+            "ecourts.causelist-batch", self.settings.ecourts_search_paisa,
             "POST", self._url("causelist/cnr/batch"),
+            units=len(unique),
             headers=self._headers({"Content-Type": "application/json"}),
-            json={"cnrs": [_cnr(c) for c in cnrs]},
+            json={"cnrs": unique},
         )
         rows = (response.payload or {}).get("data") or []
         listed = [r for r in rows if isinstance(r, dict) and r.get("hasCauselist")]
