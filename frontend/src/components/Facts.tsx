@@ -157,42 +157,97 @@ export function FactTable({ table }: { table: FactTableShape }) {
 
 /* ---- documents ------------------------------------------------------- */
 
+/**
+ * One document, with the option of reading it here.
+ *
+ * The viewer is COLLAPSED until asked for, and that is not a style choice.
+ * A case can carry several orders at 50-230 KB each; mounting every iframe
+ * on render would pull all of them down to show a panel nobody has looked
+ * at yet. It also means `/api/documents/` is hit — and the read is written
+ * to `audit_log` — only when a person actually opens the document, which is
+ * what that log is supposed to record.
+ */
+function Document({ doc }: { doc: FactDocument }) {
+  const [open, setOpen] = useState(false)
+  const viewable = Boolean(doc.href) && (doc.kind === 'pdf' || doc.kind === 'text')
+
+  return (
+    <li className="fact-doc">
+      <div className="fact-doc-head">
+        <span className="badge b-neutral">{doc.kind.toUpperCase()}</span>
+        {doc.href ? (
+          <a href={doc.href} target="_blank" rel="noreferrer">
+            {doc.title}
+          </a>
+        ) : (
+          <span>{doc.title}</span>
+        )}
+        {typeof doc.sizeBytes === 'number' && (
+          <span className="small muted nums">{formatBytes(doc.sizeBytes)}</span>
+        )}
+        {viewable && (
+          <button
+            type="button"
+            className="btn sm ghost"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? 'Hide' : 'Read here'}
+          </button>
+        )}
+      </div>
+
+      {open && doc.href && (
+        <div className="fact-doc-viewer">
+          {/* An <iframe>, not a bundled PDF renderer. The browser's own
+              viewer is better than anything shipped here, costs nothing,
+              and stays current. The document is same-origin, so the
+              session cookie rides along and the API still authenticates
+              the read — an embedded viewer must not become a way to reach
+              a document the API would refuse. */}
+          <iframe
+            src={doc.href}
+            title={doc.title}
+            className="fact-doc-frame"
+            loading="lazy"
+          />
+          <p className="small muted">
+            Not displaying?{' '}
+            <a href={doc.href} target="_blank" rel="noreferrer">
+              Open it in a new tab
+            </a>
+            .
+          </p>
+        </div>
+      )}
+      {/* Hidden while the full document is on screen — an excerpt of the
+          thing you are already reading is noise. */}
+      {doc.excerpt && !open && (
+        <p className="small muted fact-excerpt">
+          {doc.excerpt}
+          {doc.excerptTruncated && (
+            <>
+              {'… '}
+              {doc.href ? (
+                <a href={doc.href} target="_blank" rel="noreferrer">
+                  read the rest
+                </a>
+              ) : (
+                <span className="muted">(shortened)</span>
+              )}
+            </>
+          )}
+        </p>
+      )}
+    </li>
+  )
+}
+
 function Documents({ documents }: { documents: FactDocument[] }) {
   return (
     <ul className="fact-docs">
       {documents.map((doc, i) => (
-        <li key={`${doc.title}-${i}`} className="fact-doc">
-          <div className="fact-doc-head">
-            <span className="badge b-neutral">{doc.kind.toUpperCase()}</span>
-            {doc.href ? (
-              <a href={doc.href} target="_blank" rel="noreferrer">
-                {doc.title}
-              </a>
-            ) : (
-              <span>{doc.title}</span>
-            )}
-            {typeof doc.sizeBytes === 'number' && (
-              <span className="small muted nums">{formatBytes(doc.sizeBytes)}</span>
-            )}
-          </div>
-          {doc.excerpt && (
-            <p className="small muted fact-excerpt">
-              {doc.excerpt}
-              {doc.excerptTruncated && (
-                <>
-                  {'… '}
-                  {doc.href ? (
-                    <a href={doc.href} target="_blank" rel="noreferrer">
-                      read the rest
-                    </a>
-                  ) : (
-                    <span className="muted">(shortened)</span>
-                  )}
-                </>
-              )}
-            </p>
-          )}
-        </li>
+        <Document key={`${doc.title}-${i}`} doc={doc} />
       ))}
     </ul>
   )
