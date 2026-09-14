@@ -190,6 +190,21 @@ def _dins_from(prior: dict) -> list[str]:
     return [d["din"] for d in rows if isinstance(d, dict) and d.get("din")]
 
 
+def _director_names(prior: dict) -> list[str]:
+    """The board, for the LegalCheck submit.
+
+    Sent as `subject.directors` so the provider can tell two companies of
+    the same name apart by who runs them. Same guard order as `_dins_from`
+    above, for the same reason: `dirs` may not have run.
+    """
+    found = prior.get("dirs")
+    if found is None or not found.raw:
+        return []
+    rows = found.raw.get("directors") or []
+    return [str(d["name"]).strip() for d in rows
+            if isinstance(d, dict) and not is_blank(d.get("name"))]
+
+
 def _order_files(detail_raw: dict) -> list[str]:
     """Order filenames from a case-detail payload, judgments first.
 
@@ -1335,6 +1350,12 @@ class CheckRunner:
             # it rather than submitting — and paying — a second time.
             prior_code = self._prior_legal_check_code(vendor.id)
 
+            # Everything VBC already knows about this company goes with the
+            # submit. The report's `identity_confidence` is what separates a
+            # defensible finding from a name collision, and below
+            # `ecourts_min_score` the result is shown but never scored — so
+            # anything that raises confidence directly buys usable findings.
+            # A CIN is unique; a company name is not.
             data = ec.run_legal_check(
                 subject_name=name,
                 subject_type=get("subjectType", "company") or "company",
@@ -1343,6 +1364,8 @@ class CheckRunner:
                 idempotency_key=f"vbc-{vendor.id}-court",
                 client_ref_no=vendor.id,
                 existing_code=prior_code,
+                cin=cin,
+                directors=_director_names(prior),
                 min_score=self.settings.ecourts_min_score,
             )
 
@@ -1809,6 +1832,40 @@ class CheckRunner:
                 missing.append(param.label)
         return missing
 
+    @staticmethod
+    def _would_erase_evidence(existing: VendorCheck | None, finding: Finding) -> bool:
+        """Is this write about to replace a real payload with nothing?
+
+        True only in the one narrow case: a row that already holds provider
+        evidence, and a new finding that carries none. Everything else falls
+        through and overwrites normally, because a re-run that DID reach the
+        provider should of course replace what came before.
+
+        Deliberately narrow in three ways:
+
+        * An EXAMINED finding never preserves, even with an empty payload.
+          A check that genuinely returns `{}` — no charges, no litigation —
+          is a real answer, and holding yesterday's answer over it would
+          hide a change in the vendor. Only unexamined statuses qualify.
+        * A `_pending` receipt is not evidence, but it IS the poll code that
+          makes the next collection free. It overwrites, as it always did.
+        * A payload that is only our own request echo is not evidence
+          either.
+        """
+        if existing is None or not existing.raw_response:
+            return False
+        if finding.status.was_examined:
+            return False
+        new = finding.raw
+        if not new:
+            return True
+        if not isinstance(new, dict):
+            return False
+        if new.get("_pending"):
+            return False
+        # A dict carrying nothing but what we sent.
+        return not (set(new) - {"request", "checkId", "_note"})
+
     def _persist(self, vendor: Vendor, result: RunResult) -> None:
         """Write every outcome, including the non-outcomes."""
         for finding in result.findings:
@@ -1820,8 +1877,20 @@ class CheckRunner:
             )
             row = existing or VendorCheck(vendor_id=vendor.id, check_id=finding.check_id)
 
+            # Read BEFORE the write below. `row` IS `existing` when the row
+            # already exists — the same object, not a copy — so assigning
+            # `row.fetched_at` also moves `existing.fetched_at`, and the
+            # preservation branch would then report today's date as the date
+            # of yesterday's evidence.
+            previously_fetched = existing.fetched_at if existing else None
+            preserve = self._would_erase_evidence(existing, finding)
+
             # fetched_at has server_default=now() but no onupdate, so a
             # re-run kept the FIRST run's timestamp. Written explicitly.
+            #
+            # It records when the ROW was last run, not when its payload was
+            # obtained — those diverge only when evidence is preserved, and
+            # the flag written below carries the payload's own date.
             row.fetched_at = finding.fetched_at
             # Every write is an attempt. Previously stuck at 1 forever, which
             # hid how many times a flaky source had been re-run.
@@ -1830,15 +1899,57 @@ class CheckRunner:
             row.status = finding.status.value
             row.value = finding.value
             row.detail = finding.detail
-            # The real payload — this is what makes a historical score
-            # defensible. Never a template in production.
-            row.raw_response = finding.raw
-            # Derived, and deliberately overwritten on every run: facts are a
-            # projection of the payload above, so the newest parser always
-            # wins. Nothing is lost by replacing them — the evidence they
-            # came from is in the column above, under its own trigger.
-            row.facts = finding.facts
-            row.parser_version = (finding.facts or {}).get("parserVersion")
+
+            # --- the evidence -------------------------------------------
+            #
+            # `vendor_checks` is NOT one of the append-only tables — the
+            # immutability triggers cover audit_log, vendor_scores,
+            # catalog_versions and decisions, and the app role holds UPDATE
+            # here deliberately. So this assignment really does destroy what
+            # was in the column.
+            #
+            # That was fine while every re-run produced a payload. It is not
+            # fine when a re-run FAILS: a ProviderError finding carries
+            # `raw=None`, and writing it replaced a real MCA response with
+            # nothing. Observed live — a `casedetail` re-run that hit
+            # INSUFFICIENT_CREDITS blanked the payload behind an already
+            # computed score.
+            #
+            # `vendor_scores` IS immutable and its docstring claims the
+            # version columns "pin the evidence". They pin the catalog and
+            # the policy; nothing pinned the payload. An unchangeable score
+            # over erasable evidence is worse than either alone, because it
+            # looks defensible and is not.
+            #
+            # So: a failed run may take the status. It may not take the
+            # evidence.
+            if preserve:
+                stale_since = previously_fetched
+                logger.warning(
+                    "%s/%s: %s returned no payload — keeping the one from %s "
+                    "rather than erasing it",
+                    vendor.id, finding.check_id, finding.status.value, stale_since,
+                )
+                # Both columns stay as they were. Facts are a projection of
+                # that payload, so replacing them with this run's (empty)
+                # facts would leave a panel that no longer matches the
+                # evidence beneath it.
+                row.facts = factsets.mark_superseded(existing.facts, stale_since)
+                self._audit(
+                    vendor.id, "EVIDENCE_PRESERVED",
+                    f"{finding.check_id}: re-run returned no payload "
+                    f"({finding.status.value}); kept the response stored "
+                    f"{stale_since:%d %b %Y %H:%M}.",
+                )
+            else:
+                # The real payload — this is what makes a historical score
+                # defensible. Never a template in production.
+                row.raw_response = finding.raw
+                # Derived, and deliberately replaced whenever the payload
+                # is: facts are a projection of it, so the newest parser
+                # always wins.
+                row.facts = finding.facts
+            row.parser_version = (row.facts or {}).get("parserVersion")
             row.cost_paisa = finding.cost_paisa
             row.credits = finding.credits
             row.error = finding.error

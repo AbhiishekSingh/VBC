@@ -1434,6 +1434,21 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .fact-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .fact-doc { border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: var(--space-3); }
 .fact-doc-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.fact-doc-viewer { margin-top: var(--space-3); }
+.fact-doc-frame {
+  width: 100%;
+  /* Tall enough to read a paragraph of an order without scrolling the
+     frame, short enough that the rest of the findings list stays reachable.
+     Capped against the viewport so a phone does not get a viewer taller
+     than its own screen. */
+  height: min(70vh, 620px);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  /* PDFs render their own white page; a transparent frame over a dark
+     theme shows as a grey void until the document paints. */
+  background: #fff;
+}
+
 .fact-excerpt {
   margin: var(--space-2) 0 0;
   /* Court orders arrive with real line breaks — numbered paragraphs, a

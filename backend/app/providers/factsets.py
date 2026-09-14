@@ -152,6 +152,36 @@ THIN_BLANK_COLUMN_MIN = 2
 THIN_BLANK_COLUMN_MIN_ROWS = 2
 
 
+def mark_superseded(facts: dict | None, fetched_at: Any) -> dict | None:
+    """Flag facts whose payload survived a re-run that returned nothing.
+
+    Keeping the old evidence is right; presenting it as though it were
+    today's answer is not. The row's status already says this run failed —
+    this puts the same fact next to the data a person is actually reading,
+    because nobody cross-references a status line against a table.
+
+    The flag goes FIRST, above every number it qualifies, and is `warn`
+    rather than `bad`: stale evidence is a caveat on the reading, not an
+    adverse finding about the vendor.
+    """
+    if not facts:
+        return facts
+    when = getattr(fetched_at, "strftime", None)
+    stamp = fetched_at.strftime("%d %b %Y") if when else str(fetched_at)[:10]
+
+    flag = F.flag(
+        "warn", "This is the previous response, not today's",
+        f"The latest run of this check reached no answer, so what is shown "
+        f"below is the response stored on {stamp}. It was kept rather than "
+        f"erased — an audit finding must not lose the evidence it rests on "
+        f"because a later call failed. But it is NOT current: re-run the "
+        f"check before relying on it.",
+    )
+    flags = [f for f in (facts.get("flags") or [])
+             if f.get("label") != flag["label"]]      # never stack duplicates
+    return {**facts, "flags": [flag, *flags]}
+
+
 def thin_result(payload: Any, facts: dict | None) -> dict | None:
     """Did the provider say a lot while the parser heard almost nothing?
 

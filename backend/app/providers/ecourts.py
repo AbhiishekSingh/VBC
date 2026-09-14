@@ -165,6 +165,11 @@ class EcourtsProvider(HttpProvider):
         subject_type: str = "company",
         aliases: list[str] | None = None,
         addresses: list[str] | None = None,
+        cin: str | None = None,
+        pan: str | None = None,
+        directors: list[str] | None = None,
+        father_name: str | None = None,
+        date_of_birth: str | None = None,
         model: str = "eCI-1.2",
         notes: str = "",
     ) -> dict:
@@ -174,6 +179,27 @@ class EcourtsProvider(HttpProvider):
         submit may be retried by the HTTP layer. A stable key — vendor id
         plus attempt — means a retry collects the existing job rather than
         starting a second one.
+
+        THE NAME FIELD DEPENDS ON THE SUBJECT TYPE
+        ------------------------------------------
+        This is what made every submission fail with `400 VALIDATION_ERROR`
+        and an empty `details[]`. The body was otherwise correct, and six
+        structurally different attempts all carried the same mistake:
+
+            individual  ->  subject.name
+            company     ->  subject.company_name
+
+        `subject.name` on a company submission is not a name the API
+        recognises, so it read as a company with no name at all. The empty
+        `details[]` is why this cost six attempts to find rather than one.
+
+        IDENTITY IS THE WHOLE POINT OF THIS CHECK
+        -----------------------------------------
+        LegalCheck returns a risk band beside an `identity_confidence`
+        score, and that score is what makes the finding defensible — a name
+        match alone occasionally condemns the wrong company. So every
+        identifier VBC already holds is sent: the CIN especially, which is
+        unique where a name is not.
         """
         self._require_key()
         if is_blank(subject_name):
@@ -183,11 +209,31 @@ class EcourtsProvider(HttpProvider):
                 "registered one."
             )
 
-        subject: dict = {"name": subject_name.strip()}
+        company = str(subject_type).strip().lower() == "company"
+        subject: dict = (
+            {"company_name": subject_name.strip()} if company
+            else {"name": subject_name.strip()}
+        )
+
         if aliases:
             subject["aliases"] = [a for a in aliases if not is_blank(a)]
         if addresses:
-            subject["addresses"] = [a for a in addresses if not is_blank(a)]
+            # Same list, different key by subject type — the API separates
+            # where a person has lived from where a company is registered.
+            key = "registered_addresses" if company else "addresses"
+            subject[key] = [a for a in addresses if not is_blank(a)]
+        if company:
+            if not is_blank(cin):
+                subject["cin"] = str(cin).strip().upper()
+            if not is_blank(pan):
+                subject["pan"] = str(pan).strip().upper()
+            if directors:
+                subject["directors"] = [d for d in directors if not is_blank(d)]
+        else:
+            if not is_blank(father_name):
+                subject["father_name"] = str(father_name).strip()
+            if not is_blank(date_of_birth):
+                subject["date_of_birth"] = str(date_of_birth).strip()
         if notes:
             subject["notes"] = notes
 
@@ -297,6 +343,9 @@ class EcourtsProvider(HttpProvider):
         subject_type: str = "company",
         aliases: list[str] | None = None,
         addresses: list[str] | None = None,
+        cin: str | None = None,
+        pan: str | None = None,
+        directors: list[str] | None = None,
         min_score: int | None = None,
     ) -> dict:
         """Submit (or resume), poll to a budget, and collect the report.
@@ -315,6 +364,12 @@ class EcourtsProvider(HttpProvider):
                 subject_type=subject_type,
                 aliases=aliases,
                 addresses=addresses,
+                # Forwarded, not dropped. The report's identity_confidence
+                # is what makes this check defensible, and a CIN is unique
+                # where a company name is not.
+                cin=cin,
+                pan=pan,
+                directors=directors,
             )["code"]
 
         deadline = time.monotonic() + self.settings.ecourts_poll_budget_seconds
@@ -667,14 +722,6 @@ class EcourtsProvider(HttpProvider):
 
     def court_structure(self, state: str | None = None,
                         district_code: str | None = None) -> list:
-        """States, then districts, then complexes. Free, no auth.
-
-        High courts appear AS DISTRICTS (``{"districtCode": "HC"}``) and the
-        Supreme Court as a state (``{"state": "SC"}``). Filtering on the
-        assumption that a district is a district drops both.
-        """
-    def court_structure(self, state: str | None = None,
-                        district_code: str | None = None) -> list:
         """States, then districts, then complexes. Free of charge, but authenticated.
 
         The docs describe this as needing no auth; the server returns
@@ -696,12 +743,7 @@ class EcourtsProvider(HttpProvider):
         if isinstance(payload, list):
             return payload
         return (payload or {}).get("data") or []
-        payload = response.payload
-        if isinstance(payload, list):
-            return payload
-        return (payload or {}).get("data") or []
 
-    
     def causelist_search(self, query: str, *, state: str | None = None,
                          limit: int = 100, offset: int = 0) -> dict:
         """Scheduled hearings naming a party.
