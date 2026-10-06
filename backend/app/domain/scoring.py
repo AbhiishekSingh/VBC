@@ -72,14 +72,26 @@ class PillarScore:
     subtitle: str
     weight: float
     applicable: int = 0
-    G: int = 0
-    Y: int = 0
-    R: int = 0
+    #: Floats, not ints. The A pillar contributes fractions of a parameter
+    #: (see `score_scan`), so these buckets cannot be counters.
+    G: float = 0.0
+    Y: float = 0.0
+    R: float = 0.0
 
     @property
-    def positives(self) -> int:
-        """Two Yellows make one Green. An odd Yellow is simply not counted."""
-        return self.G + self.Y // 2
+    def positives(self) -> float:
+        """Two Yellows make one Green — and ONE Yellow makes half a Green.
+
+        This was `G + Y // 2` until 5 Oct 2026, which threw away an odd
+        Yellow entirely. The workbook computes `=D8+(D9/2)` with no rounding
+        at all: DR MED's Stature pillar, one Green and one Yellow, totals
+        **1.5** there and totalled 1.0 here.
+
+        The floor is the tempting reading of "2 Yellow = 1 Green" and it is
+        wrong in the direction that matters — it silently marks vendors down
+        for a middling answer rather than giving them the half they earned.
+        """
+        return self.G + self.Y / 2
 
     @property
     def weighted(self) -> float:
@@ -137,13 +149,38 @@ def score_scan(ratings: dict[str, str | None]) -> ScanScore:
             key=pillar, name=name, subtitle=subtitle, weight=weight
         )
 
+    # Pass one: how many parameters are applicable in each pillar. The A
+    # pillar needs its own count before anything can be added to it, because
+    # each psychometric dimension contributes a share OF THAT COUNT.
+    rated: list[tuple] = []
     for parameter in SCAN_PARAMETERS:
         rating = parameter.rate(ratings.get(parameter.id))
         if rating is None:
             continue  # not applicable — drops out of both sides
+        pillars[parameter.pillar].applicable += 1
+        rated.append((parameter, rating))
+
+    # Pass two: fill the colour buckets.
+    #
+    # Every pillar but A adds a whole parameter per rating. A adds a FRACTION,
+    # weighted by that dimension's share of the psychometric test:
+    #
+    #     bucket += applicable_A_count * sub_weight
+    #
+    # which is the workbook's `=IF(M46=Green, F7*0.5, 0) + IF(M48=Green, ...)`
+    # written out. Innovatiview — Integrity Red, Acumen Yellow, Risk Yellow,
+    # Problem Solving Green, four applicable — gives G=0.4, Y=1.6, R=2.0 and a
+    # pillar total of 1.2. A counter cannot reach 1.2, which is how this
+    # defect was found rather than argued about.
+    a_applicable = pillars[Pillar.A].applicable
+    for parameter, rating in rated:
         bucket = pillars[parameter.pillar]
-        bucket.applicable += 1
-        setattr(bucket, rating.value, getattr(bucket, rating.value) + 1)
+        share = (
+            a_applicable * parameter.sub_weight
+            if parameter.pillar is Pillar.A and parameter.sub_weight
+            else 1.0
+        )
+        setattr(bucket, rating.value, getattr(bucket, rating.value) + share)
 
     weighted = _round(sum(p.weighted for p in pillars.values()))
     best = _round(sum(p.max for p in pillars.values()))
@@ -152,7 +189,12 @@ def score_scan(ratings: dict[str, str | None]) -> ScanScore:
     tol_60 = _round(best * TOLERANCE_PASS)
     tol_50 = _round(best * TOLERANCE_WATCH)
     pct = round((weighted / best) * 100, 1) if best > 0 else 0.0
-    passed = best > 0 and weighted >= tol_60
+    #: STRICTLY greater. The workbook asks `=IF(H16>D20, "Positive", ...)`,
+    #: and this was `>=` until 5 Oct 2026 — so a vendor landing exactly on the
+    #: bar was Negative there and Positive here. No case on file lands exactly
+    #: on it, which is precisely why it would have been found late, in front
+    #: of a client, on the one vendor it mattered for.
+    passed = best > 0 and weighted > tol_60
 
     assessment_evaluated = pillars[Pillar.A].applicable > 0
 

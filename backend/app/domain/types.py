@@ -20,26 +20,42 @@ class Rating(str, Enum):
 
 
 class Pillar(str, Enum):
-    S = "S"  # Stature     — capability
-    C = "C"  # Compliance  — statutory
-    A = "A"  # Assessment  — diligence
-    N = "N"  # Numbers     — financial
+    S = "S"  # Stature        — capability
+    C = "C"  # Compliance     — statutory
+    A = "A"  # Assessment     — the psychometric test
+    N = "N"  # Non Negotiable — the must-pass checks
 
 
-#: Pillar weights. These mirror the client's Excel workbook and MUST NOT change.
-#: Altering a weight makes every historical score incomparable.
+#: Pillar weights, as the client's workbook computes them (row 14 of every
+#: Outcome sheet).
+#:
+#: THESE CHANGE THROUGH A VERSION BUMP, NEVER THROUGH AN EDIT. This comment
+#: used to read "MUST NOT change", which is why nobody changed them when the
+#: client moved to the split below — the workbook carried 0.2/0.1/0.6/0.1 on a
+#: row of its own labelled "Old Score", feeding nothing, while every one of
+#: eight real assessments scored against 0.2/0.1/0.4/0.3.
+#:
+#: Altering a weight does not make a historical score WRONG, it makes it a
+#: different vintage. `vendor_scores` is append-only and carries
+#: `catalog_version_id`, so a score computed under the old weights stays
+#: reconstructable. Bump the catalog version, change the number, leave the old
+#: rows alone.
+#:
+#: The direction of the change is itself the finding: the client halved the
+#: weight on the psychometric test and tripled it on the must-pass commercial
+#: checks. Verified 5 Oct 2026 against eight assessments spanning Apr-Aug 2026.
 PILLAR_WEIGHTS: dict[Pillar, float] = {
     Pillar.S: 0.2,
     Pillar.C: 0.1,
-    Pillar.A: 0.6,
-    Pillar.N: 0.1,
+    Pillar.A: 0.4,
+    Pillar.N: 0.3,
 }
 
 PILLAR_NAMES: dict[Pillar, tuple[str, str]] = {
     Pillar.S: ("Stature", "Capability"),
     Pillar.C: ("Compliance", "Statutory"),
-    Pillar.A: ("Assessment", "Diligence"),
-    Pillar.N: ("Numbers", "Financial"),
+    Pillar.A: ("Assessment", "Psychometric Test"),
+    Pillar.N: ("Non Negotiable", "Must-pass"),
 }
 
 
@@ -123,18 +139,62 @@ class ScanParameter:
     options: tuple[tuple[str, Rating], ...]
     feed: str = ""
     fed_by: str | None = None  # check id that fills this parameter
+    #: Spellings that mean the same thing as a canonical option.
+    #:
+    #: The workbook writes ">10 Years"; this codebase wrote "> 10 Years" and
+    #: put rows in the database under it. Both must resolve, or a rating an
+    #: analyst recorded last month silently stops being readable — and an
+    #: unreadable rating does not show as missing, it drops the parameter out
+    #: of BOTH sides of the fraction and quietly lowers the bar the vendor is
+    #: measured against. Canonical spelling is the workbook's; ours survive as
+    #: aliases.
+    aliases: tuple[tuple[str, str], ...] = ()
+    #: A-pillar only: this sub-score's share of the psychometric test.
+    #: Integrity 0.5, Business Acumen 0.3, Risk Taking 0.1, Problem Solving
+    #: 0.1. See `score_scan` for why the A pillar cannot simply be counted.
+    sub_weight: float = 0.0
 
     @property
     def weight(self) -> float:
         return PILLAR_WEIGHTS[self.pillar]
 
+    @staticmethod
+    def _key(value: str) -> str:
+        """Compare on letters and digits only.
+
+        Whitespace and punctuation around an option carry no meaning and are
+        exactly where the two spellings diverge. Matching on the squashed form
+        makes ">10 Years" and "> 10 Years" the same answer without needing an
+        alias for every possible spacing.
+        """
+        return "".join(ch for ch in value.lower() if ch.isalnum())
+
     def rate(self, value: str | None) -> Rating | None:
         """Rating for a value, or None when the parameter is not applicable."""
         if value is None:
             return None
+        key = self._key(value)
         for option, rating in self.options:
-            if option == value:
+            if self._key(option) == key:
                 return rating
+        for alias, canonical in self.aliases:
+            if self._key(alias) == key:
+                for option, rating in self.options:
+                    if option == canonical:
+                        return rating
+        return None
+
+    def canonical(self, value: str | None) -> str | None:
+        """The option spelling to store, for a value that may be an alias."""
+        if value is None:
+            return None
+        key = self._key(value)
+        for option, _ in self.options:
+            if self._key(option) == key:
+                return option
+        for alias, target in self.aliases:
+            if self._key(alias) == key:
+                return target
         return None
 
     @property

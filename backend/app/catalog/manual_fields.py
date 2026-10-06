@@ -120,14 +120,19 @@ MANUAL_TEMPLATES: tuple[ManualFieldTemplate, ...] = (
     ManualFieldTemplate(
         id="m14", label="Named reference — company", type=TEXT, category=COMMERCIAL
     ),
+    #: Unmapped since 5 Oct 2026. This wrote A4 "Market References", which the
+    #: client's live workbook does not have — A4 is now a psychometric
+    #: dimension (Problem Solving). The field is KEPT: a named reference and
+    #: what they said is useful context for an analyst, and deleting it would
+    #: throw away information already collected. It simply no longer moves the
+    #: score, which is the honest position for a judgement with no parameter
+    #: behind it.
     ManualFieldTemplate(
         id="m15",
         label="Reference feedback",
         type=CHOICE,
         category=COMMERCIAL,
         options=("Good", "Average", "Poor"),
-        maps_to="A4",
-        map_when={"Good": "Good", "Average": "Average", "Poor": "Poor"},
     ),
     ManualFieldTemplate(
         id="m16", label="Certifications held (ISO / FSSAI / other)",

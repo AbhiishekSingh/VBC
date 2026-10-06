@@ -58,12 +58,21 @@ AZAHAN_CHECKS = _results({
 })
 
 #: C4 is set by manual entry m6 (GST checked by hand = Active -> "No").
+#: S3 is None, not "No". `cdx` is SKIPPED for this vendor ("no domain to
+#: build a timeline from"), and a check that never ran must not write a
+#: rating — that is the difference between "we looked and found nothing" and
+#: "we never looked", and the entire product turns on it.
 AZAHAN_SCAN = {
-    "S1": "Individual/ Proprietorship", "S2": "< 3 Years", "S3": "No",
+    "S1": "Individual/ Proprietorship", "S2": "3-10 Years", "S3": None,
     "S4": "Manufacturer/ Services", "S5": None,
     "C1": None, "C2": None, "C3": None, "C4": "No", "C5": None,
-    "A1": None, "A2": None, "A3": "Positive", "A4": None,
-    "N1": None, "N2": None, "N3": None, "N4": None,
+    #: No psychometric test was done, so the whole A pillar is N/A.
+    "A1": None, "A2": None, "A3": None, "A4": None,
+    #: Conflict of Interest moved A3 -> N3 on 5 Oct 2026, and its ratings were
+    #: inverted at the same time. "Negative" is the GOOD answer — the check
+    #: came back negative, no employee behind this vendor. It matches the
+    #: `conflict` finding above.
+    "N1": None, "N2": None, "N3": "Negative", "N4": None,
 }
 
 AZAHAN_MANUAL = [
@@ -122,12 +131,24 @@ MERIDIAN_CHECKS = _results({
     "conflict": (PASS, "No conflict", "No overlap with employee records"),
 })
 
+#: Remapped to the client's live model on 5 Oct 2026. What moved:
+#:   A1 "On-board"      -> the psychometric test is now FOUR dimensions
+#:   A2 "Positive"      -> N2, where Site Surveillance lives
+#:   A3 "Positive"      -> N3 "Negative" — Conflict of Interest moved pillar
+#:                         AND its ratings were inverted; "Negative" is good
+#:   A4 "Good"          -> retired with Market References
+#:   N2 "More than 5"   -> retired with Big Players in Clientele
+#:   N3 "2 Cr / 1 Cr"   -> retired with Turnover of the Vendor
+#:
+#: Note S1: "Private Ltd" is Yellow now, not Green, so Meridian is a slightly
+#: weaker vendor on paper than it used to be. That is the correction, not a
+#: change to the fixture's intent — it is still the healthy comparison case.
 MERIDIAN_SCAN = {
-    "S1": "Private Ltd", "S2": "> 10 Years", "S3": "Yes",
+    "S1": "Private Ltd", "S2": ">10 Years", "S3": "Yes",
     "S4": "Manufacturer/ Services", "S5": "Owned",
     "C1": None, "C2": None, "C3": None, "C4": "No", "C5": None,
-    "A1": "On-board", "A2": "Positive", "A3": "Positive", "A4": "Good",
-    "N1": "Industry", "N2": "More than 5", "N3": "2 Cr / 1 Cr", "N4": "State",
+    "A1": "Non Vulnerable", "A2": "Matured", "A3": "Matured", "A4": "Pro-active",
+    "N1": "Industry", "N2": "Positive", "N3": "Negative", "N4": "State",
 }
 
 MERIDIAN_SURVEILLANCE = {

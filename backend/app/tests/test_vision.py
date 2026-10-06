@@ -233,8 +233,12 @@ class TestOcrIsLabelled:
 
 class TestOcrNeverBreaksTheCheck:
     def test_ocr_is_off_unless_switched_on(self):
-        """A dependency appearing must not start spending money."""
-        assert Settings().vision_ocr_orders is False
+        """A dependency appearing must not start spending money.
+
+        Asserts the DECLARED default, not a live Settings() — which reads
+        .env and so fails on any machine that has deliberately turned OCR on.
+        """
+        assert Settings.model_fields["vision_ocr_orders"].default is False
 
     def test_the_default_page_cap_is_the_documented_ceiling(self):
         assert Settings().vision_max_pages_per_document <= SYNC_PAGE_LIMIT

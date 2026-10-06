@@ -382,8 +382,8 @@ def _write_auto_ratings(session: Session, vendor: Vendor, result) -> None:
                 years = (datetime.now(timezone.utc)
                          - datetime.fromisoformat(incorporated).replace(tzinfo=timezone.utc)
                          ).days / 365.25
-                value = ("> 10 Years" if years > 10
-                         else "3 - 10 Years" if years >= 3 else "< 3 Years")
+                value = (">10 Years" if years > 10
+                         else "3-10 Years" if years >= 3 else "< 3 Years")
                 _set_rating(session, vendor.id, "S2", value, set_by="system")
             except ValueError:
                 pass
@@ -450,28 +450,35 @@ def _write_auto_ratings(session: Session, vendor: Vendor, result) -> None:
         _set_rating(session, vendor.id, "S3", "Yes" if has_presence else "No",
                     set_by="system")
 
-    # A3 — conflict of interest. Written ONLY when a register was actually
-    # compared; an unavailable check leaves the parameter N/A rather than
-    # recording a clean result nobody verified.
+    # N3 — conflict of interest. Moved from A3 on 5 Oct 2026, and the values
+    # are the REVERSE of what they were.
+    #
+    # "Negative" means the check came back negative: no client employee found
+    # behind this vendor. That is the good answer, and it is what a passing
+    # `conflict` finding means. This used to write "Positive" for a pass, into
+    # a parameter that rated "Positive" as Green — two wrongs that cancelled
+    # out, right up until anyone read the report.
+    #
+    # Written ONLY when a register was actually compared; an unavailable check
+    # leaves the parameter N/A rather than recording a clean result nobody
+    # verified.
     conflict = by_id.get("conflict")
     if conflict and conflict.status.was_examined:
-        _set_rating(session, vendor.id, "A3",
-                    "Positive" if conflict.status.value == "pass" else "Negative",
+        _set_rating(session, vendor.id, "N3",
+                    "Negative" if conflict.status.value == "pass" else "Positive",
                     set_by="system")
 
-    # N3 — turnover, from filed financials.
-    fin = by_id.get("fin")
-    if fin and fin.status.was_examined and fin.raw:
-        # ``fin.raw`` now holds {"facts", "payload"} like the master check,
-        # so the payload survives a parse defect. The fallback keeps rows
-        # written by the previous shape readable.
-        raw = fin.raw or {}
-        revenue = (raw.get("facts") or raw).get("revenue")
-        if isinstance(revenue, (int, float)):
-            crore = revenue / 10_000_000
-            value = ("2 Cr / 1 Cr" if crore >= 2
-                     else "> 50 Lac / 25 Lac" if crore >= 0.5 else "< 50 Lac / 25 Lac")
-            _set_rating(session, vendor.id, "N3", value, set_by="system")
+    # Turnover from filed financials no longer writes a SCAN parameter. It was
+    # N3 "Turnover of the Vendor" — this codebase's own improvement on the
+    # client's model, replacing an analyst estimate with a filed XBRL fact —
+    # and the client's live workbook has no such parameter. N3 is now Conflict
+    # of Interest.
+    #
+    # The figure is NOT lost: `fin` still runs, and revenue and net worth are
+    # still rendered in the facts layer for an analyst to read. What stopped
+    # is it silently moving a score under a heading the client never agreed
+    # to. If they want it back it is a NEW parameter with a new id, never a
+    # revival of N3 — that column already means something else now.
 
 
 # =====================================================================
@@ -558,7 +565,11 @@ def complete_surveillance(vendor_id: str, session: Session = Depends(get_session
     result = score_surveillance(values, done=True)
     vendor.surveillance_done = True
 
-    _set_rating(session, vendor_id, "A2", result.scan_value, set_by="surveillance")
+    # N2, not A2 — Site Surveillance moved pillar on 5 Oct 2026. It now sits
+    # in Non Negotiable at 0.3, where the client puts it, rather than in
+    # Assessment at 0.6. The field visit got MORE important, not less: the
+    # per-parameter weight tripled even as the pillar's share fell.
+    _set_rating(session, vendor_id, "N2", result.scan_value, set_by="surveillance")
     session.add(
         FieldVisit(vendor_id=vendor_id, conducted_by="field", result=result.verdict,
                    pct=result.pct, gate_failed=result.gate_failed)
