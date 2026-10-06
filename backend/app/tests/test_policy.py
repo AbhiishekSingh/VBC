@@ -38,13 +38,13 @@ class TestAzahanUnderBothPolicies:
         """Gating changes what may be claimed, never the arithmetic."""
         scan = score_scan(fx.AZAHAN_SCAN)
         gated = apply_policy(scan, policy=DEFAULT_POLICY)
-        assert gated.scan.weighted == 0.90
-        assert gated.scan.pct == 60.0
+        assert gated.scan.weighted == 0.70
+        assert gated.scan.pct == 70.0
         assert gated.raw_verdict is Verdict.POSITIVE
 
     def test_headline_cannot_hide_the_thin_coverage(self):
         gated = apply_policy(score_scan(fx.AZAHAN_SCAN), policy=DEFAULT_POLICY)
-        assert "based on 6 of 18 parameters" in gated.headline
+        assert "based on 5 of 18 parameters" in gated.headline
 
 
 class TestHealthyVendorIsUnaffected:
@@ -82,23 +82,35 @@ class TestPolicyOptions:
         assert gated.gated is True
         assert "Assessment parameters" in gated.reasons[0]
 
-    def test_the_free_automated_check_alone_does_not_satisfy_the_floor(self):
-        """Azahan has A3 (conflict of interest) and nothing else in A.
+    def test_no_free_check_can_satisfy_the_assessment_floor(self):
+        """The loophole this floor existed to close no longer exists.
 
-        A3 is computed in-house for nothing and passes by default. If a
-        floor of 1 were used, the cheapest check in the catalog would
-        unlock a positive verdict — which is the loophole this floor exists
-        to close.
+        It used to: Conflict of Interest sat in the A pillar, it is computed
+        in-house for nothing, and it passes by default — so a floor of 1 would
+        have let the cheapest check in the catalogue unlock a positive
+        verdict. The 5 Oct 2026 migration moved it to N, where the client puts
+        it, and the A pillar is now the psychometric test and nothing else.
+
+        Nothing automated feeds A. The only way to satisfy it is to actually
+        run the test on the vendor, which is the right answer and costs money.
         """
-        scan = score_scan(fx.AZAHAN_SCAN)
-        assert scan.pillars[Pillar.A].applicable == 1
+        from app.catalog.scan import SCAN_PARAMETERS
+        from app.domain.types import SourceMode
 
-        lenient = CoveragePolicy(version="t", min_assessment_parameters=1,
-                                 min_applicable_parameters=0)
-        strict = CoveragePolicy(version="t", min_assessment_parameters=2,
-                                min_applicable_parameters=0)
-        assert apply_policy(scan, policy=lenient).gated is False
-        assert apply_policy(scan, policy=strict).gated is True
+        a_params = [p for p in SCAN_PARAMETERS if p.pillar is Pillar.A]
+        assert len(a_params) == 4
+        assert all(p.source is SourceMode.HUMAN for p in a_params), (
+            "an AUTO parameter in A would reopen the free-pass loophole"
+        )
+        assert all(p.fed_by is None for p in a_params)
+
+        scan = score_scan(fx.AZAHAN_SCAN)
+        assert scan.pillars[Pillar.A].applicable == 0
+        assert scan.assessment_evaluated is False
+
+        any_floor = CoveragePolicy(version="t", min_assessment_parameters=1,
+                                   min_applicable_parameters=0)
+        assert apply_policy(scan, policy=any_floor).gated is True
 
     def test_parameter_floor_alone_gates_azahan(self):
         policy = CoveragePolicy(

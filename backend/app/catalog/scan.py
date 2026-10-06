@@ -20,10 +20,25 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         source=SourceMode.AUTO,
         feed="MCA company status",
         fed_by="master",
+        #: "Private Ltd" is YELLOW, not Green. It was Green here until
+        #: 5 Oct 2026, which handed a free positive to every private limited
+        #: company — i.e. to almost every vendor. The workbook's Green is
+        #: Listed/Public alone: a company answerable to a regulator and a
+        #: public filing calendar is a different proposition from one that
+        #: is not, and the middle tier is the ordinary case.
+        #:
+        #: The workbook offers three tiers and spells the bottom one
+        #: "Partnership/ Proprietorship" in some files and "Individual/
+        #: Proprietorship" in others; both are its Red column. "Partnership/
+        #: LLP" is this codebase's own addition, rated Yellow, and is kept
+        #: because an analyst has already recorded a judgement under it — an
+        #: LLP is a filed, audited entity and does not belong in the same tier
+        #: as a sole proprietor.
         options=(
             ("Listed/Public", G),
-            ("Private Ltd", G),
+            ("Private Ltd", Y),
             ("Partnership/LLP", Y),
+            ("Partnership/ Proprietorship", R),
             ("Individual/ Proprietorship", R),
         ),
     ),
@@ -34,7 +49,12 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         source=SourceMode.AUTO,
         feed="MCA incorporation date",
         fed_by="master",
-        options=(("> 10 Years", G), ("3 - 10 Years", Y), ("< 3 Years", R)),
+        #: The workbook writes ">10 Years"; this codebase wrote "> 10 Years"
+        #: and has rows in the database under it. `ScanParameter.rate` compares
+        #: on letters and digits only, so both resolve without an alias — but
+        #: the canonical spelling here is now the workbook's, because that is
+        #: the one an analyst will be looking at.
+        options=((">10 Years", G), ("3-10 Years", Y), ("< 3 Years", R)),
     ),
     ScanParameter(
         id="S3",
@@ -121,41 +141,62 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         fed_by="gst",
         options=(("Commercial", G), ("Residential", Y)),
     ),
-    # ---- A · Assessment (0.6) — the heaviest pillar, almost entirely human
+    # ---- A · Assessment (0.4) — the psychometric test, and nothing else ----
+    #
+    # This pillar IS the psychometric test, broken into its four dimensions
+    # with their own internal weights. It is not a mixed bag of assessment
+    # activities: site surveillance and conflict of interest sit in N, where
+    # the workbook puts them.
+    #
+    # The sub-weights are why `score_scan` cannot simply count this pillar.
+    # Each rated dimension contributes `applicable_count * sub_weight` to its
+    # colour, so pillar totals come out fractional — Innovatiview scores 1.2,
+    # which no count of four parameters can produce.
+    #
+    # Integrity carries half the test on its own. A vendor can be capable,
+    # commercially sharp and a good problem-solver, and one Vulnerable on
+    # integrity still takes 50% of the pillar off them. That is the client's
+    # judgement about what matters, expressed as arithmetic.
     ScanParameter(
         id="A1",
         pillar=Pillar.A,
-        label="Psychometric Test Result",
+        label="Integrity",
         source=SourceMode.HUMAN,
-        feed="External assessment",
-        options=(("On-board", G), ("Reject", R)),
+        feed="Psychometric test — 50%",
+        sub_weight=0.5,
+        options=(("Non Vulnerable", G), ("Vulnerable", R)),
     ),
     ScanParameter(
         id="A2",
         pillar=Pillar.A,
-        label="Site Surveillance",
+        label="Business Acumen",
         source=SourceMode.HUMAN,
-        feed="Site Surveillance module",
-        options=(("Positive", G), ("Negative", R)),
+        feed="Psychometric test — 30%",
+        sub_weight=0.3,
+        options=(("Matured", G), ("Limited/ Opportunistic", Y), ("Weak", R)),
     ),
     ScanParameter(
         id="A3",
         pillar=Pillar.A,
-        label="Conflict of Interest (Employees)",
-        source=SourceMode.AUTO,
-        feed="Internal check over MCA director data",
-        fed_by="conflict",
-        options=(("Positive", G), ("Negative", R)),
+        label="Risk Taking",
+        source=SourceMode.HUMAN,
+        feed="Psychometric test — 10%",
+        sub_weight=0.1,
+        options=(("Matured", G), ("Limited/ Constructive", Y), ("Weak", R)),
     ),
     ScanParameter(
         id="A4",
         pillar=Pillar.A,
-        label="Market References",
+        label="Problem Solving",
         source=SourceMode.HUMAN,
-        feed="Analyst reference calls",
-        options=(("Good", G), ("Average", Y), ("Poor", R)),
+        feed="Psychometric test — 10%",
+        sub_weight=0.1,
+        options=(("Pro-active", G), ("Limited/ Active", Y), ("Weak", R)),
     ),
-    # ---- N · Numbers (0.1) ------------------------------------------------
+    # ---- N · Non Negotiable (0.3) -----------------------------------------
+    #
+    # Not "Numbers". These are the must-pass checks, and the client tripled
+    # their weight when they halved the psychometric test's.
     ScanParameter(
         id="N1",
         pillar=Pillar.N,
@@ -171,25 +212,28 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
     ScanParameter(
         id="N2",
         pillar=Pillar.N,
-        label="Big Players in Clientele",
+        label="Site Surveillance",
         source=SourceMode.HUMAN,
-        feed="Reference check",
-        options=(("More than 5", G), ("1 to 5", Y), ("Zero", R)),
+        feed="Site Surveillance module",
+        options=(("Positive", G), ("Negative", R)),
     ),
-    # N3 is an upgrade over the client's original workbook: turnover was an
-    # analyst estimate, FileSure's XBRL extractions make it a filed fact.
+    #: THE RATINGS HERE ARE THE REVERSE OF WHAT THEY READ LIKE, and were
+    #: inverted in this codebase until 5 Oct 2026.
+    #:
+    #: "Negative" is the GOOD answer: the conflict-of-interest check came back
+    #: negative, i.e. no client employee was found behind this vendor. A
+    #: vendor WITH a conflict scored Green here. That is the single most
+    #: consequential rating in the file to have backwards, because the whole
+    #: point of the check is to catch an employee quietly selling to their own
+    #: employer.
     ScanParameter(
         id="N3",
         pillar=Pillar.N,
-        label="Turnover of the Vendor",
+        label="Conflict of Interest (Employees)",
         source=SourceMode.AUTO,
-        feed="MCA filed financials (AOC-4)",
-        fed_by="fin",
-        options=(
-            ("2 Cr / 1 Cr", G),
-            ("> 50 Lac / 25 Lac", Y),
-            ("< 50 Lac / 25 Lac", R),
-        ),
+        feed="Internal check over MCA director data",
+        fed_by="conflict",
+        options=(("Negative", G), ("Positive", R)),
     ),
     ScanParameter(
         id="N4",
@@ -199,6 +243,27 @@ SCAN_PARAMETERS: tuple[ScanParameter, ...] = (
         feed="Analyst assessment",
         options=(("Pan India", G), ("State", Y), ("Local", R)),
     ),
+)
+
+#: Dropped from the catalogue on 5 Oct 2026, because the client's live
+#: workbook does not have them. Recorded rather than deleted silently: each
+#: was a reasonable idea, and someone will propose them again.
+#:
+#:   A4 Market References        — analyst reference calls
+#:   N2 Big Players in Clientele — reference check
+#:   N3 Turnover of the Vendor   — this codebase's own upgrade, turning an
+#:                                 analyst estimate into a filed XBRL fact.
+#:                                 Genuinely better than what it replaced, and
+#:                                 still not in the client's model.
+#:
+#: Turnover is the one worth arguing for. If the client wants it back it is a
+#: new parameter under a new id, not a revival of N3 — that id now means
+#: Conflict of Interest, and reusing it would make two different questions
+#: share one column of history.
+RETIRED_PARAMETERS: tuple[str, ...] = (
+    "Market References",
+    "Big Players in Clientele",
+    "Turnover of the Vendor",
 )
 
 SCAN_BY_ID: dict[str, ScanParameter] = {p.id: p for p in SCAN_PARAMETERS}

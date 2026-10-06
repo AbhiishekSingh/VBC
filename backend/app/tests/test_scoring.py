@@ -28,21 +28,29 @@ class TestAzahanFixture:
 
     def test_scan_totals(self):
         s = score_scan(fx.AZAHAN_SCAN)
-        assert s.weighted == 0.90
-        assert s.best == 1.50
-        assert s.pct == 60.0
-        assert s.applicable == 6
+        assert s.weighted == 0.70
+        assert s.best == 1.00
+        assert s.pct == 70.0
+        assert s.applicable == 5
         assert s.passed is True
         assert s.verdict == "Positive for Onboarding"
 
-    def test_sits_exactly_on_the_threshold(self):
-        """60.0% is not a comfortable pass — it is the boundary itself."""
+    def test_a_high_percentage_built_on_almost_nothing(self):
+        """70% sounds comfortable. It is five parameters out of eighteen.
+
+        This is the fixture's whole purpose: the headline number is fine and
+        the audit behind it is thin, which is why `coverage_note` travels with
+        every score and why the default policy gates this vendor to senior
+        review rather than trusting the percentage.
+        """
         s = score_scan(fx.AZAHAN_SCAN)
-        assert s.weighted == s.tolerance_60
+        assert s.pct == 70.0
+        assert s.applicable == 5
+        assert s.passed is True
 
     def test_coverage_note_exposes_the_thinness(self):
         s = score_scan(fx.AZAHAN_SCAN)
-        assert s.coverage_note == "60.0% achieved, based on 6 of 18 parameters"
+        assert s.coverage_note == "70.0% achieved, based on 5 of 18 parameters"
 
     def test_risk_band(self):
         r = score_risk(fx.AZAHAN_CHECKS, fx.AZAHAN_SELECTED)
@@ -55,9 +63,9 @@ class TestMeridianFixture:
 
     def test_scan_totals(self):
         s = score_scan(fx.MERIDIAN_SCAN)
-        assert s.weighted == 3.80
+        assert s.weighted == 3.50
         assert s.best == 3.90
-        assert s.pct == 97.4
+        assert s.pct == 89.7
         assert s.applicable == 14
         assert s.passed is True
 
@@ -156,24 +164,29 @@ class TestKaveriFixture:
 
 class TestScanArithmetic:
     def test_two_yellows_make_one_green(self):
-        two_yellow = score_scan({"N1": "Industry", "N2": "1 to 5"})
+        two_yellow = score_scan({"N1": "Industry", "N4": "State"})
         one_green = score_scan({"N1": "Better than Industry", "N2": None})
         assert two_yellow.pillars[Pillar.N].positives == 1
         assert one_green.pillars[Pillar.N].positives == 1
 
-    def test_an_odd_yellow_is_not_counted(self):
+    def test_an_odd_yellow_is_worth_half_a_green(self):
+        """Corrected 5 Oct 2026. This asserted `positives == 0` — a floor —
+        and the client's workbook computes `=G+(Y/2)` with no rounding at
+        all. DR MED's Stature pillar, one Green and one Yellow, totals 1.5
+        there and totalled 1.0 here. The floor marked vendors down for a
+        middling answer rather than giving them the half they earned."""
         s = score_scan({"N1": "Industry"})
         assert s.pillars[Pillar.N].Y == 1
-        assert s.pillars[Pillar.N].positives == 0
+        assert s.pillars[Pillar.N].positives == 0.5
 
-    def test_three_yellows_count_as_one(self):
-        s = score_scan({"N1": "Industry", "N2": "1 to 5", "N4": "State"})
-        assert s.pillars[Pillar.N].positives == 1
+    def test_three_yellows_count_as_one_and_a_half(self):
+        s = score_scan({"S2": "3-10 Years", "S4": "Wholesaler", "S5": "Rented"})
+        assert s.pillars[Pillar.S].positives == 1.5
 
     def test_na_parameters_leave_both_sides(self):
         """The threshold moves with coverage — that is the design."""
-        full = score_scan({"S1": "Private Ltd", "S2": "> 10 Years"})
-        partial = score_scan({"S1": "Private Ltd", "S2": None})
+        full = score_scan({"S1": "Listed/Public", "S2": ">10 Years"})
+        partial = score_scan({"S1": "Listed/Public", "S2": None})
         assert full.best == 0.4
         assert partial.best == 0.2
         assert full.pct == partial.pct == 100.0
@@ -202,8 +215,8 @@ class TestScanArithmetic:
         s = score_scan({p.id: p.options[0][0] for p in SCAN_PARAMETERS})
         assert s.pillars[Pillar.S].weight == 0.2
         assert s.pillars[Pillar.C].weight == 0.1
-        assert s.pillars[Pillar.A].weight == 0.6
-        assert s.pillars[Pillar.N].weight == 0.1
+        assert s.pillars[Pillar.A].weight == 0.4
+        assert s.pillars[Pillar.N].weight == 0.3
 
 
 # =====================================================================

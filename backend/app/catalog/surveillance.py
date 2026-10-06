@@ -5,8 +5,12 @@ override: V1 Existence of Premises is a HARD GATE. If nobody could confirm
 the premises exist, the field result is Negative no matter what the other
 twelve say.
 
-The result writes SCAN parameter A2, which sits in the 0.6 Assessment pillar
-and is the single heaviest-weighted parameter in the framework.
+The result writes SCAN parameter N2, which sits in the 0.3 Non Negotiable
+pillar. It was A2 at 0.6 until 5 Oct 2026; the client's live workbook puts
+site surveillance among the must-pass checks, not among the assessment ones.
+The pillar's share fell and this parameter's weight tripled — a field visit
+now carries 0.3 on its own, more than any single Stature or Compliance
+answer.
 """
 
 from __future__ import annotations
