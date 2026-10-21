@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom'
 import { CHECKS, MANUAL_TEMPLATES } from '@/catalog/generated'
 import { Callout, EmptyState } from '@/components/ui'
 import { DEFAULT_POLICY, applyPolicy, scoreRisk, scoreScan, scoreSurveillance } from '@/scoring'
+import { publicDetail } from '@/lib/publicText'
 import type { PageProps } from '@/App'
 import type { Vendor } from '@/types/domain'
 
@@ -55,13 +56,13 @@ export function buildReport(vendor: Vendor) {
   let identity =
     `${vendor.legalName} was submitted on ${vendor.submitted}${onBehalf}${forWhat}. `
   if (passed('master')) {
-    identity += `MCA records confirm an active registered entity — ${get('master').detail}. `
+    identity += `MCA records confirm an active registered entity — ${publicDetail(get('master').detail)}. `
   } else if (ran('master')) {
-    identity += `MCA screening did not return an active company record: ${get('master').detail}. This limits what can be independently corroborated about the entity's standing. `
+    identity += `MCA screening did not return an active company record: ${publicDetail(get('master').detail)}. This limits what can be independently corroborated about the entity's standing. `
   } else {
     identity += `Company registry screening was not run for this vendor, so incorporation status is unverified. `
   }
-  if (passed('dirs')) identity += `${get('dirs').detail}. `
+  if (passed('dirs')) identity += `${publicDetail(get('dirs').detail, { capitalise: true })}. `
   sections.push({ heading: 'Identity and constitution', paragraphs: [identity] })
 
   /* 2 · corporate standing */
@@ -70,13 +71,13 @@ export function buildReport(vendor: Vendor) {
     standing.push(
       get('charges').status === 'pass'
         ? `No open charges are recorded against the company.`
-        : `A charge remains open: ${get('charges').value} — ${get('charges').detail} An unsatisfied charge means a lender still holds security over company assets and should be stated in any onboarding note.`,
+        : `A charge remains open: ${get('charges').value} — ${publicDetail(get('charges').detail)} An unsatisfied charge means a lender still holds security over company assets and should be stated in any onboarding note.`,
     )
   }
-  if (ran('filings')) standing.push(`Statutory filings: ${get('filings').detail}.`)
+  if (ran('filings')) standing.push(`Statutory filings: ${publicDetail(get('filings').detail)}.`)
   if (ran('fin')) {
     standing.push(
-      `Filed financials (${get('fin').value}) come from the company's own AOC-4 return: ${get('fin').detail}. These are government-filed figures, not estimates.`,
+      `Filed financials (${get('fin').value}) come from the company's own AOC-4 return: ${publicDetail(get('fin').detail)}. These are government-filed figures, not estimates.`,
     )
   }
   if (standing.length) {
@@ -89,7 +90,7 @@ export function buildReport(vendor: Vendor) {
     web.push(
       passed('whois')
         ? `the domain checks out (${get('whois').value.toLowerCase()})`
-        : `domain ownership raised a point for attention — ${get('whois').detail}`,
+        : `domain ownership raised a point for attention — ${publicDetail(get('whois').detail)}`,
     )
   }
   if (ran('reput')) web.push(`the domain trust score is ${get('reput').value.replace(/^Trust score /, '')}`)
@@ -98,7 +99,7 @@ export function buildReport(vendor: Vendor) {
   if (ran('rwhois')) web.push(`the registrant's wider portfolio shows ${get('rwhois').value.toLowerCase()}`)
   if (web.length) {
     let text = `Open-source screening: ${web.join('; ')}. `
-    if (ran('cdx') && get('cdx').status !== 'pass') text += `${get('cdx').detail}. `
+    if (ran('cdx') && get('cdx').status !== 'pass') text += `${publicDetail(get('cdx').detail, { capitalise: true })}. `
     if (ran('rwhois')) {
       text += `A varied portfolio under one registrant is consistent with an agency or developer managing client domains; near-identical variations of one brand would instead suggest typosquatting.`
     }
@@ -107,9 +108,9 @@ export function buildReport(vendor: Vendor) {
 
   /* 4 · internal risk */
   const internal: string[] = []
-  if (ran('dup') && get('dup').status !== 'pass') internal.push(`a possible duplicate registration (${get('dup').detail})`)
-  if (ran('rp') && get('rp').status !== 'pass') internal.push(`related-party exposure (${get('rp').detail})`)
-  if (ran('conflict') && get('conflict').status !== 'pass') internal.push(`an employee conflict of interest (${get('conflict').detail})`)
+  if (ran('dup') && get('dup').status !== 'pass') internal.push(`a possible duplicate registration (${publicDetail(get('dup').detail)})`)
+  if (ran('rp') && get('rp').status !== 'pass') internal.push(`related-party exposure (${publicDetail(get('rp').detail)})`)
+  if (ran('conflict') && get('conflict').status !== 'pass') internal.push(`an employee conflict of interest (${publicDetail(get('conflict').detail)})`)
   sections.push({
     heading: 'Internal risk',
     paragraphs: [
@@ -185,11 +186,11 @@ export function buildReport(vendor: Vendor) {
   const flags: Flag[] = []
   for (const [id, result] of Object.entries(checks)) {
     if (!selected.has(id) || result.status !== 'fail') continue
-    flags.push({ level: 'high', text: `${CHECKS.find((c) => c.id === id)?.name}: ${result.value} — ${result.detail}` })
+    flags.push({ level: 'high', text: `${CHECKS.find((c) => c.id === id)?.name}: ${result.value} — ${publicDetail(result.detail)}` })
   }
   for (const [id, result] of Object.entries(checks)) {
     if (!selected.has(id) || result.status !== 'warn') continue
-    flags.push({ level: 'medium', text: `${CHECKS.find((c) => c.id === id)?.name}: ${result.value} — ${result.detail}` })
+    flags.push({ level: 'medium', text: `${CHECKS.find((c) => c.id === id)?.name}: ${result.value} — ${publicDetail(result.detail)}` })
   }
   if (!sv.done) {
     flags.push({ level: 'medium', text: 'Site surveillance not conducted — Assessment pillar (weight 0.60) largely unevaluated' })
@@ -255,10 +256,9 @@ export default function Report({ vendor, setPrimary }: PageProps) {
         return {
           id: c.id,
           name: c.name,
-          provider: c.provider,
           statusLabel: STATUS_LABEL[result.status] ?? result.status,
           tone: STATUS_TONE[result.status] ?? 'none',
-          value: result.value || result.detail || '—',
+          value: result.value || publicDetail(result.detail, { capitalise: true }) || '—',
         }
       }),
     [vendor.checks],
@@ -475,7 +475,6 @@ export default function Report({ vendor, setPrimary }: PageProps) {
             <thead>
               <tr>
                 <th>Check</th>
-                <th>Source</th>
                 <th style={{ width: 96 }}>Outcome</th>
                 <th>Result</th>
               </tr>
@@ -484,7 +483,6 @@ export default function Report({ vendor, setPrimary }: PageProps) {
               {evidence.map((row) => (
                 <tr key={row.id}>
                   <td>{row.name}</td>
-                  <td className="mono small">{row.provider}</td>
                   <td>
                     <span className={`doc-flag f-${row.tone}`}>{row.statusLabel}</span>
                   </td>
