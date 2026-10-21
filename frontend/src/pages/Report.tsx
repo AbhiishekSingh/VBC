@@ -17,7 +17,6 @@ import { useNavigate } from 'react-router-dom'
 import { CHECKS, MANUAL_TEMPLATES } from '@/catalog/generated'
 import { Callout, EmptyState } from '@/components/ui'
 import { DEFAULT_POLICY, applyPolicy, scoreRisk, scoreScan, scoreSurveillance } from '@/scoring'
-import { downloadBlob } from '@/lib/download'
 import type { PageProps } from '@/App'
 import type { Vendor } from '@/types/domain'
 
@@ -269,10 +268,7 @@ export default function Report({ vendor, setPrimary }: PageProps) {
     const lines = [
       `VERIFICATION REPORT — ${vendor.legalName}`,
       `Vendor #${vendor.id} · submitted ${vendor.submitted}`,
-      // The header on screen renders local time and the export used to
-      // write UTC, so one report carried two generation times up to twelve
-      // hours apart. One clock, one value.
-      `Generated ${generatedAt}`,
+      `Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
       '',
       'This report is assembled from fixed templates selected by check outcome.',
       'It contains no generated prose. The recommendation is advisory; the binding',
@@ -292,7 +288,13 @@ export default function Report({ vendor, setPrimary }: PageProps) {
       `Coverage: ${report.scan.coverageNote}`,
       'Recommendation only — not a binding decision.',
     ]
-    downloadBlob(lines.join('\n'), `VBC-${vendor.id}-report.txt`, 'text/plain')
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `VBC-${vendor.id}-report.txt`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   useEffect(() => {
@@ -303,11 +305,8 @@ export default function Report({ vendor, setPrimary }: PageProps) {
         </button>
         {/* The browser's own print-to-PDF. One renderer, so the PDF cannot
             drift from what is on screen. */}
-        <button type="button" className="btn" onClick={() => window.print()}>
+        <button type="button" className="btn primary" onClick={() => window.print()}>
           Download PDF
-        </button>
-        <button type="button" className="btn primary" onClick={() => navigate(`/vendor/${vendor.id}/decision`)}>
-          Record the decision →
         </button>
       </>,
     )
