@@ -22,6 +22,7 @@ import { useNavigate } from 'react-router-dom'
 import { CHECKS, CHECK_GROUPS } from '@/catalog/generated'
 import { inputValue } from '@/api/mock'
 import { Card, EmptyState, STATUS_EXPLANATION, StatusBadge, Tile } from '@/components/ui'
+import { publicDetail } from '@/lib/publicText'
 import type { PageProps } from '@/App'
 import type { CheckStatus, Vendor } from '@/types/domain'
 
@@ -152,7 +153,27 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
     )
   }
 
-  const results = Object.values(vendor.checks)
+  /*
+    ONLY WHAT IS CURRENTLY SELECTED.
+    -------------------------------
+    Results are stored per check and never wiped, so a vendor whose
+    selection changed between runs still HOLDS results for checks that are
+    no longer in scope. Showing those made the screen disagree with Step 2
+    and put a stale answer next to a live one with nothing marking which
+    was which.
+
+    `vendor.selected` is the server's EXPANDED selection — prerequisites
+    folded in by `expand_selection()` — so a check pulled in because
+    something else needed it still appears. That is correct: it ran, it
+    cost money, and its result fed another row on this screen.
+
+    The de-selected results are not deleted. They are still in the
+    database with their payloads and timestamps, and re-selecting the
+    check in Step 2 brings the row straight back without re-running it.
+  */
+  const inScope = (checkId: string) => vendor.selected.includes(checkId)
+
+  const results = Object.values(vendor.checks).filter((r) => inScope(r.checkId))
 
   /*
     Scoped to the checks that were SELECTED for this vendor, so the four
@@ -231,7 +252,9 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
       </div>
 
       {CHECK_GROUPS.map((group) => {
-        const rows = CHECKS.filter((c) => c.group === group.id && vendor.checks[c.id])
+        const rows = CHECKS.filter(
+          (c) => c.group === group.id && vendor.checks[c.id] && inScope(c.id),
+        )
         if (!rows.length) return null
 
         const ids = rows.map((c) => c.id)
@@ -284,7 +307,7 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                       <span className="acc-result">
                         <span className="acc-value">{result.value || '—'}</span>
                         <span className="small muted">
-                          {result.detail || STATUS_EXPLANATION[result.status]}
+                          {publicDetail(result.detail, { capitalise: true }) || STATUS_EXPLANATION[result.status]}
                         </span>
                       </span>
 
