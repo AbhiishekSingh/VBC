@@ -91,12 +91,25 @@ export default function Submit({ vendor, setPrimary }: Props) {
     unavoidable: this form is a vendor record, the rules are keyed by
     check parameter. One place, written out, rather than guessed at.
   */
-  const fieldProblem = {
+  // Shown only after a field has been left once — see the note in
+  // Select.tsx. A 21-character CIN would otherwise be red for its first
+  // twenty keystrokes, which teaches people to ignore red.
+  const [touched, setTouched] = useState<Record<string, boolean>>({})
+  const touch = (k: string) => () => setTouched((t) => ({ ...t, [k]: true }))
+
+  const raw = {
     cin: checkValue('cin', form.cin),
     gst: checkValue('gstin', form.gst),
     pan: checkValue('pan', form.pan),
   }
-  const blockers = Object.entries(fieldProblem).filter(
+  const fieldProblem = {
+    cin: touched.cin ? raw.cin : null,
+    gst: touched.gst ? raw.gst : null,
+    pan: touched.pan ? raw.pan : null,
+  }
+  // Gated on the REAL result, never on whether it has been shown yet —
+  // a field nobody focused is still not sendable to a provider.
+  const blockers = Object.entries(raw).filter(
     ([, p]) => p && p.level === 'block',
   ) as [string, NonNullable<ReturnType<typeof checkValue>>][]
 
@@ -105,11 +118,14 @@ export default function Submit({ vendor, setPrimary }: Props) {
     // provider. The field is focused rather than the button disabled —
     // a dead button says nothing about which box is wrong.
     if (blockers.length > 0) {
-      const [key, problem] = blockers[0]
+      // No banner either — see the note in Select.tsx. `setError` renders
+      // the adverse callout used when a save is REJECTED, and a format
+      // still being typed is not that. The field says what is wrong; this
+      // only puts the cursor in it.
+      const [key] = blockers[0]
       const el = document.querySelector<HTMLElement>(`[data-field="${key}"]`)
       el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       el?.focus()
-      setError(problem.message)
       return
     }
 
@@ -292,6 +308,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
                 <input
                   className={`input${fieldProblem.cin ? ' is-invalid' : ''}`}
                   data-field="cin"
+                  onBlur={touch('cin')}
                   aria-invalid={Boolean(fieldProblem.cin) || undefined}
                   value={form.cin}
                   onChange={set('cin')}
@@ -309,6 +326,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
                 <input
                   className={`input${fieldProblem.gst ? ' is-invalid' : ''}`}
                   data-field="gst"
+                  onBlur={touch('gst')}
                   aria-invalid={Boolean(fieldProblem.gst) || undefined}
                   value={form.gst}
                   onChange={set('gst')}
@@ -326,6 +344,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
                 <input
                   className={`input${fieldProblem.pan ? ' is-invalid' : ''}`}
                   data-field="pan"
+                  onBlur={touch('pan')}
                   aria-invalid={Boolean(fieldProblem.pan) || undefined}
                   value={form.pan}
                   onChange={set('pan')}

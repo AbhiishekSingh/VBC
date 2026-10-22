@@ -251,11 +251,20 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     // The API refuses these too — this is the copy that can put a cursor
     // in the box and save the money.
     if (badInputs.length > 0) {
+      // NO TOAST. This used to raise `toast.error(null, …)`, which showed
+      // a red "Something went wrong" — twice wrong. Nothing went wrong: a
+      // field needs correcting, which is an ordinary part of filling in a
+      // form, not a failure. And `toast.error` exists for responses from
+      // the server; handed null it reported its own "no reason was given"
+      // over the message it was passed.
+      //
+      // The field already carries the reason underneath it and the button
+      // already says how many to fix. All that was missing is getting the
+      // analyst to the right box, so that is all this does now.
       const first = badInputs[0]
       const el = document.querySelector<HTMLElement>(`[data-field="${first.key}"]`)
       el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       el?.focus()
-      toast.error(null, first.message)
       return
     }
 
@@ -690,7 +699,23 @@ function ParamField({
   // Format, from the generated rules. Checked on every keystroke so the
   // analyst sees it while the field is under the cursor, not after they
   // have committed to a run.
-  const problem = checkValue(param.key, local)
+  /*
+    NOT WHILE THEY ARE STILL TYPING.
+
+    A CIN is 21 characters, so validating on every keystroke paints the
+    field red for the first twenty and clears it on the last. That trains
+    an analyst to ignore the colour, which is the opposite of the point.
+
+    So the rule is: say nothing until the field has been left once. After
+    that, stay live — the error should disappear the moment the correction
+    is made, not on the next blur.
+
+    The RUN is still gated on the real value either way; this only governs
+    when the message is shown.
+  */
+  const [touched, setTouched] = useState(false)
+  const found = checkValue(param.key, local)
+  const problem = touched ? found : null
   const rule = ruleFor(param.key)
 
   /*
@@ -770,6 +795,7 @@ function ParamField({
           }}
           onBlur={() => {
             editing.current = false
+            setTouched(true)
           }}
           onChange={(e) => void write(e.target.value)}
         />
