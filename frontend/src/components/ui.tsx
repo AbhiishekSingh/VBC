@@ -195,16 +195,23 @@ export function Field({
   label,
   hint,
   children,
+  /** 'block' colours the hint as an error, 'warn' as a caution. */
+  tone,
 }: {
   label: string
   hint?: ReactNode
   children: ReactNode
+  tone?: 'block' | 'warn'
 }) {
+  const hintClass =
+    tone === 'block' ? 'field-hint is-error'
+    : tone === 'warn' ? 'field-hint is-caution'
+    : 'field-hint'
   return (
     <label className="field">
       <span className="field-label">{label}</span>
       {children}
-      {hint && <span className="field-hint">{hint}</span>}
+      {hint && <span className={hintClass}>{hint}</span>}
     </label>
   )
 }

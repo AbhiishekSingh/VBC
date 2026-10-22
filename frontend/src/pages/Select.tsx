@@ -41,6 +41,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '@/api'
 import { errorMessage, errorTitle } from '@/api/http'
 import { inputValue, missingInputs } from '@/api/mock'
+import { blockingProblems, checkValue, detectIdType, ruleFor } from '@/lib/validate'
 import {
   CHECKS,
   CHECK_GROUPS,
@@ -227,7 +228,37 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   const missing = useMemo(() => missingInputs(vendor), [vendor])
 
+  /*
+    BLOCKING FORMAT ERRORS ACROSS EVERY SELECTED CHECK.
+
+    Only inputs belonging to checks actually selected count. A malformed
+    GSTIN on a check nobody chose is not a reason to stop a run that will
+    never read it.
+  */
+  const badInputs = useMemo(() => {
+    const values: Record<string, string> = {}
+    for (const id of selected) {
+      const def = CHECKS.find((c) => c.id === id)
+      for (const p of def?.params ?? []) {
+        values[p.key] = inputValue(vendor, id, p.key)
+      }
+    }
+    return blockingProblems(values)
+  }, [vendor, selected])
+
   const run = async () => {
+    // Refused before the call, and the page goes to the offending field.
+    // The API refuses these too — this is the copy that can put a cursor
+    // in the box and save the money.
+    if (badInputs.length > 0) {
+      const first = badInputs[0]
+      const el = document.querySelector<HTMLElement>(`[data-field="${first.key}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el?.focus()
+      toast.error(null, first.message)
+      return
+    }
+
     setRunning(true)
     setRunError(null)
     try {
@@ -265,9 +296,16 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           {cost.credits > 0 && ` · ${cost.credits} credits`}
           {cost.shots > 0 && ` · ${cost.shots} screenshot${cost.shots > 1 ? 's' : ''}`}
         </span>
+        {/* Not disabled on a bad input — a dead button explains nothing.
+            It stays clickable and `run` sends the page to the field that
+            is wrong, with the reason. */}
         <button type="button" className="btn primary" disabled={running || !selected.length} onClick={run}>
           {running && <span className="spinner" aria-hidden="true" />}
-          {running ? 'Running checks…' : `Run ${selected.length} checks →`}
+          {running
+            ? 'Running checks…'
+            : badInputs.length
+              ? `Fix ${badInputs.length} input${badInputs.length > 1 ? 's' : ''} to run`
+              : `Run ${selected.length} checks →`}
         </button>
       </>,
     )
@@ -423,7 +461,22 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
       )}
 
       {CHECK_GROUPS.map((group) => {
-        const groupChecks = CHECKS.filter((c) => c.group === group.id)
+        /*
+          NOT-CONFIGURED CHECKS ARE NOT SHOWN HERE AT ALL.
+
+          They used to appear greyed out with a "No provider configured"
+          badge. That is a list of things this platform cannot do,
+          rendered on the screen where someone is deciding what to do —
+          seven rows of noise between them and the checks that work.
+
+          This is a presentation choice, not a disclosure one. The
+          client-facing report still accounts for coverage; see
+          Report.tsx. Hiding a gap from the analyst's working screen is
+          fine. Hiding it from the deliverable would not be.
+        */
+        const groupChecks = CHECKS.filter(
+          (c) => c.group === group.id && c.state !== 'not_configured',
+        )
         if (!groupChecks.length) return null
 
         const visible = groupChecks.filter(matches)
@@ -634,6 +687,35 @@ function ParamField({
   const suppliedByAnother = param.fromResult && selected.includes(param.fromResult)
   const isMissing = param.required && !suppliedByAnother && !local.trim()
 
+  // Format, from the generated rules. Checked on every keystroke so the
+  // analyst sees it while the field is under the cursor, not after they
+  // have committed to a run.
+  const problem = checkValue(param.key, local)
+  const rule = ruleFor(param.key)
+
+  /*
+    THE IDENTIFIER TYPE FOLLOWS THE IDENTIFIER.
+
+    This select used to carry an "Auto-detect" option, which existed
+    because pinning it to "cin" made the provider apply CIN validation to
+    every identifier — so an LLPIN came back 400 and an LLP could not be
+    audited at all.
+
+    Auto-detect is gone from the options, but the behaviour it protected
+    is not: the value is derived from whatever was typed in the CIN box.
+    Type a CIN and it reads "cin"; type an LLPIN and it reads "llpin".
+    The analyst can still override. Nothing is pinned.
+  */
+  const derivedIdType =
+    param.key === 'idType' ? detectIdType(inputValue(vendor, checkId, 'cin')) : null
+
+  useEffect(() => {
+    if (!derivedIdType || editing.current) return
+    if (local === derivedIdType) return
+    void write(derivedIdType)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedIdType])
+
   const write = async (value: string) => {
     setLocal(value)
     try {
@@ -653,8 +735,13 @@ function ParamField({
           ? `Supplied by the ${nameOf(param.fromResult!)} result`
           : isMissing
             ? 'Required — this check will be skipped without it'
-            : undefined
+            : problem
+              ? problem.message
+              : rule?.example
+                ? `e.g. ${rule.example}`
+                : undefined
       }
+      tone={problem?.level}
     >
       {param.type === 'select' ? (
         <select
@@ -670,11 +757,14 @@ function ParamField({
         </select>
       ) : (
         <input
-          className={`input${isMissing ? ' is-missing' : ''}`}
+          className={`input${isMissing ? ' is-missing' : ''}${
+            problem ? (problem.level === 'block' ? ' is-invalid' : ' is-warning') : ''
+          }`}
+          data-field={param.key}
           type={param.type === 'number' ? 'number' : param.type === 'date' ? 'date' : 'text'}
           value={local}
           placeholder={param.placeholder}
-          aria-invalid={isMissing || undefined}
+          aria-invalid={isMissing || problem?.level === 'block' || undefined}
           onFocus={() => {
             editing.current = true
           }}

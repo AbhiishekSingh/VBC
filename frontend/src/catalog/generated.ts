@@ -32,14 +32,14 @@ export const PILLARS = [
   {
     "key": "A",
     "name": "Assessment",
-    "subtitle": "Diligence",
-    "weight": 0.6
+    "subtitle": "Psychometric Test",
+    "weight": 0.4
   },
   {
     "key": "N",
-    "name": "Numbers",
-    "subtitle": "Financial",
-    "weight": 0.1
+    "name": "Non Negotiable",
+    "subtitle": "Must-pass",
+    "weight": 0.3
   }
 ] as const;
 
@@ -58,11 +58,15 @@ export const SCAN_PARAMETERS = [
       },
       {
         "value": "Private Ltd",
-        "rating": "G"
+        "rating": "Y"
       },
       {
         "value": "Partnership/LLP",
         "rating": "Y"
+      },
+      {
+        "value": "Partnership/ Proprietorship",
+        "rating": "R"
       },
       {
         "value": "Individual/ Proprietorship",
@@ -79,11 +83,11 @@ export const SCAN_PARAMETERS = [
     "fedBy": "master",
     "options": [
       {
-        "value": "> 10 Years",
+        "value": ">10 Years",
         "rating": "G"
       },
       {
-        "value": "3 - 10 Years",
+        "value": "3-10 Years",
         "rating": "Y"
       },
       {
@@ -251,17 +255,17 @@ export const SCAN_PARAMETERS = [
   {
     "id": "A1",
     "pillar": "A",
-    "label": "Psychometric Test Result",
+    "label": "Integrity",
     "source": "HUMAN",
-    "feed": "External assessment",
+    "feed": "Psychometric test — 50%",
     "fedBy": null,
     "options": [
       {
-        "value": "On-board",
+        "value": "Non Vulnerable",
         "rating": "G"
       },
       {
-        "value": "Reject",
+        "value": "Vulnerable",
         "rating": "R"
       }
     ]
@@ -269,17 +273,21 @@ export const SCAN_PARAMETERS = [
   {
     "id": "A2",
     "pillar": "A",
-    "label": "Site Surveillance",
+    "label": "Business Acumen",
     "source": "HUMAN",
-    "feed": "Site Surveillance module",
+    "feed": "Psychometric test — 30%",
     "fedBy": null,
     "options": [
       {
-        "value": "Positive",
+        "value": "Matured",
         "rating": "G"
       },
       {
-        "value": "Negative",
+        "value": "Limited/ Opportunistic",
+        "rating": "Y"
+      },
+      {
+        "value": "Weak",
         "rating": "R"
       }
     ]
@@ -287,17 +295,21 @@ export const SCAN_PARAMETERS = [
   {
     "id": "A3",
     "pillar": "A",
-    "label": "Conflict of Interest (Employees)",
-    "source": "AUTO",
-    "feed": "Internal check over MCA director data",
-    "fedBy": "conflict",
+    "label": "Risk Taking",
+    "source": "HUMAN",
+    "feed": "Psychometric test — 10%",
+    "fedBy": null,
     "options": [
       {
-        "value": "Positive",
+        "value": "Matured",
         "rating": "G"
       },
       {
-        "value": "Negative",
+        "value": "Limited/ Constructive",
+        "rating": "Y"
+      },
+      {
+        "value": "Weak",
         "rating": "R"
       }
     ]
@@ -305,21 +317,21 @@ export const SCAN_PARAMETERS = [
   {
     "id": "A4",
     "pillar": "A",
-    "label": "Market References",
+    "label": "Problem Solving",
     "source": "HUMAN",
-    "feed": "Analyst reference calls",
+    "feed": "Psychometric test — 10%",
     "fedBy": null,
     "options": [
       {
-        "value": "Good",
+        "value": "Pro-active",
         "rating": "G"
       },
       {
-        "value": "Average",
+        "value": "Limited/ Active",
         "rating": "Y"
       },
       {
-        "value": "Poor",
+        "value": "Weak",
         "rating": "R"
       }
     ]
@@ -349,21 +361,17 @@ export const SCAN_PARAMETERS = [
   {
     "id": "N2",
     "pillar": "N",
-    "label": "Big Players in Clientele",
+    "label": "Site Surveillance",
     "source": "HUMAN",
-    "feed": "Reference check",
+    "feed": "Site Surveillance module",
     "fedBy": null,
     "options": [
       {
-        "value": "More than 5",
+        "value": "Positive",
         "rating": "G"
       },
       {
-        "value": "1 to 5",
-        "rating": "Y"
-      },
-      {
-        "value": "Zero",
+        "value": "Negative",
         "rating": "R"
       }
     ]
@@ -371,21 +379,17 @@ export const SCAN_PARAMETERS = [
   {
     "id": "N3",
     "pillar": "N",
-    "label": "Turnover of the Vendor",
+    "label": "Conflict of Interest (Employees)",
     "source": "AUTO",
-    "feed": "MCA filed financials (AOC-4)",
-    "fedBy": "fin",
+    "feed": "Internal check over MCA director data",
+    "fedBy": "conflict",
     "options": [
       {
-        "value": "2 Cr / 1 Cr",
+        "value": "Negative",
         "rating": "G"
       },
       {
-        "value": "> 50 Lac / 25 Lac",
-        "rating": "Y"
-      },
-      {
-        "value": "< 50 Lac / 25 Lac",
+        "value": "Positive",
         "rating": "R"
       }
     ]
@@ -701,14 +705,101 @@ export const CHECK_GROUPS = [
   }
 ] as const;
 
+export const INPUT_RULES = {
+  "cin": {
+    "pattern": "^(?:[LUu]\\d{5}[A-Za-z]{2}\\d{4}[A-Za-z]{3}\\d{6}|[A-Za-z]{3}-?\\d{4}|(F|FLLPIN)\\d{4,6})$",
+    "level": "block",
+    "hint": "A 21-character CIN, an LLPIN like AAA-1234, or an FCIN like F01234.",
+    "example": "U93090MH2011PTC215361",
+    "normalise": true
+  },
+  "gstin": {
+    "pattern": "^\\d{2}[A-Za-z]{5}\\d{4}[A-Za-z]{1}[A-Za-z\\d]{1}[Zz]{1}[A-Za-z\\d]{1}$",
+    "level": "block",
+    "hint": "15 characters: 2-digit state code, 10-character PAN, entity digit, Z, then the check character.",
+    "example": "22AAAAA0000A1Z5",
+    "normalise": true
+  },
+  "pan": {
+    "pattern": "^[A-Za-z]{5}\\d{4}[A-Za-z]$",
+    "level": "block",
+    "hint": "10 characters, five letters then four digits then a letter.",
+    "example": "AAAAA0000A",
+    "normalise": true
+  },
+  "din": {
+    "pattern": "^\\d{8}$",
+    "level": "block",
+    "hint": "Exactly 8 digits.",
+    "example": "09054126",
+    "normalise": true
+  },
+  "cnr": {
+    "pattern": "^[A-Za-z]{4}\\d{2}[A-Za-z0-9]{6}\\d{4}$",
+    "level": "warn",
+    "hint": "A CNR is normally 16 characters, e.g. MHAU010012342024.",
+    "example": "MHAU010012342024",
+    "normalise": true
+  },
+  "domainName": {
+    "pattern": "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$",
+    "level": "warn",
+    "hint": "Just the domain — no https://, no path.",
+    "example": "example.com",
+    "normalise": false
+  },
+  "fy": {
+    "pattern": "^\\d{4}-\\d{2}$",
+    "level": "warn",
+    "hint": "Financial year as 2023-24.",
+    "example": "2023-24",
+    "normalise": false
+  },
+  "limit": {
+    "pattern": "^\\d+$",
+    "level": "warn",
+    "hint": "A whole number.",
+    "example": "",
+    "normalise": false
+  },
+  "offset": {
+    "pattern": "^\\d+$",
+    "level": "warn",
+    "hint": "A whole number.",
+    "example": "",
+    "normalise": false
+  },
+  "page": {
+    "pattern": "^\\d+$",
+    "level": "warn",
+    "hint": "A whole number.",
+    "example": "",
+    "normalise": false
+  },
+  "page_size": {
+    "pattern": "^\\d+$",
+    "level": "warn",
+    "hint": "A whole number.",
+    "example": "",
+    "normalise": false
+  },
+  "rows": {
+    "pattern": "^\\d+$",
+    "level": "warn",
+    "hint": "A whole number.",
+    "example": "",
+    "normalise": false
+  }
+} as const;
+
 export const CHECKS = [
   {
     "id": "master",
     "group": "mca",
     "name": "Company master",
-    "endpoint": "GET /v1/companies/{cin}?idType=cin",
+    "endpoint": "GET /v1/companies/{id}",
     "provider": "filesure",
-    "note": "Status, incorporation date, capital, registered address",
+    "note": "Status, incorporation date, capital, registered address. Accepts a CIN, an LLPIN or an FCIN — the source detects which.",
     "state": "active",
     "requires": [],
     "feeds": [
@@ -725,25 +816,26 @@ export const CHECKS = [
     "params": [
       {
         "key": "cin",
-        "label": "CIN",
+        "label": "CIN / LLPIN / FCIN",
         "required": true,
         "fromVendor": "cin",
         "fromResult": null,
         "type": "text",
         "options": [],
         "default": "",
-        "placeholder": "U21029MH2013PTC245119"
+        "placeholder": "U21029MH2013PTC245119 · ACK-2998"
       },
       {
         "key": "idType",
-        "label": "Look up by",
+        "label": "Identifier type",
         "required": false,
         "fromVendor": null,
         "fromResult": null,
         "type": "select",
         "options": [
           "cin",
-          "name"
+          "llpin",
+          "fcin"
         ],
         "default": "cin",
         "placeholder": ""
@@ -1021,7 +1113,18 @@ export const CHECKS = [
         "fromResult": null,
         "type": "number",
         "options": [],
-        "default": "50",
+        "default": "200",
+        "placeholder": ""
+      },
+      {
+        "key": "page",
+        "label": "Page",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "number",
+        "options": [],
+        "default": "1",
         "placeholder": ""
       }
     ]
@@ -1685,7 +1788,7 @@ export const CHECKS = [
     "id": "gst",
     "group": "tax",
     "name": "GST registration and status",
-    "endpoint": "GET /commonapi/{v}/search?action=SEARCHGSTIN",
+    "endpoint": "GET /commonapi/{v}/search?action=TP",
     "provider": "finagg",
     "note": "Registration status, taxpayer type, constitution, principal address",
     "state": "active",
@@ -2320,8 +2423,8 @@ export const CHECKS = [
     "name": "Litigation exposure",
     "endpoint": "POST /legal-check → GET /legal-check/{code}/report",
     "provider": "ecourts",
-    "note": "Risk band with an identity-confidence score. NOT CONFIGURED: POST /legal-check returns 400 VALIDATION_ERROR with an empty details[] on every documented body shape, and the submit endpoint is absent from the published API docs. Awaiting the schema from eCourts. /legal-check/models confirms the account has model eCI-1.2 with company support, so this is a contract gap, not an entitlement one.",
-    "state": "not_configured",
+    "note": "Risk band with an identity-confidence score — the only court check that produces a SCORED result rather than rows for an analyst. ₹99 a submit; reads afterwards are free, and an unfinished job resumes on the next run rather than paying twice.\n\nWas NOT CONFIGURED until 14 Sep 2026: six submits returned 400 VALIDATION_ERROR with an empty details[]. The cause was one field — a company subject takes subject.company_name, not subject.name, which is individual-only. The body now matches the published schema and carries the CIN and board as well, because identity_confidence is what decides whether a match is scored at all.",
+    "state": "active",
     "requires": [],
     "feeds": [],
     "costPaisa": 0,
@@ -2751,12 +2854,8 @@ export const MANUAL_TEMPLATES = [
       "Average",
       "Poor"
     ],
-    "mapsTo": "A4",
-    "mapWhen": {
-      "Good": "Good",
-      "Average": "Average",
-      "Poor": "Poor"
-    },
+    "mapsTo": null,
+    "mapWhen": {},
     "hint": ""
   },
   {

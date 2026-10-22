@@ -47,6 +47,7 @@ from app.catalog.checks import CHECKS_BY_ID, expand_selection
 from app.config import Settings, get_settings
 from app.db.models import AuditLog, Unlock, Vendor, VendorCheck, VendorCheckInput
 from app.db.models import StoredDocument as StoredDocumentRow
+from app.domain.validation import detect_id_type
 from app.domain.facts import crore as _crore
 from app.domain.facts import paisa as _paisa
 from app.domain.facts import human_date as _human_date
@@ -569,12 +570,29 @@ class CheckRunner:
             if not cin:
                 return Finding(check_id, CheckStatus.FAIL, "Not a registered company",
                                "No CIN — MCA holds no record for this entity.")
-            # Blank / "Auto-detect" means send no idType at all, which is
-            # what lets an LLPIN or an FCIN through. Pinning "cin" made the
-            # provider apply CIN validation to every identifier, so an LLP
-            # could not be audited at all.
-            id_type = get("idType", "")
-            if str(id_type).strip().lower() in ("", "auto-detect", "auto"):
+            # idType TIGHTENS the provider's validation, so sending one
+            # that contradicts the identifier is worse than sending none:
+            # an LLPIN submitted as "cin" comes back 400 INVALID_CIN and
+            # the LLP cannot be audited at all. That was a real bug once.
+            #
+            # The form now derives this field from what was typed, so it
+            # usually agrees. This is the guard for when it does not — a
+            # value saved before the identifier was edited, an older row,
+            # or a shape we do not recognise. Where the stored choice and
+            # the actual identifier disagree, send NOTHING and let the
+            # provider work it out, which is what it does well.
+            #
+            # "Auto-detect" is no longer offered but is still honoured:
+            # rows written before it was removed still carry it.
+            id_type = str(get("idType", "") or "").strip().lower()
+            if id_type in ("", "auto-detect", "auto"):
+                id_type = None
+            elif id_type != detect_id_type(cin):
+                self._audit(
+                    vendor.id, "ID_TYPE_IGNORED",
+                    f"Stored idType '{id_type}' does not match the shape of "
+                    f"{cin}; sent without one so the provider can detect it.",
+                )
                 id_type = None
 
             payload, record_meta = fs.company_master_with_meta(cin, id_type)

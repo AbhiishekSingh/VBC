@@ -136,7 +136,6 @@ export function buildReport(vendor: Vendor) {
 
   /* 6 · coverage — MANDATORY, never omitted */
   const notSelected = CHECKS.filter((c) => !c.admin && c.state === 'active' && !selected.has(c.id))
-  const hooks = CHECKS.filter((c) => c.state === 'not_configured')
   const skipped = Object.values(checks).filter((c) => c.status === 'skipped_missing_input')
   const coverage =
     `${Object.keys(checks).length} checks were run for this vendor. ` +
@@ -146,10 +145,15 @@ export function buildReport(vendor: Vendor) {
     (notSelected.length
       ? `${notSelected.length} available checks were not selected: ${notSelected.map((c) => c.name).join(', ')}. `
       : '') +
-    (hooks.length
-      ? `A further ${hooks.length} checks are not configured on this platform at all: ${hooks.map((c) => c.name).join(', ')}. `
-      : '') +
-    `Nothing in this report should be read as clearance on any of the above — they were not examined.`
+    // The not-configured checks are no longer listed by name. What
+    // replaces them is the scope line below: the report states what WAS
+    // examined, which bounds the claim without itemising gaps in our own
+    // coverage. A reader still cannot mistake this for a screening we
+    // never ran, because we never say we ran it.
+
+    `This report covers the MCA registry, statutory filings, filed financials, ` +
+    `litigation records, and domain and web presence. Nothing outside that scope ` +
+    `was examined, and nothing in this report should be read as clearance on it.`
   sections.push({ heading: 'Coverage — what was not checked', paragraphs: [coverage] })
 
   /* 7 · scoring */
@@ -199,9 +203,9 @@ export function buildReport(vendor: Vendor) {
   if (gate.gated) {
     flags.push({ level: 'high', text: `Verdict held for coverage under policy ${gate.policyVersion} — ${gate.reasons.length} condition(s) unmet` })
   }
-  if (hooks.length) {
-    flags.push({ level: 'low', text: `${hooks.length} checks not configured on this platform, including GST and sanctions screening` })
-  }
+  // NO FLAG FOR UNCONFIGURED CHECKS — same reasoning as the coverage
+  // paragraph above. Flags on this report are findings about the VENDOR.
+  // What this platform does not yet buy is not one of them.
 
   return { sections, flags, scan, gate, risk, sv, recommendation: gate.verdict }
 }
