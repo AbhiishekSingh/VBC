@@ -74,15 +74,22 @@ CHECKS: tuple[CheckDefinition, ...] = (
         params=(
             _p("cin", "CIN / LLPIN / FCIN", required=True, from_vendor="cin",
                placeholder="U21029MH2013PTC245119 · ACK-2998"),
-            # "Auto-detect" is the default and should stay that way. This
-            # was a cin/name select: "name" is not a value the API accepts,
-            # and the adapter pinned "cin" regardless — so the control did
-            # nothing whichever way it was set, while quietly making every
-            # LLP un-auditable. Now it only tightens validation when a
-            # caller is sure.
+            # NO "Auto-detect" OPTION, and the default is NOT a fixed
+            # "cin". The form sets this from the identifier that was
+            # actually typed — `domain.validation.detect_id_type` — so the
+            # control always shows a real value and an LLPIN selects
+            # "llpin" by itself.
+            #
+            # That distinction is the whole point. This was once a
+            # cin/name select: "name" is not a value the API accepts, and
+            # the adapter pinned "cin" regardless, which made every LLP
+            # un-auditable because the provider then applied CIN
+            # validation to an LLPIN and answered 400. Pinning "cin" as a
+            # literal default would reintroduce exactly that. Deriving it
+            # from the input does not.
             _p("idType", "Identifier type", type="select",
-               options=("Auto-detect", "cin", "llpin", "fcin"),
-               default="Auto-detect"),
+               options=("cin", "llpin", "fcin"),
+               default="cin"),
         ),
     ),
     CheckDefinition(
