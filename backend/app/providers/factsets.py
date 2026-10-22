@@ -435,6 +435,22 @@ def master(parsed: dict, *, subject: str | None = None) -> dict:
             "under the previous CIN.",
         ))
 
+    # STALENESS IS A FINDING, not metadata. "Status: Active" with a tone of
+    # "good" is the single most load-bearing line in this panel, and the
+    # provider will serve it from a snapshot years old at full price. The
+    # status itself is not rewritten — it was true when recorded — but a
+    # reader must not be able to mistake it for current.
+    age = parsed.get("record_age_days")
+    if parsed.get("record_is_stale"):
+        flags.append(F.flag(
+            "warn", f"MCA record is {age} days old",
+            f"The source last refreshed this company on "
+            f"{F.human_date(parsed.get('record_updated_at')) or 'an unknown date'}. "
+            f"Everything above, the status included, describes the company as "
+            f"at that date. A strike-off or status change since then would not "
+            f"appear here. A paid refresh is needed to confirm it is current.",
+        ))
+
     return F.build(
         F.DETAIL,
         fields=[
@@ -460,6 +476,17 @@ def master(parsed: dict, *, subject: str | None = None) -> dict:
                 parsed.get("registered_city"),
                 parsed.get("registered_state"),
             ) if p)),
+            # Last, and always present: how old the answer is belongs with
+            # the answer. None renders as unknown, never as fresh.
+            F.field(
+                "Source record refreshed",
+                F.human_date(parsed.get("record_updated_at")),
+                format="date",
+                tone="warn" if parsed.get("record_is_stale") else None,
+                note="When the provider last refreshed its copy of this "
+                     "company from MCA — not when we called it. The two are "
+                     "priced the same.",
+            ),
         ],
         flags=flags,
     )
