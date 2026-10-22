@@ -17,6 +17,7 @@ import { useToast } from '@/hooks/useToast'
 import { useClients } from '@/hooks/useClients'
 import type { Vendor } from '@/types/domain'
 import { errorMessage } from '@/api/http'
+import { checkValue } from '@/lib/validate'
 
 const GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/
@@ -77,7 +78,41 @@ export default function Submit({ vendor, setPrimary }: Props) {
   if (form.cin && !CIN_RE.test(form.cin.toUpperCase())) advice.push('CIN does not match the standard 21-character format.')
   if (form.website && !domain) advice.push('That website could not be parsed into a domain, so domain checks will need it entered by hand.')
 
+  /*
+    IDENTIFIER FORMATS, CHECKED WHERE THEY ARE TYPED.
+
+    These three fields are the FIRST place a CIN, GSTIN or PAN is entered,
+    and Step 2 prefills from them — so a wrong character here travels all
+    the way to a paid call that was never going to succeed. Validating
+    only at Step 2, as this did at first, guards the wrong end of the
+    flow.
+
+    Mapping the form's field names onto the catalog's parameter keys is
+    unavoidable: this form is a vendor record, the rules are keyed by
+    check parameter. One place, written out, rather than guessed at.
+  */
+  const fieldProblem = {
+    cin: checkValue('cin', form.cin),
+    gst: checkValue('gstin', form.gst),
+    pan: checkValue('pan', form.pan),
+  }
+  const blockers = Object.entries(fieldProblem).filter(
+    ([, p]) => p && p.level === 'block',
+  ) as [string, NonNullable<ReturnType<typeof checkValue>>][]
+
   const submit = async () => {
+    // Nothing is filed with an identifier that cannot be sent to a
+    // provider. The field is focused rather than the button disabled —
+    // a dead button says nothing about which box is wrong.
+    if (blockers.length > 0) {
+      const [key, problem] = blockers[0]
+      const el = document.querySelector<HTMLElement>(`[data-field="${key}"]`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el?.focus()
+      setError(problem.message)
+      return
+    }
+
     if (!clientId) {
       setError('Choose which client this vendor belongs to.')
       return
@@ -113,11 +148,15 @@ export default function Submit({ vendor, setPrimary }: Props) {
         disabled={saving || !form.name.trim() || !clientId}
         onClick={submit}
       >
-        {saving ? 'Filing…' : 'File vendor and choose checks →'}
+        {saving
+          ? 'Filing…'
+          : blockers.length
+            ? `Fix ${blockers.length} identifier${blockers.length > 1 ? 's' : ''} to continue`
+            : 'File vendor and choose checks →'}
       </button>,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saving, form, domain, clientId])
+  }, [saving, form, domain, clientId, blockers.length])
 
   if (vendor) {
     return (
@@ -242,14 +281,56 @@ export default function Submit({ vendor, setPrimary }: Props) {
         <div className="stack">
           <Card title="Identifiers" subtitle="Each one unlocks a different set of checks">
             <div className="stack-sm">
-              <Field label="CIN" hint="Unlocks the whole MCA registry group — master data, directors, charges, filings and filed financials">
-                <input className="input" value={form.cin} onChange={set('cin')} placeholder="U21029MH2013PTC245119" />
+              <Field
+                label="CIN"
+                tone={fieldProblem.cin?.level}
+                hint={
+                  fieldProblem.cin?.message ??
+                  'Unlocks the whole MCA registry group — master data, directors, charges, filings and filed financials. A CIN, an LLPIN like AAA-1234, or an FCIN like F01234.'
+                }
+              >
+                <input
+                  className={`input${fieldProblem.cin ? ' is-invalid' : ''}`}
+                  data-field="cin"
+                  aria-invalid={Boolean(fieldProblem.cin) || undefined}
+                  value={form.cin}
+                  onChange={set('cin')}
+                  placeholder="U21029MH2013PTC245119"
+                />
               </Field>
-              <Field label="GSTIN" hint="No GST provider is configured yet, so this is recorded but not verified">
-                <input className="input" value={form.gst} onChange={set('gst')} placeholder="27AAGCM4821K1Z9" />
+              <Field
+                label="GSTIN"
+                tone={fieldProblem.gst?.level}
+                hint={
+                  fieldProblem.gst?.message ??
+                  'No GST provider is configured yet, so this is recorded but not verified'
+                }
+              >
+                <input
+                  className={`input${fieldProblem.gst ? ' is-invalid' : ''}`}
+                  data-field="gst"
+                  aria-invalid={Boolean(fieldProblem.gst) || undefined}
+                  value={form.gst}
+                  onChange={set('gst')}
+                  placeholder="27AAGCM4821K1Z9"
+                />
               </Field>
-              <Field label="PAN" hint="Used for duplicate-vendor matching in-house">
-                <input className="input" value={form.pan} onChange={set('pan')} />
+              <Field
+                label="PAN"
+                tone={fieldProblem.pan?.level}
+                hint={
+                  fieldProblem.pan?.message ??
+                  'Used for duplicate-vendor matching in-house'
+                }
+              >
+                <input
+                  className={`input${fieldProblem.pan ? ' is-invalid' : ''}`}
+                  data-field="pan"
+                  aria-invalid={Boolean(fieldProblem.pan) || undefined}
+                  value={form.pan}
+                  onChange={set('pan')}
+                  placeholder="AAAPL1234C"
+                />
               </Field>
               <Field
                 label="Website"

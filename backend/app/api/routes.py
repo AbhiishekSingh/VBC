@@ -42,7 +42,7 @@ from app.db.models import (
 from app.db.scoring_store import latest_score, record_score
 from app.db.session import get_session
 from app.domain.policy import DEFAULT_POLICY, Verdict, apply_policy
-from app.domain.validation import blocking
+from app.domain.validation import blocking, check_value
 from app.domain.scoring import score_scan, score_surveillance
 from app.services import auth, documents
 from app.services.runner import CheckRunner
@@ -212,6 +212,40 @@ def get_vendor(vendor_id: str, session: Session = Depends(get_session)):
     return _serialise(session, _vendor_or_404(session, vendor_id))
 
 
+
+#: The vendor record stores identifiers under its own field names; the
+#: rules are keyed by CHECK PARAMETER. One mapping, written out, because
+#: guessing it from the name would silently skip whichever one did not
+#: happen to match.
+VENDOR_ID_FIELDS = {"cin": "cin", "gst": "gstin", "pan": "pan"}
+
+
+def _refuse_bad_identifiers(**values: str | None) -> None:
+    """422 on an identifier that cannot be sent to a provider.
+
+    These three are entered at intake and every later step prefills from
+    them, so a wrong character here reaches a paid call that was never
+    going to succeed. The form checks them too — this is the copy that
+    holds when the form is not the caller.
+    """
+    problems = [
+        p
+        for field, rule_key in VENDOR_ID_FIELDS.items()
+        if (p := check_value(rule_key, values.get(field))) and p.level == "block"
+    ]
+    if problems:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "One or more identifiers are not in a valid format.",
+                "fields": [
+                    {"key": p.key, "level": p.level, "message": p.message}
+                    for p in problems
+                ],
+            },
+        )
+
+
 @router.post("/vendors", response_model=s.VendorOut, status_code=201)
 def create_vendor(
     body: s.VendorIn,
@@ -219,6 +253,7 @@ def create_vendor(
     user: User = Depends(current_user),
 ):
     client = client_or_404(session, body.clientId)
+    _refuse_bad_identifiers(cin=body.cin, gst=body.gst, pan=body.pan)
 
     # One client cannot add the same company twice. A second CLIENT can —
     # that is what the client layer is for. Enforced by a unique index too,
@@ -267,6 +302,12 @@ def create_vendor(
 @router.patch("/vendors/{vendor_id}", response_model=s.VendorOut)
 def update_vendor(vendor_id: str, body: s.VendorPatch, session: Session = Depends(get_session)):
     vendor = _vendor_or_404(session, vendor_id)
+    # Only the fields this request actually sets. A PATCH that does not
+    # mention `pan` must not be refused over a `pan` stored before these
+    # rules existed — that would make old vendors uneditable.
+    _refuse_bad_identifiers(
+        **{f: getattr(body, f, None) for f in VENDOR_ID_FIELDS if getattr(body, f, None)}
+    )
     field_map = {
         "legalName": "legal_name", "name": "name", "address": "address",
         "material": "material", "spoc": "spoc", "designation": "designation",
