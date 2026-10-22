@@ -21,6 +21,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { CHECKS, CHECK_GROUPS } from '@/catalog/generated'
 import { inputValue } from '@/api/mock'
+import Facts from '@/components/Facts'
 import { Card, EmptyState, STATUS_EXPLANATION, StatusBadge, Tile } from '@/components/ui'
 import { publicDetail } from '@/lib/publicText'
 import type { PageProps } from '@/App'
@@ -336,6 +337,17 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                             </dl>
                           </div>
                         )}
+
+                        {/* TIER TWO — the readable projection.
+                            Above the provenance line and the raw panel,
+                            because this is what the reader came for; the
+                            payload below is what makes the reading
+                            defensible, which is a different job.
+
+                            Restored 22 Oct 2026. It was dropped by accident
+                            when this page was rebuilt from a stale copy, so
+                            every check fell back to showing raw JSON. */}
+                        <Facts facts={result.facts} />
 
                         <div className="acc-meta">
                           <span className={`small ${panel.isReal ? 'muted' : 'warn-text'}`}>
