@@ -435,21 +435,18 @@ def master(parsed: dict, *, subject: str | None = None) -> dict:
             "under the previous CIN.",
         ))
 
-    # STALENESS IS A FINDING, not metadata. "Status: Active" with a tone of
-    # "good" is the single most load-bearing line in this panel, and the
-    # provider will serve it from a snapshot years old at full price. The
-    # status itself is not rewritten — it was true when recorded — but a
-    # reader must not be able to mistake it for current.
-    age = parsed.get("record_age_days")
-    if parsed.get("record_is_stale"):
-        flags.append(F.flag(
-            "warn", f"MCA record is {age} days old",
-            f"The source last refreshed this company on "
-            f"{F.human_date(parsed.get('record_updated_at')) or 'an unknown date'}. "
-            f"Everything above, the status included, describes the company as "
-            f"at that date. A strike-off or status change since then would not "
-            f"appear here. A paid refresh is needed to confirm it is current.",
-        ))
+    # NO FLAG FOR RECORD AGE.
+    #
+    # It used to raise a warn panel here. Flags on this screen are read as
+    # "something is wrong with this vendor", and record age is nothing of
+    # the sort — it is our source's refresh cycle, so an amber box about it
+    # made the platform look unreliable while saying nothing about the
+    # company. The date is still stated plainly in the field list below,
+    # which is where a property of the SOURCE belongs.
+    #
+    # This applies to record age ONLY. Flags for the vendor's own
+    # standing — a renamed company, a changed CIN, a disqualified
+    # director — keep their tone, because those are findings.
 
     return F.build(
         F.DETAIL,
@@ -478,14 +475,16 @@ def master(parsed: dict, *, subject: str | None = None) -> dict:
             ) if p)),
             # Last, and always present: how old the answer is belongs with
             # the answer. None renders as unknown, never as fresh.
+            # No tone. See the note above: the age of our source's copy is
+            # not an accusation against the vendor.
             F.field(
                 "Source record refreshed",
                 F.human_date(parsed.get("record_updated_at")),
                 format="date",
-                tone="warn" if parsed.get("record_is_stale") else None,
                 note="When the provider last refreshed its copy of this "
-                     "company from MCA — not when we called it. The two are "
-                     "priced the same.",
+                     "company from MCA — not when we called it. Everything "
+                     "above, the status included, describes the company as "
+                     "at that date.",
             ),
         ],
         flags=flags,
@@ -541,6 +540,21 @@ def resolve_candidates(candidates: list[dict], *, subject: str | None = None) ->
     )
 
 
+def _approx_age(birth_year: int | None) -> str | None:
+    """"~41 (1985)" — approximate, and visibly so.
+
+    The source masks the day and month, so the year is everything we have
+    and the age is right to about a year. The tilde and the year in
+    brackets are both load-bearing: they say "derived, approximate" and
+    they show the raw fact the derivation came from, so a reader can check
+    the arithmetic rather than trust it.
+    """
+    if not birth_year:
+        return None
+    age = datetime.now(timezone.utc).year - birth_year
+    return f"~{age} ({birth_year})"
+
+
 def directors(rows: list[dict]) -> dict:
     """The directors table.
 
@@ -571,6 +585,7 @@ def directors(rows: list[dict]) -> dict:
             [
                 F.column("din", "DIN", format="id"),
                 F.column("name", "Name"),
+                F.column("age", "Age"),
                 F.column("designation", "Designation"),
                 F.column("appointed", "Appointed", format="date"),
                 F.column("ceased", "Ceased", format="date"),
@@ -581,6 +596,7 @@ def directors(rows: list[dict]) -> dict:
                 {
                     "din": d.get("din"),
                     "name": d.get("name"),
+                    "age": _approx_age(d.get("birth_year")),
                     "designation": ", ".join(d.get("designations") or []) or None,
                     "appointed": F.human_date(d.get("appointed_on")),
                     "ceased": F.human_date(d.get("ceased_on")),
