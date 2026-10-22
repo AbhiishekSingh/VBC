@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import Settings
@@ -179,6 +180,24 @@ class FileSureProvider(HttpProvider):
         return response
 
     @staticmethod
+    def _record_meta(response: ProviderResponse) -> dict:
+        """Provenance from the envelope's ``meta``, which ``_data`` drops.
+
+        ``meta`` is a SIBLING of ``data``, so unwrapping the envelope throws
+        it away — and it carries the only evidence of how old the record is.
+        FileSure serves a cached snapshot at the SAME ₹5 as a live read, so
+        an ``Active`` status can be an answer about the company as it stood
+        two years ago. Nothing in this product could see that until now.
+        """
+        payload = response.payload
+        meta = payload.get("meta") or {} if isinstance(payload, dict) else {}
+        return {
+            "record_created_at": meta.get("createdAt"),
+            "record_updated_at": meta.get("updatedAt"),
+            "request_id": meta.get("requestId"),
+        }
+
+    @staticmethod
     def _data(response: ProviderResponse) -> Any:
         """Unwrap the ``data`` envelope. Errors wrap in ``error`` instead."""
         payload = response.payload
@@ -231,8 +250,15 @@ class FileSureProvider(HttpProvider):
     #: FCIN, and both are perfectly ordinary vendors to audit.
     ID_TYPES = ("cin", "fcin", "llpin")
 
-    def company_master(self, identifier: str, id_type: str | None = None) -> dict:
+    def company_master_with_meta(
+        self, identifier: str, id_type: str | None = None
+    ) -> tuple[dict, dict]:
         """Master data: status, capital, address, directors, charges — one call.
+
+        Returns ``(payload, record_meta)``. The meta is returned SEPARATELY
+        rather than merged into the payload on purpose: the payload is
+        persisted and shown to the analyst as "the exact bytes this result
+        was computed from", and adding our own key would make that false.
 
         ``idType`` is OMITTED by default, which is what makes LLPs and
         foreign companies work at all.
@@ -265,7 +291,16 @@ class FileSureProvider(HttpProvider):
             "GET", f"/v1/companies/{identifier}", paisa=READ_PAISA,
             params=params or None,
         )
-        return self._data(response)
+        return self._data(response), self._record_meta(response)
+
+    def company_master(self, identifier: str, id_type: str | None = None) -> dict:
+        """``company_master_with_meta`` without the provenance.
+
+        Kept so existing callers and fixtures are unaffected. Prefer the
+        ``_with_meta`` form: a record's age is not optional context when the
+        fact being read is a company's CURRENT status.
+        """
+        return self.company_master_with_meta(identifier, id_type)[0]
 
     def filings(
         self, cin: str, *, form_id: str = "", year: int | None = None,
@@ -626,12 +661,42 @@ def normalise_form_id(value: Any) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
 
-def normalise_master(data: dict) -> dict:
-    """Flatten master data into the facts the scoring engine needs."""
+#: A master record older than this is reported stale. Six months is the
+#: outer edge of useful for a status that changes on strike-off: MCA
+#: proceedings routinely complete inside a year, so a record older than
+#: this can say "Active" about a company that no longer is.
+STALE_RECORD_DAYS = 180
+
+
+def _record_age_days(timestamp: str | None) -> int | None:
+    """Whole days between ``timestamp`` and now, or None if unparseable."""
+    if not timestamp:
+        return None
+    try:
+        # FileSure sends "2024-08-14T04:24:23.336Z".
+        when = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return max(0, (datetime.now(timezone.utc) - when).days)
+
+
+def normalise_master(data: dict, meta: dict | None = None) -> dict:
+    """Flatten master data into the facts the scoring engine needs.
+
+    ``meta`` is optional so existing callers and fixtures keep working. When
+    it is absent the provenance facts are None, which reads as "age
+    unknown" — never as "fresh".
+    """
+    meta = meta or {}
     company = dig(data, "masterData", "companyData", default={}) or {}
     # commonData is a second, cleaner projection of the same company in the
     # same response: ISO dates, real booleans, and the status. Preferred.
     common = dig(data, "masterData", "commonData", default={}) or {}
+
+    record_updated_at = meta.get("record_updated_at")
+    record_age_days = _record_age_days(record_updated_at)
 
     addresses = company.get("MCAMDSCompanyAddress", []) or []
     registered = next(
@@ -642,7 +707,26 @@ def normalise_master(data: dict) -> dict:
         "cin": data.get("cin") or company.get("CIN"),
         "company": data.get("company") or common.get("company_name"),
         # No "companyStatus" in companyData — it is commonData.status.
-        "status": common.get("status") or company.get("companyStatus"),
+        #
+        # THIRD FALLBACK, 22 Oct 2026. FileSure returns "commonData": null
+        # on some cached records — seen live on U93090MH2011PTC215361, a
+        # paid ₹5 read. With commonData gone the status was unreadable, the
+        # ParseGuard refused the whole check, and a payload that also held
+        # four directors and the charges index was discarded with it.
+        #
+        # companyData carries it as "llpStatus". The name is misleading,
+        # not LLP-specific: it reads "Active" on a private limited company
+        # whose genuinely LLP-only siblings (numberOfPartners,
+        # numberOfDesignatedPartners) are all blank.
+        #
+        # LAST in the chain deliberately, so commonData.status stays
+        # preferred wherever it exists and a well-formed response is
+        # completely unaffected by this.
+        "status": (
+            common.get("status")
+            or company.get("companyStatus")
+            or company.get("llpStatus")
+        ),
         "class_of_company": company.get("classOfCompany") or common.get("class_of_company"),
         "company_type": company.get("companyType") or common.get("company_type"),
         "listed": company.get("whetherListedOrNot"),
@@ -680,6 +764,16 @@ def normalise_master(data: dict) -> dict:
         # — a finding in itself, not noise.
         "cin_history": data.get("cinHistory", []) or [],
         "name_history": data.get("nameHistory", []) or [],
+        # --- provenance ------------------------------------------------
+        # How old the RECORD is, which is not how old the CALL is. A cached
+        # snapshot and a fresh read cost the same and are indistinguishable
+        # without these three.
+        "record_updated_at": record_updated_at,
+        "record_age_days": record_age_days,
+        "record_is_stale": (
+            None if record_age_days is None
+            else record_age_days > STALE_RECORD_DAYS
+        ),
     }
 
     # Drive SCAN S1, SCAN S2 and risk rule r1.
