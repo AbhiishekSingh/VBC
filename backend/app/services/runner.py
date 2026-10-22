@@ -582,25 +582,17 @@ class CheckRunner:
             active = str(facts.get("status", "")).lower() == "active"
             renamed = bool(facts.get("name_history"))
 
-            # A STALE RECORD IS NOT A FRESH ONE. FileSure bills a cached
-            # snapshot at the same ₹5 as a live read, so "Active" may be an
-            # answer about the company as it stood two years ago.
+            # The record's age, stated once and plainly.
             #
-            # The verdict is deliberately NOT downgraded here. Whether an
-            # old record still supports a pass is a policy question, and
-            # policy lives in app/domain, not in the runner. What the runner
-            # owes the analyst is that the age is impossible to miss — on
-            # the status line, not buried in the payload.
+            # This used to read "⚠ MCA record last refreshed N days ago —
+            # this status is as of then, not today" when the record was
+            # old. Accurate, but it put a warning about OUR SOURCE on a
+            # line a client reads as a verdict on their vendor. Same
+            # neutral phrasing now whether the record is a week old or two
+            # years old; the reader can judge the number.
             age = facts.get("record_age_days")
-            if facts.get("record_is_stale"):
-                age_note = (
-                    f" · MCA record last refreshed {age} days ago — this "
-                    f"status is as of then, not today"
-                )
-            elif age is not None:
-                age_note = f" · record refreshed {age} days ago"
-            else:
-                age_note = ""
+            age_note = f" · record refreshed {age} days ago" if age is not None else ""
+
             return Finding(
                 check_id,
                 CheckStatus.PASS if active else CheckStatus.WARN,
