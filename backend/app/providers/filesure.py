@@ -32,6 +32,7 @@ so no caller has to remember them:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -791,6 +792,32 @@ def normalise_master(data: dict, meta: dict | None = None) -> dict:
     return result
 
 
+def _birth_year(roles: list[dict], row: dict) -> int | None:
+    """The year out of a masked date of birth, or None.
+
+    FileSure masks the day and month — "*****/1985" — so the year is all
+    there is, and an age derived from it is accurate to about a year. That
+    is why the column renders "~41 (1985)" and never a bare number: an
+    exact-looking age built from a masked field is the kind of figure that
+    gets quoted back at you.
+
+    Tolerant by design: it takes any plausible 4-digit year out of whatever
+    the field holds, because the masking pattern is not documented and has
+    already been seen in more than one shape.
+    """
+    this_year = datetime.now(timezone.utc).year
+    for candidate in [r.get("dob") for r in roles] + [row.get("dob"), row.get("DOB")]:
+        if not candidate:
+            continue
+        for match in re.findall(r"\d{4}", str(candidate)):
+            year = int(match)
+            # A director is an adult and not 130. Anything outside that is
+            # part of the mask, not a birth year.
+            if this_year - 100 <= year <= this_year - 18:
+                return year
+    return None
+
+
 def normalise_directors(data: dict) -> list[dict]:
     """directorData is PascalCase and its booleans are strings."""
     rows = dig(data, "masterData", "directorData", default=[]) or []
@@ -851,6 +878,9 @@ def normalise_directors(data: dict) -> list[dict]:
                 ),
                 "ceased_on": ceased,
                 "still_serving": still_serving,
+                # Year only — the source masks day and month. Age is derived
+                # at render time so a stored row never goes stale.
+                "birth_year": _birth_year(roles, row),
                 "roles": roles,
             }
         )
