@@ -420,6 +420,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 0 0 3px var(--accent-wash);
 }
 .input.is-missing { border-color: var(--warn); background: var(--warn-wash); }
+
+/* Format validation. `is-invalid` blocks the run, `is-warning` does not —
+   the two must not look the same, or the analyst learns to ignore both. */
+.input.is-invalid { border-color: var(--adverse); background: var(--adverse-wash); }
+.input.is-warning { border-color: var(--warn); }
+.field-hint.is-error { color: var(--adverse); }
+.field-hint.is-caution { color: var(--warn); }
 .textarea { resize: vertical; min-height: 84px; font-family: inherit; line-height: 1.55; }
 .input::placeholder, .textarea::placeholder { color: var(--ink-4); }
 

@@ -42,6 +42,7 @@ from app.db.models import (
 from app.db.scoring_store import latest_score, record_score
 from app.db.session import get_session
 from app.domain.policy import DEFAULT_POLICY, Verdict, apply_policy
+from app.domain.validation import blocking
 from app.domain.scoring import score_scan, score_surveillance
 from app.services import auth, documents
 from app.services.runner import CheckRunner
@@ -328,6 +329,35 @@ def run_checks(vendor_id: str, session: Session = Depends(get_session)):
     an HTTP connection open in production.
     """
     vendor = _vendor_or_404(session, vendor_id)
+
+    # REFUSED BEFORE ANYTHING IS SPENT.
+    #
+    # The form checks these too, and that is where the analyst gets a
+    # useful error. This is here because the form is not the only caller,
+    # and because every one of these fields is an argument to a paid call:
+    # a mistyped GSTIN is ₹5 to be told the GSTIN was mistyped.
+    #
+    # Only BLOCK-level problems refuse. Warnings are the analyst's to
+    # judge — our patterns for court codes and CNRs are incomplete, and
+    # refusing to run on a shape we have not seen would make this a
+    # source of outages rather than a guard against waste.
+    rows = session.scalars(
+        select(VendorCheckInput).where(VendorCheckInput.vendor_id == vendor.id)
+    ).all()
+    problems = blocking({r.key: r.value for r in rows})
+    if problems:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Some inputs cannot be sent to a provider as they "
+                           "are. Nothing was run and nothing was charged.",
+                "fields": [
+                    {"key": p.key, "level": p.level, "message": p.message}
+                    for p in problems
+                ],
+            },
+        )
+
     runner = CheckRunner(session)
     try:
         result = runner.run(vendor)

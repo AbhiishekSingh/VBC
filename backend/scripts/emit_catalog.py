@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from app.domain.validation import RULES as VALIDATION_RULES
 from app.catalog.checks import (  # noqa: E402
     CHECK_GROUPS,
     CHECKS,
@@ -125,6 +126,30 @@ def build() -> str:
 
     out.append(emit("SURVEILLANCE_THRESHOLD_PCT", SURVEILLANCE_THRESHOLD_PCT))
     out.append(emit("CHECK_GROUPS", list(CHECK_GROUPS)))
+
+    # INPUT RULES — generated, never hand-written in the frontend.
+    #
+    # The form has to validate before a paid call goes out, and the API has
+    # to validate because the form is not the only caller. Two copies of a
+    # regex is two definitions free to drift, and the drift is invisible
+    # until a valid identifier is rejected by one and accepted by the
+    # other. So the Python module is the definition and this is a copy with
+    # no independent life.
+    out.append(
+        emit(
+            "INPUT_RULES",
+            {
+                key: {
+                    "pattern": rule.pattern,
+                    "level": rule.level,
+                    "hint": rule.hint,
+                    "example": rule.example,
+                    "normalise": rule.normalise,
+                }
+                for key, rule in VALIDATION_RULES.items()
+            },
+        )
+    )
 
     out.append(
         emit(
