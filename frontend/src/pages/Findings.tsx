@@ -1,19 +1,12 @@
 /**
  * Step 3 — findings.
  *
- * This is the ANALYST'S working screen: what was run, what came back, and
- * the exact payload each result was computed from. Nothing else.
- *
- * The fourth tile still carries the principle that makes this product
- * different from a generic KYC tool — a gap is given the same visual
- * weight as a clean result — but it is scoped to the checks that were
- * actually selected for this vendor. Checks nobody selected, and checks
- * with no provider wired up at all, are not this screen's job: they are
- * printed BY NAME in the client-facing report (Report.tsx, "Coverage —
- * what was not checked"), which is the document that has to stand on its
- * own. Listing thirty-odd of them here buried the five results that
- * matter, and burying the signal is its own way of letting a gap read as
- * clean.
+ * The four tiles are the point of this screen, and the fourth is the one
+ * that makes this product different from a generic KYC tool: NOT CHECKED
+ * is given the same visual weight as passed, attention and adverse. It is
+ * broken down by reason — skipped for a missing input, deselected by the
+ * analyst, or not configured on the platform at all — because those three
+ * mean very different things and none of them mean "clean".
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -113,7 +106,16 @@ const rawPanel = (
   }
 }
 
-function formatBytes(n: number): string {
+/**
+ * Size of a payload, in bytes.
+ *
+ * This was called with `panel.text.length` — a count of UTF-16 code units,
+ * not bytes — and labelled the result "B". Any non-ASCII payload, which is
+ * most Indian address data, under-reported its own size.
+ */
+function formatBytes(text: string): string {
+  const n =
+    typeof TextEncoder === 'undefined' ? text.length : new TextEncoder().encode(text).length
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
@@ -159,29 +161,21 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
     -------------------------------
     Results are stored per check and never wiped, so a vendor whose
     selection changed between runs still HOLDS results for checks that are
-    no longer in scope. Showing those made the screen disagree with Step 2
-    and put a stale answer next to a live one with nothing marking which
-    was which.
+    no longer in scope. Showing those made this screen disagree with Step 2
+    and put a stale answer beside a live one with nothing marking which.
 
     `vendor.selected` is the server's EXPANDED selection — prerequisites
-    folded in by `expand_selection()` — so a check pulled in because
-    something else needed it still appears. That is correct: it ran, it
-    cost money, and its result fed another row on this screen.
+    folded in by expand_selection() — so a check pulled in because
+    something else needed it still appears. It ran, it cost money, and it
+    fed another row here.
 
-    The de-selected results are not deleted. They are still in the
-    database with their payloads and timestamps, and re-selecting the
-    check in Step 2 brings the row straight back without re-running it.
+    Nothing is deleted: re-selecting a check in Step 2 brings its row
+    straight back without re-running it.
   */
   const inScope = (checkId: string) => vendor.selected.includes(checkId)
 
   const results = Object.values(vendor.checks).filter((r) => inScope(r.checkId))
 
-  /*
-    Scoped to the checks that were SELECTED for this vendor, so the four
-    tiles add up to the rows shown below them. Checks nobody selected and
-    checks with no provider are counted in the report's coverage section,
-    not here — a tile reading 42 above five visible rows explained nothing.
-  */
   const counts = useMemo(() => {
     const by = (s: CheckStatus) => results.filter((r) => r.status === s).length
     const skippedInput = by('skipped_missing_input')
@@ -197,7 +191,7 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
       unavailable,
       notChecked: skippedInput + notApplicable + unavailable,
     }
-  }, [results])
+  }, [results, vendor.selected])
 
   useEffect(() => {
     setPrimary(
@@ -308,11 +302,18 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                       <span className="acc-result">
                         <span className="acc-value">{result.value || '—'}</span>
                         <span className="small muted">
-                          {publicDetail(result.detail, { capitalise: true }) || STATUS_EXPLANATION[result.status]}
+                          {publicDetail(result.detail, { capitalise: true }) ||
+                            STATUS_EXPLANATION[result.status]}
                         </span>
                       </span>
 
-                      <span className="acc-cta small">{isOpen ? 'Hide' : 'View'} response</span>
+                      {/* "View response" was accurate and unhelpful: what
+                          opened was a JSON dump. It now opens a readable
+                          breakdown for any check whose parser is written,
+                          with the payload still underneath. */}
+                      <span className="acc-cta small">
+                        {isOpen ? 'Hide' : 'View'} {result.facts ? 'details' : 'response'}
+                      </span>
                     </button>
 
                     {isOpen && (
@@ -338,15 +339,10 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                           </div>
                         )}
 
-                        {/* TIER TWO — the readable projection.
-                            Above the provenance line and the raw panel,
-                            because this is what the reader came for; the
-                            payload below is what makes the reading
-                            defensible, which is a different job.
-
-                            Restored 22 Oct 2026. It was dropped by accident
-                            when this page was rebuilt from a stale copy, so
-                            every check fell back to showing raw JSON. */}
+                        {/* Tier two. Above the provenance line and the raw
+                            panel, because this is what the reader came for;
+                            the payload below it is what makes the reading
+                            defensible, which is a different job. */}
                         <Facts facts={result.facts} />
 
                         <div className="acc-meta">
@@ -360,7 +356,7 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                             {typeof result.costPaisa === 'number' && result.costPaisa > 0 && (
                               <span>₹{(result.costPaisa / 100).toFixed(2)}</span>
                             )}
-                            <span>{formatBytes(panel.text.length)}</span>
+                            <span>{formatBytes(panel.text)}</span>
                             <button
                               type="button"
                               className="btn sm ghost"
@@ -380,6 +376,7 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
           </Card>
         )
       })}
+
     </div>
   )
 }
