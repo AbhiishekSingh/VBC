@@ -577,10 +577,30 @@ class CheckRunner:
             if str(id_type).strip().lower() in ("", "auto-detect", "auto"):
                 id_type = None
 
-            payload = fs.company_master(cin, id_type)
-            facts = fs_mod.normalise_master(payload)
+            payload, record_meta = fs.company_master_with_meta(cin, id_type)
+            facts = fs_mod.normalise_master(payload, meta=record_meta)
             active = str(facts.get("status", "")).lower() == "active"
             renamed = bool(facts.get("name_history"))
+
+            # A STALE RECORD IS NOT A FRESH ONE. FileSure bills a cached
+            # snapshot at the same ₹5 as a live read, so "Active" may be an
+            # answer about the company as it stood two years ago.
+            #
+            # The verdict is deliberately NOT downgraded here. Whether an
+            # old record still supports a pass is a policy question, and
+            # policy lives in app/domain, not in the runner. What the runner
+            # owes the analyst is that the age is impossible to miss — on
+            # the status line, not buried in the payload.
+            age = facts.get("record_age_days")
+            if facts.get("record_is_stale"):
+                age_note = (
+                    f" · MCA record last refreshed {age} days ago — this "
+                    f"status is as of then, not today"
+                )
+            elif age is not None:
+                age_note = f" · record refreshed {age} days ago"
+            else:
+                age_note = ""
             return Finding(
                 check_id,
                 CheckStatus.PASS if active else CheckStatus.WARN,
@@ -593,7 +613,8 @@ class CheckRunner:
                 f"Incorporated {_human_date(facts.get('incorporated_on')) or '—'} · "
                 f"{facts.get('class_of_company')} · paid-up "
                 f"{_crore(facts.get('paidup_capital')) or '—'}"
-                + (" · company has been renamed previously" if renamed else ""),
+                + (" · company has been renamed previously" if renamed else "")
+                + age_note,
                 raw={"facts": facts, "payload": payload},
                 facts=factsets.master(facts, subject=subject),
             )
