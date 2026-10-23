@@ -17,7 +17,16 @@ import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/api'
 import { CHECKS, PILLARS, SCAN_PARAMETERS } from '@/catalog/generated'
-import { Callout, Card, Meter, RatingDot, SourceChip, Tile, toneForScan } from '@/components/ui'
+import {
+  Callout,
+  Card,
+  InfoButton,
+  Meter,
+  RatingDot,
+  SourceChip,
+  Tile,
+  toneForScan,
+} from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import { DEFAULT_POLICY, applyPolicy, scoreScan } from '@/scoring'
 import type { PageProps } from '@/App'
@@ -35,6 +44,29 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
   // computes its coverage tile from that same list, so the two screens
   // reported different automation coverage.
   const autoParams = SCAN_PARAMETERS.filter((p) => p.source === 'AUTO')
+
+  /*
+    READ, NEVER WRITTEN DOWN.
+
+    The Assessment tile said "Weight 0.60 — the heaviest pillar" as a
+    literal string while the pillar card directly beneath it rendered
+    `w 0.4` from the catalog. One screen, one fact, two answers — and the
+    hardcoded one had been wrong since the 5 Oct migration dropped A from
+    0.6 to 0.4.
+
+    Heaviest is computed too: if the weights are ever rebalanced again,
+    this sentence follows instead of quietly becoming false.
+  */
+  const assessment = PILLARS.find((p) => p.key === 'A')!
+  const heaviest = PILLARS.reduce((a, b) => (b.weight > a.weight ? b : a))
+
+  // Best achievable with every parameter applicable. Was hardcoded "4.30",
+  // which is right today only by coincidence — it is a function of the
+  // weights and the parameter counts, both of which have moved once.
+  const bestPossible = PILLARS.reduce(
+    (sum, p) => sum + SCAN_PARAMETERS.filter((x) => x.pillar === p.key).length * p.weight,
+    0,
+  )
 
   useEffect(() => {
     setPrimary(
@@ -60,7 +92,68 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
     <div className="stack">
       <div>
         <div className="kicker">Step 6 · Scoring</div>
-        <h2 className="page-h">SCAN scoring</h2>
+        {/*
+          The rules sit behind the ⓘ, not on the page.
+
+          They are reference material: identical for every vendor, read
+          once, then scrolled past forever. A card holding them cost a
+          screenful on every visit to earn its keep on the first.
+
+          Behind the glyph, not on a separate page — when a score is
+          questioned, the paragraph that answers it has to be reachable
+          from the number itself.
+        */}
+        <div className="row-head">
+          <h2 className="page-h">SCAN scoring</h2>
+          <InfoButton title="How this is calculated">
+            {/*
+              This read "Green + floor(Yellow ÷ 2) — an odd Yellow does not
+              count", which was the DEFECT written down as if it were the
+              rule. The workbook computes `=D8+(D9/2)` with no rounding, so
+              one Yellow is worth half a Green. The code was fixed; this
+              paragraph would have gone on teaching the old model.
+            */}
+            <p>
+              <strong>positives</strong> = Green + (Yellow ÷ 2), per pillar. One Yellow is worth
+              half a Green — not nothing.
+            </p>
+            <p>
+              The <strong>{assessment.name}</strong> pillar is the exception: each of its{' '}
+              {SCAN_PARAMETERS.filter((p) => p.pillar === 'A').length} dimensions carries its own
+              share of the psychometric test rather than counting as one parameter, so its totals
+              come out fractional.
+            </p>
+            <p>
+              <strong>weighted</strong> = Σ (positives × pillar weight) ={' '}
+              <span className="nums">{score.weighted.toFixed(2)}</span>
+            </p>
+            <p>
+              <strong>best achievable</strong> = Σ (applicable × pillar weight) ={' '}
+              <span className="nums">{score.best.toFixed(2)}</span>
+            </p>
+            {/*
+              STRICTLY greater, and the 50% line is gone from here.
+
+              "≥ 60%" was wrong twice over: the workbook asks `=IF(H16>D20)`,
+              strictly, and the code now matches. The 50% watch line was
+              mentioned only in this sentence and drawn nowhere — no tile, no
+              marker on the meter. A threshold nobody can see is not a
+              threshold, so it is now a mark ON the meter instead of a number
+              in a paragraph.
+            */}
+            <p>
+              Onboard when weighted is <strong>above</strong> 60% of best — here{' '}
+              <span className="nums">{score.tolerance60.toFixed(2)}</span>. Landing exactly on the
+              bar is Negative.
+            </p>
+            <p>
+              With all {SCAN_PARAMETERS.length} parameters applicable the best achievable is{' '}
+              <span className="nums">{bestPossible.toFixed(2)}</span>.
+              Automation can fill {autoParams.length} of them — {autoParams.map((p) => p.id).join(', ')} —
+              and the rest is human judgement and field work, by design.
+            </p>
+          </InfoButton>
+        </div>
         <p className="page-sub">
           Eighteen parameters across four weighted pillars. Two Yellows make one Green; anything
           Not Applicable leaves both sides of the calculation, so the bar moves with coverage.
@@ -89,9 +182,14 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
           note="The rest are N/A and excluded"
         />
         <Tile
-          n={score.pillars.A.applicable + '/4'}
+          n={`${score.pillars.A.applicable}/${
+            SCAN_PARAMETERS.filter((p) => p.pillar === 'A').length
+          }`}
           label="Assessment evaluated"
-          note="Weight 0.60 — the heaviest pillar"
+          note={
+            `Weight ${assessment.weight}` +
+            (heaviest.key === 'A' ? ' — the heaviest pillar' : '')
+          }
           tone={score.pillars.A.applicable >= 2 ? 'pass' : 'warn'}
         />
       </div>
@@ -103,15 +201,23 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
               <div className="kicker">Verdict</div>
               <h3 className="stat-lg">{gate.verdict}</h3>
             </div>
-            <span
-              className={`badge b-${
-                gate.gated ? 'warn' : score.passed ? 'pass' : score.isScored ? 'adverse' : 'unchecked'
-              }`}
-            >
-              {score.coverageNote}
-            </span>
+            {/* Only when GATED. Ungated, this repeated the percentage and
+                the applicable count from the tiles directly above it —
+                three places for two facts. Gated, it is the one thing on
+                the row the tiles cannot say. */}
+            {gate.gated && (
+              <span className="badge b-warn">{score.coverageNote}</span>
+            )}
           </div>
-          <Meter pct={score.pct} tone={toneForScan(score.pct, gate.gated)} />
+          {/* The two thresholds, drawn where they actually sit. */}
+          <Meter
+            pct={score.pct}
+            tone={toneForScan(score.pct, gate.gated)}
+            marks={[
+              { at: 50, label: `50% watch line — ${score.tolerance50.toFixed(2)}` },
+              { at: 60, label: `60% pass mark — ${score.tolerance60.toFixed(2)}` },
+            ]}
+          />
 
           {gate.gated && (
             <Callout kind="warn" title="Held for coverage, not rejected">
@@ -161,8 +267,11 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
         return (
           <Card
             key={pillar.key}
+            // No subtitle: the pillar TILE above already carries the
+            // weight as a chip and this subtitle text verbatim. Repeating
+            // both on the table heading made it the third rendering of the
+            // same two facts on one screen.
             title={`${pillar.key} · ${pillar.name}`}
-            subtitle={`${pillar.subtitle} · weight ${pillar.weight}`}
             tight
           >
             <div className="table-wrap">
@@ -226,32 +335,6 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
         )
       })}
 
-      <Card title="How this is calculated">
-        <div className="stack-sm small muted">
-          <p>
-            <strong>positives</strong> = Green + floor(Yellow ÷ 2), per pillar. An odd Yellow does
-            not count.
-          </p>
-          <p>
-            <strong>weighted</strong> = Σ (positives × pillar weight) ={' '}
-            <span className="nums">{score.weighted.toFixed(2)}</span>
-          </p>
-          <p>
-            <strong>best achievable</strong> = Σ (applicable × pillar weight) ={' '}
-            <span className="nums">{score.best.toFixed(2)}</span>
-          </p>
-          <p>
-            Onboard when weighted ≥ 60% of best, here{' '}
-            <span className="nums">{score.tolerance60.toFixed(2)}</span>. The 50% watch line sits at{' '}
-            <span className="nums">{score.tolerance50.toFixed(2)}</span>.
-          </p>
-          <p>
-            With all {SCAN_PARAMETERS.length} parameters applicable the best achievable is 4.30.
-            Automation can fill {autoParams.length} of them — {autoParams.map((p) => p.id).join(', ')} —
-            and the rest is human judgement and field work, by design.
-          </p>
-        </div>
-      </Card>
     </div>
   )
 }
