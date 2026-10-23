@@ -189,18 +189,33 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav-step.is-done { background: var(--pass); color: #fff; box-shadow: none; }
 .nav-item.is-active .nav-step { background: var(--accent); color: #fff; box-shadow: none; }
 
+/* Only rendered in mock mode — see Layout.tsx. A healthy connection says
+   nothing, because a label that is always green is one nobody reads, and
+   so one nobody would notice turning red. */
 .nav-foot {
   flex: none; display: flex; align-items: center; gap: var(--space-2);
   padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-2);
 }
+.nav-foot.is-mock {
+  background: var(--warn-wash); color: var(--warn);
+  border-top-color: var(--warn);
+}
+.nav-foot.is-mock .nav-foot-text { color: inherit; font-weight: var(--weight-medium); }
 .dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
 .dot.is-ok { background: var(--pass); }
 .dot.is-warn { background: var(--warn); }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
+/* `.topbar-motto` is gone: the slogan lives on the login screen and at the
+   head of the report, the two places a reader is deciding whether to trust
+   the tool. Across every working screen it was furniture.
+
+   64px, not 56. With the motto gone the bar holds one icon on the left
+   and the user chip on the right; at 56 those two sat tight against a
+   thin rule and read as a toolbar rather than a header. */
 .topbar {
-  height: 56px; flex: none; background: var(--surface);
+  height: 64px; flex: none; background: var(--surface);
   border-bottom: 1px solid var(--line);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 var(--space-6); position: sticky; top: 0; z-index: var(--z-topbar);
@@ -1404,7 +1419,6 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   .menu-btn { display: inline-flex; }
   .rail-collapse { display: none; }
   .topbar { padding: 0 var(--space-4); }
-  .topbar-motto { display: none; }
 
   .actionbar { left: 0; padding: 0 var(--space-4); }
   .content { padding: var(--space-5) var(--space-4) calc(var(--actionbar-h) + var(--space-6)); }

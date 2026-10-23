@@ -341,12 +341,24 @@ export function Sidebar({
         </NavLink>
       </nav>
 
-      <div className="nav-foot">
-        <span className={`dot${API_MODE === 'mock' ? ' is-warn' : ' is-ok'}`} aria-hidden="true" />
-        <span className="small muted nav-foot-text">
-          {API_MODE === 'mock' ? 'Mock data — no backend' : 'Connected to API'}
-        </span>
-      </div>
+      {/*
+        SILENCE MEANS CONNECTED.
+
+        This said "Connected to API" with a green dot on every screen,
+        forever. Nobody needs telling that the normal state is normal —
+        and a label that is always green is one a reader stops seeing, so
+        it would not have been noticed turning red either.
+
+        Mock data is different: it IS worth shouting about, because every
+        number on screen is invented and it is the one state that can be
+        mistaken for real work.
+      */}
+      {API_MODE === 'mock' && (
+        <div className="nav-foot is-mock">
+          <span className="dot is-warn" aria-hidden="true" />
+          <span className="small nav-foot-text">Mock data — no backend</span>
+        </div>
+      )}
     </aside>
   )
 }
