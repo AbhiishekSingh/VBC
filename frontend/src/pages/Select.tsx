@@ -1,3 +1,44 @@
+/**
+ * Step 2 — choose what to check.
+ *
+ * Three things this screen must get right:
+ *
+ * 1. COST UNITS ARE NEVER SUMMED. Rupees, WhoisXML credits and screenshot
+ *    credits are three separate budgets drawn from three separate pools.
+ *    Adding them would produce a number that means nothing.
+ *
+ * 2. UNCONFIGURED CHECKS ARE NOT SHOWN HERE. They were, greyed out, so a
+ *    gap in coverage could not pass for completeness. That argument holds
+ *    for the DELIVERABLE, not for this screen: seven dead rows sat between
+ *    the analyst and the checks that work. Coverage is accounted for in
+ *    the client-facing report (Report.tsx), which is what has to stand on
+ *    its own. Hiding a gap from a working screen is presentation; hiding
+ *    it from the report would not be.
+ *
+ * 3. DESELECTION IS FREE AND UNWARNED. That is the client's explicit
+ *    choice. Coverage is presented as a neutral readout — what this
+ *    selection can and cannot fill — rather than as a nag.
+ *
+ * WHAT CHANGED IN THE UI PASS
+ * ---------------------------
+ * The catalogue holds 47 checks in 8 groups, all rendered at once, and
+ * every tick was one click AND one round trip: selecting the eleven MCA
+ * checks was eleven of each. Added here, all presentational:
+ *
+ *   - a tri-state checkbox per group, and Select all / Clear all / preset
+ *     bundles for the page. Each performs ONE setSelection call with the
+ *     whole array — the same endpoint the single toggle already used.
+ *   - groups collapse, and a search + filter row narrows 47 rows to the
+ *     ones you are actually deciding about.
+ *   - the checkbox moves immediately and reverts if the write fails,
+ *     instead of not moving until the server answers.
+ *   - a failed toggle now says so. It used to throw unhandled and leave
+ *     the box silently un-ticked.
+ *   - the run shows progress rather than a disabled button.
+ *
+ * The API surface is untouched: same calls, same arguments, same order.
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
