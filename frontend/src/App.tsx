@@ -155,9 +155,13 @@ function Topbar({
             <path d={RAIL_ICON} />
           </svg>
         </button>
-        <span className="small muted topbar-motto">
-          The system automates the data layer. The analyst retains the decision layer.
-        </span>
+        {/*
+          The motto was here. It is the product's thesis, and it belongs
+          where someone is deciding whether to believe the tool — on the
+          login screen and at the head of the report, where it still is.
+          Across the top of every working screen it was a slogan an
+          analyst reads ten thousand times and never again.
+        */}
       </div>
 
       <div className="topbar-right">
