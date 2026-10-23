@@ -87,10 +87,12 @@ const isSelectable = (id: string): boolean => {
 
 /** Names rather than raw ids — "needs mca, dirs" told nobody anything. */
 const nameOf = (id: string): string => CHECKS.find((c) => c.id === id)?.name ?? id
-const labelOfParam = (id: string): string =>
-  SCAN_PARAMETERS.find((p) => p.id === id)?.label ?? id
 
-type Filter = 'all' | 'selected' | 'free' | 'configured'
+/*
+  No 'configured' any more. Unconfigured checks are not rendered at all,
+  so the filter matched every visible row and did nothing.
+*/
+type Filter = 'all' | 'selected' | 'free'
 
 export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const navigate = useNavigate()
@@ -232,6 +234,23 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   const missing = useMemo(() => missingInputs(vendor), [vendor])
 
+  /*
+    ONE DEFINITION OF "BLANK", NOT TWO.
+
+    The page asked `missingInputs(vendor)` and the field asked
+    `!local.trim()` — two implementations of the same question, reading
+    different state. They drifted the moment a field was typed into and
+    cleared: the box went red and said "Required" while the button still
+    read "Run 1 checks", because only one of them thought anything was
+    wrong. The run then went ahead.
+
+    The field now asks this set instead of deciding for itself.
+  */
+  const missingKeys = useMemo(
+    () => new Set(missing.map((m) => `${m.checkId}.${m.paramKey}`)),
+    [missing],
+  )
+
   /** Scroll a field into view and put the cursor in it. */
   const focusField = (paramKey: string) => {
     const el = document.querySelector<HTMLElement>(`[data-field="${paramKey}"]`)
@@ -327,13 +346,15 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           {cost.credits > 0 && ` · ${cost.credits} credits`}
           {cost.shots > 0 && ` · ${cost.shots} screenshot${cost.shots > 1 ? 's' : ''}`}
         </span>
-        {/* DISABLED on a blocking input. The label says how many need
-            fixing and the field itself carries the reason, so the button
-            does not have to explain anything by being clickable. */}
+        {/* DEAD while anything is blank or malformed. The label says how
+            many need attention and the field carries the reason, so the
+            button does not have to explain itself by being clickable. */}
         <button
           type="button"
           className="btn primary"
-          disabled={running || !selected.length || badInputs.length > 0}
+          disabled={
+            running || !selected.length || missing.length > 0 || badInputs.length > 0
+          }
           onClick={run}
         >
           {running && <span className="spinner" aria-hidden="true" />}
@@ -357,7 +378,6 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
       if (!hay.includes(q)) return false
     }
     if (filter === 'selected') return selected.includes(check.id)
-    if (filter === 'configured') return check.state !== 'not_configured'
     if (filter === 'free') {
       return !check.costPaisa && !check.credits && !check.screenshots && !check.needsCompanyUnlock
     }
@@ -414,46 +434,32 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
         />
       </div>
 
-      {/* One decision instead of forty-seven. */}
-      <div className="sel-toolbar">
-        <div className="sel-presets">
-          <span className="small muted">Presets</span>
-          <button type="button" className="btn sm" onClick={() => applyPreset('essential')}>
-            Scored checks
-          </button>
-          <button type="button" className="btn sm" onClick={() => applyPreset('free')}>
-            Free only
-          </button>
-          <button type="button" className="btn sm" onClick={() => applyPreset('all')}>
-            Select all
-          </button>
-          <button type="button" className="btn sm" onClick={() => applyPreset('none')}>
-            Clear all
-          </button>
-        </div>
+      {/*
+        ONE TOOLBAR, NOT TWO.
 
-        <div className="sel-spacer" />
+        Searching, filtering and selecting are the same decision — what am
+        I running — and they were split across two stacked rows, with the
+        count stranded beside a row of presets it did not describe.
 
-        <span className="small muted nums">
-          {selected.length} of {selectableTotal} selectable
-        </span>
-      </div>
-
-      <div className="filter-row">
+        "Configured" is gone from the filter: unconfigured checks are no
+        longer rendered at all, so it filtered nothing. The preset bundles
+        are gone with it, leaving the two that do the work on forty rows.
+      */}
+      <div className="sel-bar">
         <input
-          className="input toolbar-search"
+          className="input sel-search"
           type="search"
           placeholder="Search checks…"
           value={query}
           aria-label="Search checks"
           onChange={(e) => setQuery(e.target.value)}
         />
+
         <div className="seg" role="group" aria-label="Filter checks">
           {(
             [
               ['all', 'All'],
               ['selected', 'Selected'],
-              ['configured', 'Configured'],
               ['free', 'Free'],
             ] as [Filter, string][]
           ).map(([value, label]) => (
@@ -468,15 +474,32 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          className="btn sm ghost"
-          onClick={() =>
-            setCollapsed(collapsed.length ? [] : CHECK_GROUPS.map((g) => g.id))
-          }
-        >
-          {collapsed.length ? 'Expand all' : 'Collapse all'}
-        </button>
+
+        <span className="sel-sep" aria-hidden="true" />
+
+        <div className="sel-actions">
+          <button
+            type="button"
+            className="btn sm ghost"
+            onClick={() =>
+              setCollapsed(collapsed.length ? [] : CHECK_GROUPS.map((g) => g.id))
+            }
+          >
+            {collapsed.length ? 'Expand all' : 'Collapse all'}
+          </button>
+          <button type="button" className="btn sm" onClick={() => applyPreset('all')}>
+            Select all
+          </button>
+          <button type="button" className="btn sm" onClick={() => applyPreset('none')}>
+            Clear all
+          </button>
+        </div>
+
+        {/* Pushed right by its own margin rather than a spacer div, so it
+            stays put when the row wraps on a narrow screen. */}
+        <span className="sel-count nums">
+          <strong>{selected.length}</strong> of {selectableTotal} selectable
+        </span>
       </div>
 
       {/*
@@ -611,6 +634,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                                     checkId={check.id}
                                     param={param}
                                     selected={selected}
+                                    missingKeys={missingKeys}
                                   />
                                 ))}
                               </div>
@@ -630,14 +654,13 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                               + {rupees(COMPANY_UNLOCK_PAISA)} unlock
                             </span>
                           )}
-                          {check.feeds.length > 0 && (
-                            <span
-                              className="chip c-auto"
-                              title={`Fills: ${check.feeds.map(labelOfParam).join(', ')}`}
-                            >
-                              fills {check.feeds.join(', ')}
-                            </span>
-                          )}
+                          {/* The "fills S1, S2" chip was here. Raw SCAN
+                              parameter ids on a selection screen are our
+                              internal numbering, not a fact about the
+                              check — and an analyst choosing what to buy
+                              does not decide by them. Which parameters a
+                              result feeds is shown where it matters, on
+                              the SCAN screen itself. */}
                         </div>
                       </div>
                     )
@@ -688,12 +711,15 @@ function ParamField({
   checkId,
   param,
   selected,
+  missingKeys,
 }: {
   vendor: Vendor
   setVendor: (v: Vendor) => void
   checkId: string
   param: (typeof CHECKS)[number]['params'][number]
   selected: string[]
+  /** Keys the PAGE considers blank — see the note at its definition. */
+  missingKeys: Set<string>
 }) {
   const toast = useToast()
   const stored = inputValue(vendor, checkId, param.key)
@@ -705,7 +731,8 @@ function ParamField({
   }, [stored])
 
   const suppliedByAnother = param.fromResult && selected.includes(param.fromResult)
-  const isMissing = param.required && !suppliedByAnother && !local.trim()
+  // Asked, not decided. The page owns this question; see `missingKeys`.
+  const isMissing = missingKeys.has(`${checkId}.${param.key}`)
 
   /*
     WHEN TO SHOW A FORMAT ERROR — not what counts as one.

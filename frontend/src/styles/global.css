@@ -1034,14 +1034,52 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
    single decision instead of eleven.
    ===================================================================== */
 
-.sel-toolbar {
+/* ---------------------------------------------------------------------
+   The selection toolbar.
+
+   One row: search, filter, actions, count. It was two — a preset row and
+   a filter row — which read as two unrelated controls stacked, and left
+   the "N of M selectable" count sitting beside presets it did not
+   describe.
+
+   Laid out with `margin-left: auto` on the count rather than a spacer
+   element, so when the row wraps on a narrow screen the count drops to
+   its own line intact instead of being pushed somewhere arbitrary.
+   --------------------------------------------------------------------- */
+
+.sel-bar {
   display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-2); border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.sel-presets { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
-.sel-spacer { flex: 1; min-width: var(--space-3); }
+
+.sel-search {
+  flex: 1 1 220px; min-width: 180px; max-width: 320px;
+  height: 34px; padding-block: 0;
+}
+
+/* A hairline, not a gap. Separates "what am I looking at" from "change
+   what is selected" — two different kinds of action in one row. */
+.sel-sep {
+  width: 1px; align-self: stretch; margin-block: 2px;
+  background: var(--line); flex: none;
+}
+
+.sel-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+
+.sel-count {
+  margin-left: auto; white-space: nowrap;
+  font-size: var(--step--1); color: var(--ink-3);
+}
+.sel-count strong { color: var(--ink-1); font-weight: var(--weight-medium); }
+
+/* Everything in the row lines up on one height. Mixed control heights are
+   the usual reason a toolbar looks unfinished. */
+.sel-bar .btn.sm,
+.sel-bar .seg { height: 34px; }
+.sel-bar .btn.sm { display: inline-flex; align-items: center; }
+.sel-bar .seg { align-items: center; }
 
 /* ONE row: checkbox, disclosure, title, count. The select-all box used to
    sit inside a wrapping .card-head next to a width:100% button, so it was
@@ -1104,6 +1142,8 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 }
 .check-label { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; }
 
+/* `.filter-row` and `.toolbar-search` were the second of the two rows
+   that are now `.sel-bar`. Kept as aliases: other screens use them. */
 .filter-row {
   display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center;
 }
@@ -1370,6 +1410,9 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   .v-cards { display: flex; }
   .page-head .btn { width: 100%; }
   .toolbar-search { max-width: none; }
+  .sel-search { max-width: none; flex-basis: 100%; }
+  .sel-sep { display: none; }
+  .sel-count { margin-left: 0; }
   .seg { width: 100%; }
   .seg-btn { flex: 1; text-align: center; }
 
