@@ -7,6 +7,7 @@
  * in this product would be a correctness bug, not a cosmetic one.
  */
 
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CheckStatus, Rating, RuleState, SourceMode } from '@/types/domain'
 
@@ -106,6 +107,85 @@ export function RuleStateBadge({ state }: { state: RuleState }) {
 }
 
 /* ---- layout primitives ----------------------------------------------- */
+
+/**
+ * An `ⓘ` that opens its content in a modal.
+ *
+ * For reference material — the rules behind a number, which do not change
+ * between vendors. An analyst reads them once and then scrolls past them
+ * forever, so leaving them open on the screen costs space on every visit
+ * to buy nothing after the first.
+ *
+ * Not deleted, though, and not moved to a separate page: when someone
+ * queries a score, the paragraph that answers them has to be reachable
+ * from the number itself, not from a manual.
+ *
+ * Built on the native `<dialog>`: Escape, focus trapping, inert background
+ * and the backdrop all come from the browser rather than from us.
+ */
+export function InfoButton({
+  title,
+  label = 'How this is calculated',
+  children,
+}: {
+  title: string
+  /** Screen-reader text; the button itself is just the glyph. */
+  label?: string
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // showModal() throws if already open, and close() if already closed.
+    if (open && !el.open) el.showModal()
+    if (!open && el.open) el.close()
+  }, [open])
+
+  return (
+    <>
+      <button
+        type="button"
+        className="info-btn"
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen(true)}
+      >
+        i
+      </button>
+
+      <dialog
+        ref={ref}
+        className="info-dialog"
+        // Fires on Escape as well as close(), so state cannot drift out of
+        // step with what the browser is actually showing.
+        onClose={() => setOpen(false)}
+        // A click landing on the dialog ELEMENT rather than its contents is
+        // a click on the backdrop.
+        onClick={(e) => {
+          if (e.target === ref.current) setOpen(false)
+        }}
+      >
+        <div className="info-dialog-inner">
+          <div className="row-between">
+            <h3 className="info-dialog-h">{title}</h3>
+            <button
+              type="button"
+              className="btn sm ghost"
+              onClick={() => setOpen(false)}
+              aria-label="Close"
+            >
+              Close
+            </button>
+          </div>
+          <div className="stack-sm small muted">{children}</div>
+        </div>
+      </dialog>
+    </>
+  )
+}
 
 export function Card({
   title,
@@ -216,7 +296,24 @@ export function Field({
   )
 }
 
-export function Meter({ pct, tone = 'accent' }: { pct: number; tone?: Tone }) {
+/**
+ * A progress bar with optional threshold marks.
+ *
+ * `marks` draws a line at each percentage, so a bar can show where the
+ * bar IS rather than only how far along it is. Added because the 50%
+ * watch line existed in the scoring engine, was mentioned in one
+ * paragraph of prose, and was drawn nowhere — a threshold nobody can see
+ * is not a threshold.
+ */
+export function Meter({
+  pct,
+  tone = 'accent',
+  marks = [],
+}: {
+  pct: number
+  tone?: Tone
+  marks?: { at: number; label: string }[]
+}) {
   const colour = {
     pass: 'var(--pass)',
     warn: 'var(--warn)',
@@ -231,6 +328,15 @@ export function Meter({ pct, tone = 'accent' }: { pct: number; tone?: Tone }) {
         className="meter-fill"
         style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: colour }}
       />
+      {marks.map((m) => (
+        <span
+          key={m.label}
+          className="meter-mark"
+          style={{ left: `${Math.max(0, Math.min(100, m.at))}%` }}
+          title={m.label}
+          aria-hidden="true"
+        />
+      ))}
     </div>
   )
 }

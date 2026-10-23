@@ -747,6 +747,14 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   height: 6px; background: var(--surface-3); border-radius: var(--radius-pill);
   overflow: hidden; position: relative;
 }
+
+/* Threshold marks on a meter. A hairline through the bar, so "60% pass
+   mark" is a place you can see rather than a number in a paragraph. */
+.meter-mark {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--surface); opacity: 0.85;
+  transform: translateX(-1px); pointer-events: none;
+}
 .meter-fill {
   height: 100%; border-radius: var(--radius-pill);
   transition: width var(--dur-3) var(--ease-out);
@@ -1524,3 +1532,39 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   .fact-fields .io-key { min-width: 0; }
   .fact-table-foot { flex-direction: column; align-items: flex-start; }
 }
+
+/* ---------------------------------------------------------------------
+   The ⓘ and its dialog.
+
+   For reference material that is identical on every vendor — the rules
+   behind a number. On the page it costs a screenful every visit to earn
+   its keep once; behind the glyph it is one click from the number it
+   explains, which is the only place it is ever wanted.
+   --------------------------------------------------------------------- */
+
+.row-head { display: flex; align-items: center; gap: var(--space-2); }
+
+.info-btn {
+  width: 20px; height: 20px; flex: none; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--surface-2); color: var(--ink-3);
+  font: inherit; font-size: var(--step--2); font-style: italic;
+  font-weight: var(--weight-medium); line-height: 1; cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.info-btn:hover { color: var(--ink-1); border-color: var(--ink-4); }
+.info-btn:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+
+.info-dialog {
+  width: min(560px, calc(100vw - var(--space-5) * 2));
+  padding: 0; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface);
+  color: var(--ink-1); box-shadow: var(--shadow-3);
+}
+.info-dialog::backdrop { background: rgb(0 0 0 / 0.42); }
+.info-dialog-inner { padding: var(--space-4); display: grid; gap: var(--space-3); }
+.info-dialog-h { margin: 0; font-size: var(--step-1); }
+
+/* The body is prose, not app chrome — give it room to breathe. */
+.info-dialog .stack-sm > p { margin: 0; line-height: 1.55; }

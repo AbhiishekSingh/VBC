@@ -726,9 +726,33 @@ function ParamField({
   const [local, setLocal] = useState(stored)
   const editing = useRef(false)
 
+  /*
+    THE BOX MUST SHOW WHAT THE RUN WILL SEND.
+
+    `local` is what you see; `stored` — `inputValue()` — is what the gate
+    reads and what the runner uses. They were allowed to disagree, and the
+    case that broke was clearing a box that has a vendor-level fallback:
+
+      vendor.domain = "aspiremgs.co.in", analyst clears the Domain field
+        local  = ""                 -> box looks empty
+        stored = "aspiremgs.co.in"  -> gate says nothing is missing
+
+    So the field read blank with no red, the Run button stayed live, the
+    call went out, and SSL came back `HTTP 400 — Input correct domain`.
+    The analyst was shown one thing and the provider was sent another.
+
+    This effect only fired when `stored` CHANGED, so after a clear-and-blur
+    there was nothing to re-sync from. It now also fires when editing
+    stops, so leaving a field always puts back whatever will actually be
+    sent — including a value the analyst thought they had deleted.
+
+    They CANNOT delete it: the backend applies the same fallback. A screen
+    that implies otherwise is the thing that was wrong.
+  */
+  const [editCount, setEditCount] = useState(0)
   useEffect(() => {
     if (!editing.current) setLocal(stored)
-  }, [stored])
+  }, [stored, editCount])
 
   const suppliedByAnother = param.fromResult && selected.includes(param.fromResult)
   // Asked, not decided. The page owns this question; see `missingKeys`.
@@ -887,6 +911,8 @@ function ParamField({
           onBlur={() => {
             editing.current = false
             setTouched(true)
+            // Re-sync even when `stored` did not change — see above.
+            setEditCount((n) => n + 1)
           }}
           onChange={(e) => void write(e.target.value)}
         />
