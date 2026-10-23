@@ -37,6 +37,7 @@ import hashlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -471,7 +472,36 @@ class CheckRunner:
         self, check_id: str, vendor: Vendor, cin: str | None, inputs: dict,
         master: dict | None, result: RunResult, prior: dict,
     ) -> Finding:
-        get = lambda key, default="": inputs.get(check_id, {}).get(key, default)  # noqa: E731
+        def get(key: str, default: Any = "") -> Any:
+            """One stored input, falling back when it is BLANK as well as absent.
+
+            This was `inputs.get(check_id, {}).get(key, default)`, and
+            `dict.get` only applies its default when the key is MISSING. A
+            key present with an empty string returned the empty string,
+            and every fallback below is written `get("x", vendor.y or "")`
+            — so the fallback silently stopped working the moment a value
+            was stored and then cleared.
+
+            `_missing_inputs` has no such hole: it tests `if not value and
+            param.from_vendor`. So the two halves disagreed in the worst
+            possible way —
+
+                gate   sees aspiremgs.co.in  -> nothing is missing, run it
+                call   sees ""               -> sends an empty domain
+
+            — and the run went out and came back `HTTP 400: Input correct
+            domain`, having passed every check that was supposed to stop
+            exactly that. Seen live on vendor 234481.
+
+            Whitespace counts as blank for the same reason: a space is not
+            an answer, and no provider accepts one.
+            """
+            value = inputs.get(check_id, {}).get(key)
+            if value is None:
+                return default
+            if isinstance(value, str) and not value.strip():
+                return default
+            return value
         fs, wx, ar, fa = self.filesure, self.whoisxml, self.archive, self.finagg
         ec = self.ecourts
         # The name every provider's answer is checked back against. A GSTIN
