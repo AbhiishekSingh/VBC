@@ -94,7 +94,13 @@ export default function Submit({ vendor, setPrimary }: Props) {
   // Shown only after a field has been left once — see the note in
   // Select.tsx. A 21-character CIN would otherwise be red for its first
   // twenty keystrokes, which teaches people to ignore red.
-  const [touched, setTouched] = useState<Record<string, boolean>>({})
+  // Same rule as Select.tsx: quiet while a value is being typed from
+  // nothing, immediate for a value that was already present.
+  const [touched, setTouched] = useState<Record<string, boolean>>(() => ({
+    cin: Boolean(form.cin),
+    gst: Boolean(form.gst),
+    pan: Boolean(form.pan),
+  }))
   const touch = (k: string) => () => setTouched((t) => ({ ...t, [k]: true }))
 
   const raw = {
@@ -118,14 +124,10 @@ export default function Submit({ vendor, setPrimary }: Props) {
     // provider. The field is focused rather than the button disabled —
     // a dead button says nothing about which box is wrong.
     if (blockers.length > 0) {
-      // No banner either — see the note in Select.tsx. `setError` renders
-      // the adverse callout used when a save is REJECTED, and a format
-      // still being typed is not that. The field says what is wrong; this
-      // only puts the cursor in it.
-      const [key] = blockers[0]
-      const el = document.querySelector<HTMLElement>(`[data-field="${key}"]`)
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el?.focus()
+      // Unreachable from the button, which is disabled while this is
+      // non-empty. Kept so a later caller cannot get past it. No banner:
+      // `setError` renders the adverse callout used when a save is
+      // REJECTED, and a format that needs correcting is not that.
       return
     }
 
@@ -161,7 +163,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
       <button
         type="button"
         className="btn primary"
-        disabled={saving || !form.name.trim() || !clientId}
+        disabled={saving || !form.name.trim() || !clientId || blockers.length > 0}
         onClick={submit}
       >
         {saving
