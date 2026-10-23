@@ -1,44 +1,3 @@
-/**
- * Step 2 — choose what to check.
- *
- * Three things this screen must get right:
- *
- * 1. COST UNITS ARE NEVER SUMMED. Rupees, WhoisXML credits and screenshot
- *    credits are three separate budgets drawn from three separate pools.
- *    Adding them would produce a number that means nothing.
- *
- * 2. UNCONFIGURED CHECKS ARE NOT SHOWN HERE. They were, greyed out, so a
- *    gap in coverage could not pass for completeness. That argument holds
- *    for the DELIVERABLE, not for this screen: seven dead rows sat between
- *    the analyst and the checks that work. Coverage is accounted for in
- *    the client-facing report (Report.tsx), which is what has to stand on
- *    its own. Hiding a gap from a working screen is presentation; hiding
- *    it from the report would not be.
- *
- * 3. DESELECTION IS FREE AND UNWARNED. That is the client's explicit
- *    choice. Coverage is presented as a neutral readout — what this
- *    selection can and cannot fill — rather than as a nag.
- *
- * WHAT CHANGED IN THE UI PASS
- * ---------------------------
- * The catalogue holds 47 checks in 8 groups, all rendered at once, and
- * every tick was one click AND one round trip: selecting the eleven MCA
- * checks was eleven of each. Added here, all presentational:
- *
- *   - a tri-state checkbox per group, and Select all / Clear all / preset
- *     bundles for the page. Each performs ONE setSelection call with the
- *     whole array — the same endpoint the single toggle already used.
- *   - groups collapse, and a search + filter row narrows 47 rows to the
- *     ones you are actually deciding about.
- *   - the checkbox moves immediately and reverts if the write fails,
- *     instead of not moving until the server answers.
- *   - a failed toggle now says so. It used to throw unhandled and leave
- *     the box silently un-ticked.
- *   - the run shows progress rather than a disabled button.
- *
- * The API surface is untouched: same calls, same arguments, same order.
- */
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -232,6 +191,13 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   const missing = useMemo(() => missingInputs(vendor), [vendor])
 
+  /** Scroll a field into view and put the cursor in it. */
+  const focusField = (paramKey: string) => {
+    const el = document.querySelector<HTMLElement>(`[data-field="${paramKey}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el?.focus()
+  }
+
   /*
     BLOCKING FORMAT ERRORS ACROSS EVERY SELECTED CHECK.
 
@@ -251,14 +217,36 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   }, [vendor, selected])
 
   const run = async () => {
-    // Unreachable from the button, which is disabled while this is
-    // non-empty. Kept because `run` is a function, not a button: a
-    // keyboard shortcut or a later caller must not get past it.
-    //
-    // It raises NO toast. `toast.error` is for responses from the server;
-    // handed null it reported its own "no reason was given" over the
-    // message passed to it, which is where the red "Something went wrong"
-    // came from. A field that needs correcting is not a failure.
+    /*
+      NOTHING RUNS UNTIL EVERY REQUIRED FIELD IS FILLED.
+
+      This used to let the run proceed and record the check as
+      `skipped_missing_input` — a gap honestly filed rather than hidden,
+      which is the right instinct and was the wrong behaviour here.
+
+      It was also, in one case, not even true. `inputValue` returned a
+      stored empty string instead of falling back to the vendor record,
+      while the runner DID fall back — so a check the screen promised
+      would be skipped made its call anyway and burnt 50 WhoisXML credits
+      on a 403. That divergence is fixed in api/mock.ts; this is the
+      guard that should have been here regardless.
+
+      Clicking Run with a blank required field now takes the analyst to
+      that field instead of running. Each click moves to the next one, so
+      the only ways forward are to fill it or to deselect the check —
+      which is the real choice, and is still free to make.
+
+      No toast and no banner: the field itself turns red and says why.
+    */
+    const firstGap = missing[0]
+    if (firstGap) {
+      focusField(firstGap.paramKey)
+      return
+    }
+
+    // Format errors. Unreachable from the button, which is disabled while
+    // this is non-empty, but `run` is a function and a later caller must
+    // not get past it.
     if (badInputs.length > 0) return
 
     setRunning(true)
@@ -310,14 +298,16 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           {running && <span className="spinner" aria-hidden="true" />}
           {running
             ? 'Running checks…'
-            : badInputs.length
-              ? `Fix ${badInputs.length} input${badInputs.length > 1 ? 's' : ''} to run`
-              : `Run ${selected.length} checks →`}
+            : missing.length
+              ? `Fill ${missing.length} required input${missing.length > 1 ? 's' : ''} to run`
+              : badInputs.length
+                ? `Fix ${badInputs.length} input${badInputs.length > 1 ? 's' : ''} to run`
+                : `Run ${selected.length} checks →`}
         </button>
       </>,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cost, running, selected.length, vendor])
+  }, [cost, running, selected.length, vendor, missing.length, badInputs.length])
 
   const matches = (check: (typeof CHECKS)[number]): boolean => {
     if (query.trim()) {
@@ -448,24 +438,12 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
         </button>
       </div>
 
-      {missing.length > 0 && (
-        <Callout kind="warn" title={`${missing.length} required input${missing.length > 1 ? 's' : ''} still blank`}>
-          Each one skips a single check and is logged — the run itself is never blocked, and the
-          skipped check appears on the findings page rather than vanishing.
-          <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: 'var(--space-5)' }}>
-            {missing.slice(0, 8).map((m) => (
-              <li key={`${m.checkId}.${m.paramKey}`} className="small">
-                <strong>{m.checkName}</strong> needs {m.paramLabel}
-              </li>
-            ))}
-          </ul>
-          {missing.length > 8 && (
-            <div className="small muted" style={{ marginTop: 'var(--space-1)' }}>
-              …and {missing.length - 8} more.
-            </div>
-          )}
-        </Callout>
-      )}
+      {/*
+        The "N required inputs still blank" callout was here. It is gone
+        because the Run button now refuses and jumps to the field, so the
+        same fact was being stated in two places — and the panel was the
+        one you scroll past.
+      */}
 
       {CHECK_GROUPS.map((group) => {
         /*
@@ -797,7 +775,7 @@ function ParamField({
         suppliedByAnother
           ? `Supplied by the ${nameOf(param.fromResult!)} result`
           : isMissing
-            ? 'Required — this check will be skipped without it'
+            ? 'Required — fill this in, or deselect the check, before running'
             : problem
               ? problem.message
               : idTypeIgnored
@@ -808,7 +786,7 @@ function ParamField({
                   ? `e.g. ${rule.example}`
                   : undefined
       }
-      tone={problem?.level}
+      tone={isMissing ? 'block' : problem?.level}
     >
       {param.type === 'select' ? (
         <select
@@ -824,7 +802,10 @@ function ParamField({
         </select>
       ) : (
         <input
-          className={`input${isMissing ? ' is-missing' : ''}${
+          // RED, not amber. It used to be amber because a blank required
+          // field only meant "this one check will be skipped". It now
+          // stops the run, so it gets the colour that means stop.
+          className={`input${isMissing ? ' is-invalid' : ''}${
             problem ? (problem.level === 'block' ? ' is-invalid' : ' is-warning') : ''
           }`}
           data-field={param.key}
