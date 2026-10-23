@@ -243,7 +243,13 @@ CHECKS: tuple[CheckDefinition, ...] = (
         cost_paisa=5,      # ₹0.05  companies.extractions.data
         needs_company_unlock=True,
         requires=("master",),
-        feeds=("N3",),
+        # NO feeds. This said ("N3",) from when N3 meant "Turnover of the
+        # Vendor" — this codebase's own addition to the client's model. The
+        # October migration retired it: N3 now means Conflict of Interest,
+        # and `_write_auto_ratings` writes nothing from this check. The
+        # declaration was left behind, so the catalog claimed a filed
+        # balance sheet scored the conflict parameter.
+        feeds=(),
         params=(
             _p("formType", "Form", type="select",
                options=("AOC-4", "MGT-7", "PAS-3", "CHARGES"), default="AOC-4"),
@@ -401,7 +407,10 @@ CHECKS: tuple[CheckDefinition, ...] = (
         provider=IH,
         note="Overlap between vendor directors and employee records",
         requires=("dirs",),
-        feeds=("A3",),
+        # N3, not A3. A3 is "Risk Taking", one of the four psychometric
+        # dimensions, and nothing automatic can fill it. The runner has
+        # written N3 since the migration; this declaration did not follow.
+        feeds=("N3",),
     ),
     # ================= Group A · Admin (FileSure housekeeping) ============
     CheckDefinition(
