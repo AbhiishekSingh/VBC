@@ -250,23 +250,15 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     // Refused before the call, and the page goes to the offending field.
     // The API refuses these too — this is the copy that can put a cursor
     // in the box and save the money.
-    if (badInputs.length > 0) {
-      // NO TOAST. This used to raise `toast.error(null, …)`, which showed
-      // a red "Something went wrong" — twice wrong. Nothing went wrong: a
-      // field needs correcting, which is an ordinary part of filling in a
-      // form, not a failure. And `toast.error` exists for responses from
-      // the server; handed null it reported its own "no reason was given"
-      // over the message it was passed.
-      //
-      // The field already carries the reason underneath it and the button
-      // already says how many to fix. All that was missing is getting the
-      // analyst to the right box, so that is all this does now.
-      const first = badInputs[0]
-      const el = document.querySelector<HTMLElement>(`[data-field="${first.key}"]`)
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el?.focus()
-      return
-    }
+    // Unreachable from the button, which is disabled while this is
+    // non-empty. Kept because `run` is a function, not a button, and a
+    // keyboard shortcut or a later caller must not get past it.
+    //
+    // It raises NO toast. `toast.error` is for responses from the server;
+    // handed null it reported its own "no reason was given" over the
+    // message passed to it, which is where the red "Something went wrong"
+    // came from. A field that needs correcting is not a failure.
+    if (badInputs.length > 0) return
 
     setRunning(true)
     setRunError(null)
@@ -305,10 +297,15 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           {cost.credits > 0 && ` · ${cost.credits} credits`}
           {cost.shots > 0 && ` · ${cost.shots} screenshot${cost.shots > 1 ? 's' : ''}`}
         </span>
-        {/* Not disabled on a bad input — a dead button explains nothing.
-            It stays clickable and `run` sends the page to the field that
-            is wrong, with the reason. */}
-        <button type="button" className="btn primary" disabled={running || !selected.length} onClick={run}>
+        {/* DISABLED on a blocking input. The label says how many need
+            fixing and the field itself carries the reason, so the button
+            does not have to explain anything by being clickable. */}
+        <button
+          type="button"
+          className="btn primary"
+          disabled={running || !selected.length || badInputs.length > 0}
+          onClick={run}
+        >
           {running && <span className="spinner" aria-hidden="true" />}
           {running
             ? 'Running checks…'
@@ -713,7 +710,17 @@ function ParamField({
     The RUN is still gated on the real value either way; this only governs
     when the message is shown.
   */
-  const [touched, setTouched] = useState(false)
+  /*
+    Starts TRUE when the field already arrived with a value.
+
+    The deferral exists so a 21-character CIN is not red for its first
+    twenty keystrokes. It has nothing to say about a value that was
+    already there — typed at Step 1, or prefilled from the vendor record.
+    Staying quiet about those now matters more than it did, because a
+    blocking error disables the Run button: an analyst would see a dead
+    button, a count of inputs to fix, and no red field anywhere.
+  */
+  const [touched, setTouched] = useState(() => Boolean(stored))
   const found = checkValue(param.key, local)
   const problem = touched ? found : null
   const rule = ruleFor(param.key)
