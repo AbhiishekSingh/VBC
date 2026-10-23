@@ -1206,9 +1206,7 @@ export const CHECKS = [
     "requires": [
       "master"
     ],
-    "feeds": [
-      "N3"
-    ],
+    "feeds": [],
     "costPaisa": 5,
     "credits": 0,
     "screenshots": 0,
@@ -1692,7 +1690,7 @@ export const CHECKS = [
       "dirs"
     ],
     "feeds": [
-      "A3"
+      "N3"
     ],
     "costPaisa": 0,
     "credits": 0,
@@ -2879,4 +2877,3 @@ export const MANUAL_TEMPLATES = [
     "hint": ""
   }
 ] as const;
-
