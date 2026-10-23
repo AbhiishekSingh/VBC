@@ -102,6 +102,12 @@ def build() -> str:
                     "source": p.source.value,
                     "feed": p.feed,
                     "fedBy": p.fed_by,
+                    # The A pillar is a WEIGHTED BLEND, not a count: each
+                    # psychometric dimension contributes its own share of
+                    # the test. Without this the browser cannot reproduce
+                    # the backend's arithmetic, which is exactly how the
+                    # two came to disagree by up to 25 points.
+                    "subWeight": p.sub_weight,
                     "options": [{"value": v, "rating": r.value} for v, r in p.options],
                 }
                 for p in SCAN_PARAMETERS

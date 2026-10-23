@@ -3,8 +3,8 @@
     "azahan": {
       "input": {
         "S1": "Individual/ Proprietorship",
-        "S2": "< 3 Years",
-        "S3": "No",
+        "S2": "3-10 Years",
+        "S3": null,
         "S4": "Manufacturer/ Services",
         "S5": null,
         "C1": null,
@@ -14,59 +14,59 @@
         "C5": null,
         "A1": null,
         "A2": null,
-        "A3": "Positive",
+        "A3": null,
         "A4": null,
         "N1": null,
         "N2": null,
-        "N3": null,
+        "N3": "Negative",
         "N4": null
       },
       "expected": {
-        "weighted": 0.9,
-        "best": 1.5,
-        "pct": 60.0,
-        "applicable": 6,
+        "weighted": 0.7,
+        "best": 1.0,
+        "pct": 70.0,
+        "applicable": 5,
         "passed": true,
         "verdict": "Positive for Onboarding",
-        "tolerance60": 0.9,
-        "assessmentEvaluated": true,
-        "coverageNote": "60.0% achieved, based on 6 of 18 parameters",
+        "tolerance60": 0.6,
+        "assessmentEvaluated": false,
+        "coverageNote": "70.0% achieved, based on 5 of 18 parameters",
         "pillars": {
           "S": {
-            "applicable": 4,
-            "G": 1,
-            "Y": 0,
-            "R": 3,
-            "positives": 1,
-            "weighted": 0.2,
-            "max": 0.8
+            "applicable": 3,
+            "G": 1.0,
+            "Y": 1.0,
+            "R": 1.0,
+            "positives": 1.5,
+            "weighted": 0.3,
+            "max": 0.6
           },
           "C": {
             "applicable": 1,
-            "G": 1,
-            "Y": 0,
-            "R": 0,
-            "positives": 1,
+            "G": 1.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 1.0,
             "weighted": 0.1,
             "max": 0.1
           },
           "A": {
-            "applicable": 1,
-            "G": 1,
-            "Y": 0,
-            "R": 0,
-            "positives": 1,
-            "weighted": 0.6,
-            "max": 0.6
-          },
-          "N": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
+          },
+          "N": {
+            "applicable": 1,
+            "G": 1.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 1.0,
+            "weighted": 0.3,
+            "max": 0.3
           }
         }
       }
@@ -74,7 +74,7 @@
     "meridian": {
       "input": {
         "S1": "Private Ltd",
-        "S2": "> 10 Years",
+        "S2": ">10 Years",
         "S3": "Yes",
         "S4": "Manufacturer/ Services",
         "S5": "Owned",
@@ -83,61 +83,61 @@
         "C3": null,
         "C4": "No",
         "C5": null,
-        "A1": "On-board",
-        "A2": "Positive",
-        "A3": "Positive",
-        "A4": "Good",
+        "A1": "Non Vulnerable",
+        "A2": "Matured",
+        "A3": "Matured",
+        "A4": "Pro-active",
         "N1": "Industry",
-        "N2": "More than 5",
-        "N3": "2 Cr / 1 Cr",
+        "N2": "Positive",
+        "N3": "Negative",
         "N4": "State"
       },
       "expected": {
-        "weighted": 3.8,
+        "weighted": 3.5,
         "best": 3.9,
-        "pct": 97.4,
+        "pct": 89.7,
         "applicable": 14,
         "passed": true,
         "verdict": "Positive for Onboarding",
         "tolerance60": 2.34,
         "assessmentEvaluated": true,
-        "coverageNote": "97.4% achieved, based on 14 of 18 parameters",
+        "coverageNote": "89.7% achieved, based on 14 of 18 parameters",
         "pillars": {
           "S": {
             "applicable": 5,
-            "G": 5,
-            "Y": 0,
-            "R": 0,
-            "positives": 5,
-            "weighted": 1.0,
+            "G": 4.0,
+            "Y": 1.0,
+            "R": 0.0,
+            "positives": 4.5,
+            "weighted": 0.9,
             "max": 1.0
           },
           "C": {
             "applicable": 1,
-            "G": 1,
-            "Y": 0,
-            "R": 0,
-            "positives": 1,
+            "G": 1.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 1.0,
             "weighted": 0.1,
             "max": 0.1
           },
           "A": {
             "applicable": 4,
-            "G": 4,
-            "Y": 0,
-            "R": 0,
-            "positives": 4,
-            "weighted": 2.4,
-            "max": 2.4
+            "G": 4.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 4.0,
+            "weighted": 1.6,
+            "max": 1.6
           },
           "N": {
             "applicable": 4,
-            "G": 2,
-            "Y": 2,
-            "R": 0,
-            "positives": 3,
-            "weighted": 0.3,
-            "max": 0.4
+            "G": 2.0,
+            "Y": 2.0,
+            "R": 0.0,
+            "positives": 3.0,
+            "weighted": 0.9,
+            "max": 1.2
           }
         }
       }
@@ -176,37 +176,37 @@
         "pillars": {
           "S": {
             "applicable": 5,
-            "G": 1,
-            "Y": 2,
-            "R": 2,
-            "positives": 2,
+            "G": 1.0,
+            "Y": 2.0,
+            "R": 2.0,
+            "positives": 2.0,
             "weighted": 0.4,
             "max": 1.0
           },
           "C": {
             "applicable": 1,
-            "G": 0,
-            "Y": 0,
-            "R": 1,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 1.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.1
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           }
@@ -247,37 +247,37 @@
         "pillars": {
           "S": {
             "applicable": 5,
-            "G": 1,
-            "Y": 2,
-            "R": 2,
-            "positives": 2,
+            "G": 1.0,
+            "Y": 2.0,
+            "R": 2.0,
+            "positives": 2.0,
             "weighted": 0.4,
             "max": 1.0
           },
           "C": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           }
@@ -299,37 +299,37 @@
         "pillars": {
           "S": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "C": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           }
@@ -339,7 +339,7 @@
     "allBestOption": {
       "input": {
         "S1": "Listed/Public",
-        "S2": "> 10 Years",
+        "S2": ">10 Years",
         "S3": "Yes",
         "S4": "Manufacturer/ Services",
         "S5": "Owned",
@@ -348,13 +348,13 @@
         "C3": "Regular",
         "C4": "No",
         "C5": "Commercial",
-        "A1": "On-board",
-        "A2": "Positive",
-        "A3": "Positive",
-        "A4": "Good",
+        "A1": "Non Vulnerable",
+        "A2": "Matured",
+        "A3": "Matured",
+        "A4": "Pro-active",
         "N1": "Better than Industry",
-        "N2": "More than 5",
-        "N3": "2 Cr / 1 Cr",
+        "N2": "Positive",
+        "N3": "Negative",
         "N4": "Pan India"
       },
       "expected": {
@@ -370,39 +370,39 @@
         "pillars": {
           "S": {
             "applicable": 5,
-            "G": 5,
-            "Y": 0,
-            "R": 0,
-            "positives": 5,
+            "G": 5.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 5.0,
             "weighted": 1.0,
             "max": 1.0
           },
           "C": {
             "applicable": 5,
-            "G": 5,
-            "Y": 0,
-            "R": 0,
-            "positives": 5,
+            "G": 5.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 5.0,
             "weighted": 0.5,
             "max": 0.5
           },
           "A": {
             "applicable": 4,
-            "G": 4,
-            "Y": 0,
-            "R": 0,
-            "positives": 4,
-            "weighted": 2.4,
-            "max": 2.4
+            "G": 4.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 4.0,
+            "weighted": 1.6,
+            "max": 1.6
           },
           "N": {
             "applicable": 4,
-            "G": 4,
-            "Y": 0,
-            "R": 0,
-            "positives": 4,
-            "weighted": 0.4,
-            "max": 0.4
+            "G": 4.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 4.0,
+            "weighted": 1.2,
+            "max": 1.2
           }
         }
       }
@@ -419,61 +419,61 @@
         "C3": "Composite",
         "C4": "Yes",
         "C5": "Residential",
-        "A1": "Reject",
-        "A2": "Negative",
-        "A3": "Negative",
-        "A4": "Poor",
+        "A1": "Vulnerable",
+        "A2": "Weak",
+        "A3": "Weak",
+        "A4": "Weak",
         "N1": "Lower than Industry",
-        "N2": "Zero",
-        "N3": "< 50 Lac / 25 Lac",
+        "N2": "Negative",
+        "N3": "Positive",
         "N4": "Local"
       },
       "expected": {
-        "weighted": 0.1,
+        "weighted": 0.2,
         "best": 4.3,
-        "pct": 2.3,
+        "pct": 4.7,
         "applicable": 18,
         "passed": false,
         "verdict": "Negative for Onboarding",
         "tolerance60": 2.58,
         "assessmentEvaluated": true,
-        "coverageNote": "2.3% achieved, based on 18 of 18 parameters",
+        "coverageNote": "4.7% achieved, based on 18 of 18 parameters",
         "pillars": {
           "S": {
             "applicable": 5,
-            "G": 0,
-            "Y": 1,
-            "R": 4,
-            "positives": 0,
-            "weighted": 0.0,
+            "G": 0.0,
+            "Y": 1.0,
+            "R": 4.0,
+            "positives": 0.5,
+            "weighted": 0.1,
             "max": 1.0
           },
           "C": {
             "applicable": 5,
-            "G": 0,
-            "Y": 2,
-            "R": 3,
-            "positives": 1,
+            "G": 0.0,
+            "Y": 2.0,
+            "R": 3.0,
+            "positives": 1.0,
             "weighted": 0.1,
             "max": 0.5
           },
           "A": {
             "applicable": 4,
-            "G": 0,
-            "Y": 0,
-            "R": 4,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 4.0,
+            "positives": 0.0,
             "weighted": 0.0,
-            "max": 2.4
+            "max": 1.6
           },
           "N": {
             "applicable": 4,
-            "G": 0,
-            "Y": 0,
-            "R": 4,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 4.0,
+            "positives": 0.0,
             "weighted": 0.0,
-            "max": 0.4
+            "max": 1.2
           }
         }
       }
@@ -483,51 +483,51 @@
         "N1": "Industry"
       },
       "expected": {
-        "weighted": 0.0,
-        "best": 0.1,
-        "pct": 0.0,
+        "weighted": 0.15,
+        "best": 0.3,
+        "pct": 50.0,
         "applicable": 1,
         "passed": false,
         "verdict": "Negative for Onboarding",
-        "tolerance60": 0.06,
+        "tolerance60": 0.18,
         "assessmentEvaluated": false,
-        "coverageNote": "0.0% achieved, based on 1 of 18 parameters",
+        "coverageNote": "50.0% achieved, based on 1 of 18 parameters",
         "pillars": {
           "S": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "C": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
             "applicable": 1,
-            "G": 0,
-            "Y": 1,
-            "R": 0,
-            "positives": 0,
-            "weighted": 0.0,
-            "max": 0.1
+            "G": 0.0,
+            "Y": 1.0,
+            "R": 0.0,
+            "positives": 0.5,
+            "weighted": 0.15,
+            "max": 0.3
           }
         }
       }
@@ -538,51 +538,51 @@
         "N2": "1 to 5"
       },
       "expected": {
-        "weighted": 0.1,
-        "best": 0.2,
+        "weighted": 0.15,
+        "best": 0.3,
         "pct": 50.0,
-        "applicable": 2,
+        "applicable": 1,
         "passed": false,
         "verdict": "Negative for Onboarding",
-        "tolerance60": 0.12,
+        "tolerance60": 0.18,
         "assessmentEvaluated": false,
-        "coverageNote": "50.0% achieved, based on 2 of 18 parameters",
+        "coverageNote": "50.0% achieved, based on 1 of 18 parameters",
         "pillars": {
           "S": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "C": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
-            "applicable": 2,
-            "G": 0,
-            "Y": 2,
-            "R": 0,
-            "positives": 1,
-            "weighted": 0.1,
-            "max": 0.2
+            "applicable": 1,
+            "G": 0.0,
+            "Y": 1.0,
+            "R": 0.0,
+            "positives": 0.5,
+            "weighted": 0.15,
+            "max": 0.3
           }
         }
       }
@@ -604,37 +604,37 @@
         "pillars": {
           "S": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "C": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "A": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           },
           "N": {
             "applicable": 0,
-            "G": 0,
-            "Y": 0,
-            "R": 0,
-            "positives": 0,
+            "G": 0.0,
+            "Y": 0.0,
+            "R": 0.0,
+            "positives": 0.0,
             "weighted": 0.0,
             "max": 0.0
           }
@@ -783,10 +783,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -813,7 +813,7 @@
       "checks": {
         "master": {
           "status": "pass",
-          "value": "ACTIVE \u00b7 U21029MH2013PTC245119"
+          "value": "ACTIVE · U21029MH2013PTC245119"
         },
         "dirs": {
           "status": "pass",
@@ -825,7 +825,7 @@
         },
         "charges": {
           "status": "warn",
-          "value": "1 open charge \u20b92.4 Cr"
+          "value": "1 open charge ₹2.4 Cr"
         },
         "filings": {
           "status": "pass",
@@ -833,7 +833,7 @@
         },
         "fin": {
           "status": "pass",
-          "value": "Revenue \u20b941.2 Cr \u00b7 PAT \u20b91.8 Cr"
+          "value": "Revenue ₹41.2 Cr · PAT ₹1.8 Cr"
         },
         "whois": {
           "status": "pass",
@@ -966,10 +966,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -1114,10 +1114,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -1219,10 +1219,10 @@
           },
           {
             "id": "r13",
-            "state": "not_configured",
+            "state": "not_selected",
             "applied": false,
             "contribution": 0,
-            "explanation": "source not configured"
+            "explanation": "check not selected for this vendor"
           }
         ]
       }
@@ -1304,8 +1304,8 @@
     "azahanDefault": {
       "input": {
         "S1": "Individual/ Proprietorship",
-        "S2": "< 3 Years",
-        "S3": "No",
+        "S2": "3-10 Years",
+        "S3": null,
         "S4": "Manufacturer/ Services",
         "S5": null,
         "C1": null,
@@ -1315,28 +1315,28 @@
         "C5": null,
         "A1": null,
         "A2": null,
-        "A3": "Positive",
+        "A3": null,
         "A4": null,
         "N1": null,
         "N2": null,
-        "N3": null,
+        "N3": "Negative",
         "N4": null
       },
       "policy": "default",
       "expected": {
-        "verdict": "Insufficient Coverage \u2014 Senior Review",
+        "verdict": "Insufficient Coverage — Senior Review",
         "rawVerdict": "Positive for Onboarding",
         "gated": true,
         "policyVersion": "1.0",
         "reasonCount": 2,
-        "headline": "Insufficient Coverage \u2014 Senior Review \u2014 60.0% achieved, based on 6 of 18 parameters"
+        "headline": "Insufficient Coverage — Senior Review — 70.0% achieved, based on 5 of 18 parameters"
       }
     },
     "azahanPrototype": {
       "input": {
         "S1": "Individual/ Proprietorship",
-        "S2": "< 3 Years",
-        "S3": "No",
+        "S2": "3-10 Years",
+        "S3": null,
         "S4": "Manufacturer/ Services",
         "S5": null,
         "C1": null,
@@ -1346,11 +1346,11 @@
         "C5": null,
         "A1": null,
         "A2": null,
-        "A3": "Positive",
+        "A3": null,
         "A4": null,
         "N1": null,
         "N2": null,
-        "N3": null,
+        "N3": "Negative",
         "N4": null
       },
       "policy": "prototype",
@@ -1360,13 +1360,13 @@
         "gated": false,
         "policyVersion": "0.0-prototype",
         "reasonCount": 0,
-        "headline": "Positive for Onboarding \u2014 60.0% achieved, based on 6 of 18 parameters"
+        "headline": "Positive for Onboarding — 70.0% achieved, based on 5 of 18 parameters"
       }
     },
     "meridianDefault": {
       "input": {
         "S1": "Private Ltd",
-        "S2": "> 10 Years",
+        "S2": ">10 Years",
         "S3": "Yes",
         "S4": "Manufacturer/ Services",
         "S5": "Owned",
@@ -1375,13 +1375,13 @@
         "C3": null,
         "C4": "No",
         "C5": null,
-        "A1": "On-board",
-        "A2": "Positive",
-        "A3": "Positive",
-        "A4": "Good",
+        "A1": "Non Vulnerable",
+        "A2": "Matured",
+        "A3": "Matured",
+        "A4": "Pro-active",
         "N1": "Industry",
-        "N2": "More than 5",
-        "N3": "2 Cr / 1 Cr",
+        "N2": "Positive",
+        "N3": "Negative",
         "N4": "State"
       },
       "policy": "default",
@@ -1391,7 +1391,7 @@
         "gated": false,
         "policyVersion": "1.0",
         "reasonCount": 0,
-        "headline": "Positive for Onboarding \u2014 97.4% achieved, based on 14 of 18 parameters"
+        "headline": "Positive for Onboarding — 89.7% achieved, based on 14 of 18 parameters"
       }
     },
     "kaveriDefault": {
@@ -1422,7 +1422,7 @@
         "gated": false,
         "policyVersion": "1.0",
         "reasonCount": 0,
-        "headline": "Negative for Onboarding \u2014 36.4% achieved, based on 6 of 18 parameters"
+        "headline": "Negative for Onboarding — 36.4% achieved, based on 6 of 18 parameters"
       }
     }
   }

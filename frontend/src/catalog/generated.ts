@@ -51,6 +51,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "MCA company status",
     "fedBy": "master",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Listed/Public",
@@ -81,6 +82,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "MCA incorporation date",
     "fedBy": "master",
+    "subWeight": 0.0,
     "options": [
       {
         "value": ">10 Years",
@@ -103,6 +105,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "Domain + archive evidence",
     "fedBy": "cdx",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Yes",
@@ -121,6 +124,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Analyst classification",
     "fedBy": null,
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Manufacturer/ Services",
@@ -143,6 +147,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Site surveillance",
     "fedBy": null,
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Owned",
@@ -161,6 +166,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Registered",
@@ -183,6 +189,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "FinAGG GSP — returns metadata",
     "fedBy": "gstret",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Regular",
@@ -205,6 +212,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Regular",
@@ -223,6 +231,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "No",
@@ -241,6 +250,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "FinAGG GSP — common search",
     "fedBy": "gst",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Commercial",
@@ -259,6 +269,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Psychometric test — 50%",
     "fedBy": null,
+    "subWeight": 0.5,
     "options": [
       {
         "value": "Non Vulnerable",
@@ -277,6 +288,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Psychometric test — 30%",
     "fedBy": null,
+    "subWeight": 0.3,
     "options": [
       {
         "value": "Matured",
@@ -299,6 +311,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Psychometric test — 10%",
     "fedBy": null,
+    "subWeight": 0.1,
     "options": [
       {
         "value": "Matured",
@@ -321,6 +334,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Psychometric test — 10%",
     "fedBy": null,
+    "subWeight": 0.1,
     "options": [
       {
         "value": "Pro-active",
@@ -343,6 +357,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Commercial terms",
     "fedBy": null,
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Better than Industry",
@@ -365,6 +380,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Site Surveillance module",
     "fedBy": null,
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Positive",
@@ -383,6 +399,7 @@ export const SCAN_PARAMETERS = [
     "source": "AUTO",
     "feed": "Internal check over MCA director data",
     "fedBy": "conflict",
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Negative",
@@ -401,6 +418,7 @@ export const SCAN_PARAMETERS = [
     "source": "HUMAN",
     "feed": "Analyst assessment",
     "fedBy": null,
+    "subWeight": 0.0,
     "options": [
       {
         "value": "Pan India",
@@ -2877,3 +2895,4 @@ export const MANUAL_TEMPLATES = [
     "hint": ""
   }
 ] as const;
+
