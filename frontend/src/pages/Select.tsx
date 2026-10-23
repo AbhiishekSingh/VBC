@@ -7,9 +7,13 @@
  *    credits are three separate budgets drawn from three separate pools.
  *    Adding them would produce a number that means nothing.
  *
- * 2. UNCONFIGURED CHECKS ARE SHOWN, NOT HIDDEN. All nine hooks appear,
- *    visibly disabled, so an analyst can see what this platform does not
- *    cover. Hiding them would let a gap in coverage pass for completeness.
+ * 2. UNCONFIGURED CHECKS ARE NOT SHOWN HERE. They were, greyed out, so a
+ *    gap in coverage could not pass for completeness. That argument holds
+ *    for the DELIVERABLE, not for this screen: seven dead rows sat between
+ *    the analyst and the checks that work. Coverage is accounted for in
+ *    the client-facing report (Report.tsx), which is what has to stand on
+ *    its own. Hiding a gap from a working screen is presentation; hiding
+ *    it from the report would not be.
  *
  * 3. DESELECTION IS FREE AND UNWARNED. That is the client's explicit
  *    choice. Coverage is presented as a neutral readout — what this
@@ -247,11 +251,8 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   }, [vendor, selected])
 
   const run = async () => {
-    // Refused before the call, and the page goes to the offending field.
-    // The API refuses these too — this is the copy that can put a cursor
-    // in the box and save the money.
     // Unreachable from the button, which is disabled while this is
-    // non-empty. Kept because `run` is a function, not a button, and a
+    // non-empty. Kept because `run` is a function, not a button: a
     // keyboard shortcut or a later caller must not get past it.
     //
     // It raises NO toast. `toast.error` is for responses from the server;
@@ -501,7 +502,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                 checkbox used to wrap onto its own line above the group
                 name, where it read as belonging to nothing. */}
             <div className="group-row">
-              {group.configured && selectable.length > 0 ? (
+              {selectable.length > 0 ? (
                 <span className="group-select">
                   <TriCheckbox
                     checked={allOn}
@@ -530,20 +531,18 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                 </span>
               </button>
 
-              {group.configured ? (
-                <span className={`badge ${on ? 'b-accent' : 'b-neutral'} nums`}>
-                  {on} of {groupChecks.length} selected
-                </span>
-              ) : (
-                <span className="badge b-unchecked">No provider configured</span>
-              )}
+              {/* Counted against the checks actually shown. A group with
+                  a provider on some checks and not others — tax, rep —
+                  now reads "2 of 2", not "2 of 3". */}
+              <span className={`badge ${on ? 'b-accent' : 'b-neutral'} nums`}>
+                {on} of {groupChecks.length} selected
+              </span>
             </div>
 
             {isOpen && (
               <div className="card-body tight">
                 <div className="stack-sm" style={{ padding: 'var(--space-2)' }}>
                   {visible.map((check) => {
-                    const isOff = check.state === 'not_configured'
                     const isOn = selected.includes(check.id)
                     const isPending = pending.includes(check.id)
                     const params = check.params ?? []
@@ -554,7 +553,6 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                         className={
                           'check-row' +
                           (isOn ? ' is-on' : '') +
-                          (isOff ? ' is-off' : '') +
                           (isPending ? ' is-pending' : '')
                         }
                       >
@@ -563,13 +561,12 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                             <input
                               type="checkbox"
                               checked={isOn}
-                              disabled={isOff || check.always || isPending}
+                              disabled={check.always || isPending}
                               onChange={() => void toggle(check.id)}
                             />
                             <span className="cell-strong">{check.name}</span>
                             {isPending && <span className="spinner" aria-hidden="true" />}
                             {check.always && <span className="chip">Always runs · free</span>}
-                            {isOff && <span className="badge b-unchecked">Not configured</span>}
                             {check.requires.length > 0 && (
                               <span
                                 className="chip"
@@ -581,9 +578,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                             )}
                           </label>
 
-                          <span className="small muted">
-                            {check.note || 'No provider selected for this check.'}
-                          </span>
+                          <span className="small muted">{check.note}</span>
                           {/* <span className="small mono muted">{check.endpoint}</span> */}
 
                           {isOn && params.length > 0 && (
@@ -608,7 +603,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                           {check.costPaisa > 0 && <span className="small nums">{rupees(check.costPaisa)}</span>}
                           {check.credits > 0 && <span className="small nums">{check.credits} credits</span>}
                           {check.screenshots > 0 && <span className="small nums">{check.screenshots} of 10</span>}
-                          {check.costPaisa === 0 && !check.credits && !check.screenshots && !isOff && (
+                          {check.costPaisa === 0 && !check.credits && !check.screenshots && (
                             <span className="small muted">free</span>
                           )}
                           {check.needsCompanyUnlock && !vendor.unlocked && (
@@ -693,32 +688,25 @@ function ParamField({
   const suppliedByAnother = param.fromResult && selected.includes(param.fromResult)
   const isMissing = param.required && !suppliedByAnother && !local.trim()
 
-  // Format, from the generated rules. Checked on every keystroke so the
-  // analyst sees it while the field is under the cursor, not after they
-  // have committed to a run.
   /*
-    NOT WHILE THEY ARE STILL TYPING.
+    WHEN TO SHOW A FORMAT ERROR — not what counts as one.
 
-    A CIN is 21 characters, so validating on every keystroke paints the
+    A CIN is 21 characters, so checking on every keystroke paints the
     field red for the first twenty and clears it on the last. That trains
     an analyst to ignore the colour, which is the opposite of the point.
+    So: stay quiet until the field has been left once, then stay live, so
+    the error clears the moment it is corrected rather than on the next
+    blur.
 
-    So the rule is: say nothing until the field has been left once. After
-    that, stay live — the error should disappear the moment the correction
-    is made, not on the next blur.
-
-    The RUN is still gated on the real value either way; this only governs
-    when the message is shown.
-  */
-  /*
-    Starts TRUE when the field already arrived with a value.
-
-    The deferral exists so a 21-character CIN is not red for its first
-    twenty keystrokes. It has nothing to say about a value that was
-    already there — typed at Step 1, or prefilled from the vendor record.
-    Staying quiet about those now matters more than it did, because a
-    blocking error disables the Run button: an analyst would see a dead
+    `touched` starts TRUE when the field arrived WITH a value — typed at
+    Step 1, or prefilled from the vendor record. Nobody is mid-word in
+    that case, and staying quiet would be actively harmful now that a
+    blocking error disables the Run button: the analyst would face a dead
     button, a count of inputs to fix, and no red field anywhere.
+
+    None of this changes what blocks a run. `badInputs` is computed from
+    the stored values, so an untouched bad field still stops it; this
+    governs only when the message appears.
   */
   const [touched, setTouched] = useState(() => Boolean(stored))
   const found = checkValue(param.key, local)
@@ -741,12 +729,26 @@ function ParamField({
   const derivedIdType =
     param.key === 'idType' ? detectIdType(inputValue(vendor, checkId, 'cin')) : null
 
-  useEffect(() => {
-    if (!derivedIdType || editing.current) return
-    if (local === derivedIdType) return
-    void write(derivedIdType)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedIdType])
+  /*
+    THE OVERRIDE IS HONOURED, AND THE RUNNER THROWS IT AWAY.
+
+    Picking "fcin" against a CIN is allowed — MCA identifiers have more
+    shapes than the documentation admits, and refusing to run on one we
+    do not recognise is how LLPs became un-auditable before. So the
+    runner does not refuse it either: where the choice contradicts the
+    identifier it sends NO idType and lets the source detect, which is
+    the behaviour that works.
+
+    But until now the only trace was a line in the audit log. The screen
+    said "fcin", "fcin" was not what got sent, and nothing said so. A
+    control that reports something untrue about the call it is about to
+    make is worse than one that is simply wrong.
+
+    Not an error — nothing is broken and the run succeeds. Just the
+    truth, stated under the field.
+  */
+  const idTypeIgnored =
+    derivedIdType !== null && local !== '' && local !== derivedIdType
 
   const write = async (value: string) => {
     setLocal(value)
@@ -759,6 +761,19 @@ function ParamField({
     }
   }
 
+  /*
+    Keep the select in step with the identifier. Declared AFTER `write`
+    on purpose: it worked before only because an effect body runs after
+    the component function has finished, which is a fact about React
+    rather than anything this file should lean on.
+  */
+  useEffect(() => {
+    if (!derivedIdType || editing.current) return
+    if (local === derivedIdType) return
+    void write(derivedIdType)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedIdType])
+
   return (
     <Field
       label={`${param.label}${param.required ? ' *' : ''}`}
@@ -769,9 +784,12 @@ function ParamField({
             ? 'Required — this check will be skipped without it'
             : problem
               ? problem.message
-              : rule?.example
-                ? `e.g. ${rule.example}`
-                : undefined
+              : idTypeIgnored
+                ? `This looks like a ${derivedIdType!.toUpperCase()}. ` +
+                  `"${local}" will be ignored and the source asked to detect it.`
+                : rule?.example
+                  ? `e.g. ${rule.example}`
+                  : undefined
       }
       tone={problem?.level}
     >
