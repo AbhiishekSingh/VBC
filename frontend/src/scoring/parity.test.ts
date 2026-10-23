@@ -160,15 +160,26 @@ describe('Coverage policy parity with the Python engine', () => {
   }
 })
 
+/*
+  These three were hand-written from the PRE-migration model and were not
+  updated when the backend moved on 5 Oct 2026. They are the reason this
+  file kept failing after `parity-expected.json` was regenerated: the
+  generated expectations were current and these were not.
+
+  Both numbers moved in the honest direction. Meridian fell because
+  "Private Ltd" stopped being a free Green; Azahan rose because an odd
+  Yellow is now worth the half it earned — on five of eighteen
+  parameters, which is why `coverageNote` travels with every score.
+*/
 describe('the fixtures the client signed off on', () => {
-  it('Azahan scores 0.90 / 1.50 at 60.0%', () => {
+  it('Azahan scores 0.70 / 1.00 at 70.0%', () => {
     const s = scoreScan(expected.scan.azahan.input)
-    expect([s.weighted, s.best, s.pct]).toEqual([0.9, 1.5, 60.0])
+    expect([s.weighted, s.best, s.pct]).toEqual([0.7, 1.0, 70.0])
   })
 
-  it('Meridian scores 3.80 / 3.90 at 97.4%', () => {
+  it('Meridian scores 3.50 / 3.90 at 89.7%', () => {
     const s = scoreScan(expected.scan.meridian.input)
-    expect([s.weighted, s.best, s.pct]).toEqual([3.8, 3.9, 97.4])
+    expect([s.weighted, s.best, s.pct]).toEqual([3.5, 3.9, 89.7])
   })
 
   it('Kaveri scores 0.40 / 1.10 at 36.4%', () => {

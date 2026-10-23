@@ -52,12 +52,37 @@ const TOLERANCE_WATCH = 0.5
 /** Match Python's round-to-4 so floating point noise cannot diverge. */
 const r4 = (n: number): number => Number(n.toFixed(4))
 
+/**
+ * Compare on letters and digits only — the backend's `ScanParameter._key`.
+ *
+ * "> 10 Years" and ">10 Years" are the same answer. This matters because
+ * stored ratings carry whatever spelling was written at the time, and the
+ * runner's own wording has changed: rows written before 5 Oct 2026 hold
+ * "> 10 Years" where the catalog now says ">10 Years".
+ */
+const optionKey = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/**
+ * An option string to a colour, or null for "not applicable".
+ *
+ * This used to be `o.value === value`, an exact match, while the backend
+ * compared on `_key`. So a stored spelling the catalog no longer uses
+ * resolved there and returned null here — and a null drops the parameter
+ * out of BOTH sides of the fraction, silently measuring the vendor against
+ * a smaller bar.
+ *
+ * That is not a hypothetical: an unrecognised option is exactly how every
+ * approved vendor once scored 100%. The same failure, in the copy of the
+ * model that is actually on screen.
+ */
 const ratingOf = (
   options: readonly { readonly value: string; readonly rating: string }[],
   value: string | null | undefined,
 ): Rating | null => {
   if (value === null || value === undefined) return null
-  const hit = options.find((o) => o.value === value)
+  const wanted = optionKey(value)
+  const hit = options.find((o) => optionKey(o.value) === wanted)
   return hit ? (hit.rating as Rating) : null
 }
 
@@ -83,12 +108,48 @@ export function scoreScan(ratings: Record<string, string | null>): ScanScore {
     }
   }
 
+  /*
+    TWO PASSES, MIRRORING app/domain/scoring.py EXACTLY.
+
+    This file is a SECOND implementation of the client's scoring model, and
+    it is what every number on screen comes from — the backend's answer is
+    stored, not displayed. It was left on the pre-migration model while the
+    backend moved, so the two disagreed by up to 25 points on the same
+    vendor, either side of a 60% pass mark. A screen that contradicts the
+    database is worse than either being wrong on its own.
+
+    Pass one counts what is applicable. Pass two fills the colour buckets,
+    because the A pillar's share depends on how many A parameters were
+    answered — which is not known until pass one finishes.
+  */
+  const rated: { param: (typeof SCAN_PARAMETERS)[number]; rating: Rating }[] = []
   for (const param of SCAN_PARAMETERS) {
     const rating = ratingOf(param.options, ratings[param.id])
     if (!rating) continue // not applicable — leaves both sides of the fraction
+    pillars[param.pillar as PillarKey].applicable += 1
+    rated.push({ param, rating })
+  }
+
+  /*
+    The A pillar is a WEIGHTED BLEND, not a count.
+
+    Every other pillar adds one whole parameter per rating. A adds a
+    FRACTION — that dimension's share of the psychometric test, scaled by
+    how many dimensions were answered:
+
+        bucket += applicable_A_count × subWeight
+
+    Integrity .5 · Business Acumen .3 · Risk Taking .1 · Problem Solving .1.
+    So A totals come out fractional: Innovatiview, with four applicable,
+    gives G=0.4 Y=1.6 R=2.0. A plain counter cannot reach those numbers,
+    which is how the defect was found rather than argued about.
+  */
+  const aApplicable = pillars.A.applicable
+  for (const { param, rating } of rated) {
     const bucket = pillars[param.pillar as PillarKey]
-    bucket.applicable += 1
-    bucket[rating] += 1
+    const share =
+      param.pillar === 'A' && param.subWeight ? aApplicable * param.subWeight : 1
+    bucket[rating] += share
   }
 
   let weighted = 0
@@ -96,7 +157,19 @@ export function scoreScan(ratings: Record<string, string | null>): ScanScore {
   let applicable = 0
 
   for (const bucket of Object.values(pillars)) {
-    bucket.positives = bucket.G + Math.floor(bucket.Y / 2) // 2 Yellow = 1 Green
+    /*
+      HALF A GREEN, NOT NONE.
+
+      This was `G + Math.floor(Y / 2)`. The workbook computes `=D8+(D9/2)`
+      with no rounding at all, so one Yellow is worth half a Green. The
+      floor is the tempting reading of "2 Yellow = 1 Green" and it is wrong
+      in the direction that matters — it marks a vendor down for a middling
+      answer instead of giving them the half they earned.
+
+      `scoreSurveillance` below KEEPS its floor on purpose: the backend's
+      `score_surveillance` floors too, and matching it is the point.
+    */
+    bucket.positives = r4(bucket.G + bucket.Y / 2)
     bucket.weighted = r4(bucket.positives * bucket.weight)
     bucket.max = r4(bucket.applicable * bucket.weight)
     weighted += bucket.weighted
@@ -109,7 +182,13 @@ export function scoreScan(ratings: Record<string, string | null>): ScanScore {
 
   const pct = best > 0 ? Number(((weighted / best) * 100).toFixed(1)) : 0
   const tolerance60 = r4(best * TOLERANCE_PASS)
-  const passed = best > 0 && weighted >= tolerance60
+  /*
+    STRICTLY greater. The workbook asks `=IF(H16>D20, "Positive", ...)`.
+    With `>=` a vendor landing exactly on the bar was Positive here and
+    Negative there. No case on file lands exactly on it, which is precisely
+    why it would have been found late and in front of a client.
+  */
+  const passed = best > 0 && weighted > tolerance60
   const total = SCAN_PARAMETERS.length
 
   return {
@@ -244,14 +323,32 @@ export function scoreRisk(
   const selection = new Set(selected)
   const ledger: LedgerLine[] = RISK_RULES.map((rule) => {
     const unconfigured = rule.needs.filter((n) => !isConfigured(n))
-    const unselected = rule.needs.filter((n) => isConfigured(n) && !selection.has(n))
+
+    /*
+      A rule is AVAILABLE only if something it reads actually RAN.
+
+      Counting the exclusions separately is not enough. A rule reading two
+      checks — one with no provider, one the analyst deselected — matched
+      neither "all unconfigured" nor "all unselected", so it reported
+      AVAILABLE and contributed zero points. Zero from a rule that looked
+      and zero from a rule that never looked are the same number and mean
+      opposite things.
+
+      r13 (adverse news + court records) hit exactly this the moment court
+      gained a provider: news is still a hook, court is real but often
+      unticked, so the rule claimed to be participating while reading
+      nothing. The backend was fixed; this copy was not, and the two have
+      disagreed on every vendor since.
+    */
+    const ran = rule.needs.filter((n) => isConfigured(n) && selection.has(n))
 
     let state: LedgerLine['state'] = 'available'
     let applied = false
 
     if (unconfigured.length === rule.needs.length) {
       state = 'not_configured'
-    } else if (unselected.length === rule.needs.length) {
+    } else if (ran.length === 0) {
+      // Something exists, but none of it ran.
       state = 'not_selected'
     } else {
       try {
