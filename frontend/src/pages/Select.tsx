@@ -747,8 +747,24 @@ function ParamField({
     Not an error — nothing is broken and the run succeeds. Just the
     truth, stated under the field.
   */
+  /*
+    Shown under the CIN BOX, not under the select.
+
+    It was under the select at first, which is where the overridden value
+    lives — but the sentence is about the identifier, the select sits in a
+    narrow column beside it, and a reader looking at the thing they typed
+    found nothing there. Put it where the subject is.
+
+    So it is computed from the CIN field's own side of the pair: what was
+    typed here, against whatever the select currently holds.
+  */
+  const chosenIdType =
+    param.key === 'cin' ? String(inputValue(vendor, checkId, 'idType') || '') : ''
   const idTypeIgnored =
-    derivedIdType !== null && local !== '' && local !== derivedIdType
+    param.key === 'cin' &&
+    local.trim() !== '' &&
+    chosenIdType !== '' &&
+    chosenIdType !== detectIdType(local)
 
   const write = async (value: string) => {
     setLocal(value)
@@ -785,8 +801,9 @@ function ParamField({
             : problem
               ? problem.message
               : idTypeIgnored
-                ? `This looks like a ${derivedIdType!.toUpperCase()}. ` +
-                  `"${local}" will be ignored and the source asked to detect it.`
+                ? `Identifier type is set to "${chosenIdType}", but this looks ` +
+                  `like a ${detectIdType(local).toUpperCase()}. The setting will be ` +
+                  `ignored and the source asked to detect it.`
                 : rule?.example
                   ? `e.g. ${rule.example}`
                   : undefined
