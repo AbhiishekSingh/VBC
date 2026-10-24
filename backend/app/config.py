@@ -231,6 +231,23 @@ class Settings(BaseSettings):
     #: refused — so a misconfigured staging box cannot spend real money.
     allow_paid_calls: bool = False
 
+    # --- prepaid balance watch ------------------------------------------
+    #
+    # Checked nightly against FileSure's FREE /v1/account/usage endpoint,
+    # so the platform finds an empty wallet before an analyst does.
+    #
+    #: Below this, FileSure is marked unavailable for everybody. ₹5 is the
+    #: price of the ordinary reads — master, resolve, filings, director
+    #: profile — so under it almost nothing can run, and a part-finished
+    #: run is worse than one that never started: half a vendor file looks
+    #: like a complete one unless somebody reads every status.
+    filesure_balance_floor_paisa: int = 500
+    #: Below this the nightly job writes a warning to the audit log and
+    #: changes nothing else. ₹500 is about two unlocks plus a day of reads
+    #: — enough warning to pay an invoice during working hours instead of
+    #: at the moment a client is waiting.
+    filesure_balance_low_paisa: int = 50_000
+
     # --- app -----------------------------------------------------------
     cors_origins: str = "http://localhost:5173"
 

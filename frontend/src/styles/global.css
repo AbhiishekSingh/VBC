@@ -384,6 +384,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .chip.c-auto  { background: var(--accent-wash); color: var(--accent-ink); border-color: var(--accent); }
 .chip.c-human { background: var(--surface-3); color: var(--ink-2); }
 .chip.c-hook  { background: var(--unchecked-wash); color: var(--unchecked); border-style: dashed; }
+/* A source that is configured but is refusing our account right now.
+   WARN, never adverse: nothing is wrong with the vendor, and a red chip
+   on this screen would read as a finding about them. */
+.chip.c-warn  { background: var(--warn-wash); color: var(--warn); border-color: var(--warn); }
 
 /* Rating marks carried meaning in colour alone — a 7px circle in green,
    amber or red with no shape or letter, and the "not applicable" case had
@@ -1154,6 +1158,10 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .check-row.is-on { background: var(--accent-soft); border-color: var(--accent-wash); }
 .check-row.is-off { opacity: .55; }
 .check-row.is-pending { opacity: .7; }
+/* A check whose source is refusing our account. Dimmed, but NOT hidden
+   and not as faint as .is-off: the analyst has to be able to read why,
+   and the reason sits inside this row. */
+.check-row.is-unavailable { opacity: .72; background: var(--warn-wash); }
 .check-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 .check-cost {
   flex: none; text-align: right; display: flex; flex-direction: column;

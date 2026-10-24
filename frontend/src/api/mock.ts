@@ -460,4 +460,22 @@ export const mockApi: VbcApi = {
   async listCostReference() {
     return latency(COST_REFERENCE)
   },
+
+  /**
+   * Every source live, nothing blocked.
+   *
+   * The mock exists so the screens can be clicked through without a
+   * backend, and a source blocked here would make Step 2 look broken to
+   * anyone doing that. An outage is real-account state; it has no
+   * meaning in a fixture.
+   */
+  async listProviderStatus() {
+    return latency([
+      { provider: 'filesure', configured: true, blocked: false },
+      { provider: 'whoisxml', configured: true, blocked: false },
+      { provider: 'ecourts', configured: true, blocked: false },
+      { provider: 'finagg', configured: true, blocked: false },
+      { provider: 'archive', configured: true, blocked: false },
+    ])
+  },
 }

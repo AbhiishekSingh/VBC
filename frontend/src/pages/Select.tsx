@@ -79,10 +79,18 @@ function dependentsOf(checkId: string): string[] {
   return CHECKS.filter((c) => (c.requires as readonly string[]).includes(checkId)).map((c) => c.id)
 }
 
-/** A selectable check is one with a provider behind it. */
-const isSelectable = (id: string): boolean => {
+/**
+ * A selectable check is one with a source behind it that is answering.
+ *
+ * `blocked` is a map of source name to the source's own error text, built
+ * from /providers. It is deliberately a parameter rather than module
+ * state: a stale copy of "which sources are down" is worse than none,
+ * because it silently drops checks the analyst chose.
+ */
+const isSelectable = (id: string, blocked?: ReadonlyMap<string, string>): boolean => {
   const def = CHECKS.find((c) => c.id === id)
-  return !!def && def.state !== 'not_configured' && !def.always
+  if (!def || def.state === 'not_configured' || def.always) return false
+  return !blocked?.has(def.provider)
 }
 
 /** Names rather than raw ids — "needs mca, dirs" told nobody anything. */
@@ -104,6 +112,56 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const selected = vendor.selected
+
+  /*
+    WHICH SOURCES ARE REFUSING OUR ACCOUNT RIGHT NOW.
+
+    We buy these checks on prepaid accounts. When one runs out, every
+    check against it fails the same way — and without this, each analyst
+    learns that separately: the first from a failed run, and so does the
+    tenth, each having waited on a call that could not succeed with a
+    client on the other side of it.
+
+    The server records the first refusal and reports it here. The reason
+    shown is the SOURCE'S OWN SENTENCE, never ours: one of them returns
+    an empty balance, a revoked key and a blocked IP under a single
+    status code, so a message we wrote would send the wrong person to
+    the wrong place most of the time.
+
+    A failure to load this is silent and leaves the map EMPTY. Not
+    knowing which sources are down must never hide checks that work —
+    worst case the analyst meets the error the old way, which is where
+    this screen started.
+  */
+  const [blocked, setBlocked] = useState<ReadonlyMap<string, string>>(new Map())
+
+  useEffect(() => {
+    let live = true
+    api
+      .listProviderStatus()
+      .then((rows) => {
+        if (!live) return
+        setBlocked(
+          new Map(
+            rows
+              .filter((r) => r.blocked)
+              .map((r) => [r.provider, r.blockedReason || 'No reason was returned.']),
+          ),
+        )
+      })
+      .catch(() => {
+        /* see above: an empty map is the safe failure */
+      })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  /** The source's own words for why this check cannot run, or null. */
+  const blockedReason = (checkId: string): string | null => {
+    const def = CHECKS.find((c) => c.id === checkId)
+    return (def && blocked.get(def.provider)) || null
+  }
 
   /**
    * One write for any selection change, whether it came from a single
@@ -131,6 +189,10 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const toggle = async (checkId: string) => {
     const def = CHECKS.find((c) => c.id === checkId)
     if (!def || def.state === 'not_configured' || def.always) return
+    // Switching OFF a blocked check is always allowed — it is the only
+    // way out of a selection made before the source went down. Switching
+    // one ON is not: the call cannot be made.
+    if (!selected.includes(checkId) && blocked.has(def.provider)) return
 
     let next: string[]
     if (selected.includes(checkId)) {
@@ -157,7 +219,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   /** Every check in a group, on or off, in one write. */
   const toggleGroup = async (groupId: string, on: boolean) => {
-    const ids = CHECKS.filter((c) => c.group === groupId && isSelectable(c.id)).map((c) => c.id)
+    const ids = CHECKS.filter((c) => c.group === groupId && isSelectable(c.id, blocked)).map((c) => c.id)
     if (!ids.length) return
 
     let next: string[]
@@ -178,7 +240,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
   /** Presets. Each is a whole selection, applied in one write. */
   const applyPreset = async (preset: 'all' | 'none' | 'free' | 'essential') => {
-    const selectable = CHECKS.filter((c) => isSelectable(c.id))
+    const selectable = CHECKS.filter((c) => isSelectable(c.id, blocked))
     let ids: string[] = []
     if (preset === 'all') ids = selectable.map((c) => c.id)
     if (preset === 'none') ids = []
@@ -384,7 +446,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     return true
   }
 
-  const selectableTotal = CHECKS.filter((c) => isSelectable(c.id)).length
+  const selectableTotal = CHECKS.filter((c) => isSelectable(c.id, blocked)).length
   const filtering = query.trim() !== '' || filter !== 'all'
 
   return (
@@ -405,6 +467,31 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
             Nothing was recorded against this vendor. Selections are unchanged — fix the cause
             and run again.
           </div>
+        </Callout>
+      )}
+
+      {/*
+        One line at the top, so nobody has to scroll eight groups to find
+        out why a familiar check is greyed out. Counted by SOURCE, not by
+        check: "11 checks unavailable" reads like eleven separate faults
+        when it is one account that needs paying.
+      */}
+      {blocked.size > 0 && (
+        <Callout
+          kind="warn"
+          title={
+            blocked.size === 1
+              ? 'One data source is not answering'
+              : `${blocked.size} data sources are not answering`
+          }
+        >
+          Their checks are switched off below and will not be charged for. What
+          the source said:
+          <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
+            {Array.from(blocked.values()).map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
         </Callout>
       )}
 
@@ -532,7 +619,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
         // While filtering, a group with no matches is noise.
         if (filtering && !visible.length) return null
 
-        const selectable = groupChecks.filter((c) => isSelectable(c.id))
+        const selectable = groupChecks.filter((c) => isSelectable(c.id, blocked))
         const on = groupChecks.filter((c) => selected.includes(c.id)).length
         const allOn = selectable.length > 0 && selectable.every((c) => selected.includes(c.id))
         const someOn = on > 0 && !allOn
@@ -588,6 +675,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                     const isOn = selected.includes(check.id)
                     const isPending = pending.includes(check.id)
                     const params = check.params ?? []
+                    const unavailable = blockedReason(check.id)
 
                     return (
                       <div
@@ -595,7 +683,8 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                         className={
                           'check-row' +
                           (isOn ? ' is-on' : '') +
-                          (isPending ? ' is-pending' : '')
+                          (isPending ? ' is-pending' : '') +
+                          (unavailable ? ' is-unavailable' : '')
                         }
                       >
                         <div className="check-main">
@@ -603,11 +692,15 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                             <input
                               type="checkbox"
                               checked={isOn}
-                              disabled={check.always || isPending}
+                              // A blocked check already selected stays
+                              // tickable, so it can be switched OFF. Only
+                              // turning one ON is refused, by `toggle`.
+                              disabled={check.always || isPending || (!!unavailable && !isOn)}
                               onChange={() => void toggle(check.id)}
                             />
                             <span className="cell-strong">{check.name}</span>
                             {isPending && <span className="spinner" aria-hidden="true" />}
+                            {unavailable && <span className="chip c-warn">Unavailable</span>}
                             {check.always && <span className="chip">Always runs · free</span>}
                             {check.requires.length > 0 && (
                               <span
@@ -622,6 +715,20 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
                           <span className="small muted">{check.note}</span>
                           {/* <span className="small mono muted">{check.endpoint}</span> */}
+
+                          {/*
+                            THE SOURCE'S OWN SENTENCE, verbatim. Not a
+                            rewrite of it, and not a generic "temporarily
+                            unavailable" — the whole value of this line
+                            is that it says which of several quite
+                            different things has gone wrong, so whoever
+                            reads it knows who has to fix it.
+                          */}
+                          {unavailable && (
+                            <span className="small warn-text">
+                              Not running: {unavailable}
+                            </span>
+                          )}
 
                           {isOn && params.length > 0 && (
                             <div className="check-params">

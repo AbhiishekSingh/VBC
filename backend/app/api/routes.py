@@ -44,7 +44,7 @@ from app.db.session import get_session
 from app.domain.policy import DEFAULT_POLICY, Verdict, apply_policy
 from app.domain.validation import blocking, check_value
 from app.domain.scoring import score_scan, score_surveillance
-from app.services import auth, documents
+from app.services import auth, documents, provider_state
 from app.services.runner import CheckRunner
 
 logger = logging.getLogger(__name__)
@@ -807,15 +807,39 @@ def cost_reference():
 
 
 @router.get("/providers", response_model=list[s.ProviderStatusOut])
-def provider_status():
-    """Which providers are actually live.
+def provider_status(session: Session = Depends(get_session)):
+    """Which providers are actually live, and which are refusing us.
 
     Said plainly, because a check that cannot run must never be mistaken
     for one that ran and found nothing.
+
+    TWO DIFFERENT THINGS ARE REPORTED HERE, and conflating them is how an
+    analyst ends up waiting on a call that cannot succeed:
+
+        configured   a key is set. Decided by the environment, static for
+                     the life of the process.
+        blocked      the provider is refusing the ACCOUNT right now — an
+                     empty balance, a revoked key, an IP that is not on
+                     the allowlist. Read from `provider_outages`, which
+                     the runner writes the first time anybody hits it.
+
+    A provider can be perfectly configured and blocked, which is the
+    normal shape of a prepaid account that has run dry.
+
+    `blockedReason` is the provider's own sentence, stored verbatim.
+    Writing our own would be wrong most of the time: WhoisXML returns all
+    three of the causes above behind a single 403, and each one needs a
+    different person to do something different.
+
+    ecourts and finagg were missing from this list entirely until the
+    outage work — two live paid accounts with no way for a screen to ask
+    about them.
     """
     settings = get_settings()
     unconfigured = sum(1 for c in CHECKS if not c.is_configured)
-    return [
+    outages = provider_state.open_outages(session)
+
+    rows = [
         {
             "provider": "filesure",
             "configured": settings.filesure_configured,
@@ -838,6 +862,24 @@ def provider_status():
             ),
         },
         {
+            "provider": "ecourts",
+            "configured": settings.ecourts_configured,
+            "note": (
+                "Live. Prepaid wallet — court searches stop the moment it empties."
+                if settings.ecourts_configured
+                else "No key set. Litigation checks report not_configured."
+            ),
+        },
+        {
+            "provider": "finagg",
+            "configured": settings.finagg_configured,
+            "note": (
+                "Live. Prepaid wallet."
+                if settings.finagg_configured
+                else "No key set. GST checks report not_configured."
+            ),
+        },
+        {
             "provider": "archive",
             "configured": True,
             "note": "Free, no key required.",
@@ -851,6 +893,18 @@ def provider_status():
             ),
         },
     ]
+
+    for row in rows:
+        outage = outages.get(row["provider"])
+        if outage is None:
+            continue
+        row["blocked"] = True
+        row["blockedReason"] = outage.provider_message
+        row["blockedStatus"] = outage.http_status
+        row["blockedSince"] = (
+            outage.started_at.isoformat() if outage.started_at else None
+        )
+    return rows
 
 
 @router.get("/catalog")

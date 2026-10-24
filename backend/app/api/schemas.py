@@ -245,3 +245,22 @@ class ProviderStatusOut(ApiModel):
     configured: bool
     sandbox: bool = False
     note: str = ""
+
+    #: True when the provider is refusing OUR ACCOUNT — an empty balance, a
+    #: revoked key, an IP that is not allowlisted. Distinct from
+    #: `configured`, which only says whether a key was set: a provider can
+    #: be perfectly configured and still blocked.
+    blocked: bool = False
+
+    #: The provider's OWN sentence, verbatim, never ours. WhoisXML returns
+    #: an empty balance, a bad key and a blocked IP under one 403, and each
+    #: needs a different person to act. A fixed message of ours would send
+    #: the wrong person to the wrong place two times in three.
+    blockedReason: str = ""
+
+    #: ISO-8601. Answers "has this just happened, or has it been like this
+    #: all morning" without a trip to the audit log.
+    blockedSince: str | None = None
+
+    #: 401, 402 or 403 — which the provider actually returned.
+    blockedStatus: int | None = None

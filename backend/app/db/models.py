@@ -791,3 +791,88 @@ class FieldVisit(Base):
     pct: Mapped[float | None] = mapped_column(Numeric(5, 1), nullable=True)
     gate_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     filed_at: Mapped[datetime] = created_at()
+
+
+class ProviderOutage(Base):
+    """A provider that cannot be called until somebody attends to the account.
+
+    WHY THIS IS STORED RATHER THAN DETECTED EACH TIME
+    -------------------------------------------------
+    When a provider's balance runs out, every check against it fails the
+    same way. Without a record, each analyst discovers that separately:
+    the first learns it from a failed run, and so does the tenth, each
+    having waited for a call that was never going to succeed.
+
+    One row here means ONE person meets the error. Everyone after them sees
+    those checks marked unavailable before they select anything, with the
+    reason, and no further calls go out.
+
+    ``provider_message`` IS THE PROVIDER'S OWN TEXT, never ours. An account
+    can be refused for insufficient balance, a revoked key, or an IP that
+    is not allowlisted — WhoisXML returns all three under one 403 — and a
+    fixed message of ours would send the wrong person to the wrong place.
+    Whatever the provider said is what is shown.
+
+    Cleared automatically by the next successful call to that provider, so
+    topping up the balance needs no second action. Kept after clearing:
+    these rows are the record of how long a provider was down and why,
+    which is the question asked after a client complains.
+    """
+
+    __tablename__ = "provider_outages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    #: "filesure", "whoisxml", "finagg", "ecourts" — matches Provider.value.
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    #: The HTTP status that triggered it: 401, 402 or 403.
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: Verbatim from the provider. The whole point of the row.
+    provider_message: Mapped[str] = mapped_column(Text, nullable=False)
+
+    #: Which check and vendor hit it first — the one person who did meet
+    #: the error, so the trail shows where it came from.
+    detected_on_check: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detected_on_vendor: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    #: "run" when an analyst's check hit it, "balance_check" when the
+    #: nightly job found it before anyone did.
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="run")
+
+    started_at: Mapped[datetime] = created_at()
+    cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    #: When this provider was last actually tried while blocked.
+    #:
+    #: Without this the block would be permanent: once nothing calls the
+    #: provider, nothing can discover it is working again, and topping up
+    #: the balance would fix nothing until somebody edited the database.
+    #: Every so often one check is let through as a probe. It succeeds and
+    #: the outage clears, or it fails and the clock restarts — at most one
+    #: wasted call per cool-off window, for every provider together.
+    last_probe_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # One OPEN outage per provider. A partial index rather than a plain
+        # unique: closed rows accumulate on purpose, as the outage history.
+        Index(
+            "uq_provider_outage_open",
+            "provider",
+            unique=True,
+            postgresql_where=text("cleared_at IS NULL"),
+            # Local development runs on SQLite, which supports partial
+            # indexes too. Without this dialect spelling the index would
+            # be plain-unique there and the SECOND outage for a provider
+            # would fail to insert — a difference between dev and
+            # production in exactly the code path that only runs when
+            # something is already wrong.
+            sqlite_where=text("cleared_at IS NULL"),
+        ),
+        Index("ix_provider_outage_started", "started_at"),
+    )
