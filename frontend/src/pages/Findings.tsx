@@ -131,20 +131,62 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
   const [open, setOpen] = useState<Set<string>>(() => new Set())
   const [copied, setCopied] = useState<string | null>(null)
 
-  const toggleOne = (id: string) =>
-    setOpen((prev) => {
+  /*
+    THE RAW PAYLOAD IS COLLAPSED BY DEFAULT.
+
+    It used to print the moment a check was expanded — sixteen kilobytes
+    of provider JSON under a readable six-row summary, so the facts the
+    analyst came for scrolled off the top the instant they opened
+    anything, and a screen that reads as professional turned into a
+    terminal dump.
+
+    Collapsing it is a presentation choice, NOT a disclosure one. The
+    provenance line above stays visible on every check, "Copy JSON" still
+    works without opening anything, and the button says plainly that the
+    bytes are there. The evidence is one click away rather than in your
+    face — which is the right order, because the summary is what is read
+    and the payload is what makes the reading defensible. Those are
+    different jobs and they do not deserve equal space.
+
+    Separate from `open`: a reader comparing two sources wants both
+    summaries side by side, and almost never wants both raw dumps.
+  */
+  const [rawOpen, setRawOpen] = useState<Set<string>>(() => new Set())
+
+  const toggleRaw = (id: string) =>
+    setRawOpen((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
 
-  const toggleGroup = (ids: string[], expand: boolean) =>
+  const toggleOne = (id: string) => {
+    // Closing a check also closes its payload, so reopening starts on the
+    // summary rather than halfway down a JSON dump left open ten minutes
+    // ago.
+    setRawOpen((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+    setOpen((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleGroup = (ids: string[], expand: boolean) => {
+    if (!expand) setRawOpen(() => new Set())
     setOpen((prev) => {
       const next = new Set(prev)
       ids.forEach((id) => (expand ? next.add(id) : next.delete(id)))
       return next
     })
+  }
 
   const copy = (id: string, text: string) => {
     void navigator.clipboard?.writeText(text).then(
@@ -356,17 +398,43 @@ export default function Findings({ vendor, setPrimary }: PageProps) {
                             {typeof result.costPaisa === 'number' && result.costPaisa > 0 && (
                               <span>₹{(result.costPaisa / 100).toFixed(2)}</span>
                             )}
-                            <span>{formatBytes(panel.text)}</span>
-                            <button
-                              type="button"
-                              className="btn sm ghost"
-                              onClick={() => copy(check.id, panel.text)}
-                            >
-                              {copied === check.id ? 'Copied' : 'Copy JSON'}
-                            </button>
+                            {/* No size, no buttons when there is no payload.
+                                The placeholder is a sentence saying nothing
+                                was stored; offering "View JSON" on it, and a
+                                byte count for our own apology text, invites
+                                a click that can only disappoint. The warning
+                                to its left is the whole message. */}
+                            {panel.isReal && (
+                              <>
+                                <span>{formatBytes(panel.text)}</span>
+                                {/* Copy does NOT require opening. Someone
+                                    sending a payload to whoever maintains an
+                                    adapter has no reason to read it first. */}
+                                <button
+                                  type="button"
+                                  className="btn sm ghost"
+                                  onClick={() => copy(check.id, panel.text)}
+                                >
+                                  {copied === check.id ? 'Copied' : 'Copy JSON'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn sm ghost"
+                                  aria-expanded={rawOpen.has(check.id)}
+                                  aria-controls={`raw-${check.id}`}
+                                  onClick={() => toggleRaw(check.id)}
+                                >
+                                  {rawOpen.has(check.id) ? 'Hide JSON' : 'View JSON'}
+                                </button>
+                              </>
+                            )}
                           </span>
                         </div>
-                        <pre className="raw raw-panel">{panel.text}</pre>
+                        {panel.isReal && rawOpen.has(check.id) && (
+                          <pre className="raw raw-panel" id={`raw-${check.id}`}>
+                            {panel.text}
+                          </pre>
+                        )}
                       </div>
                     )}
                   </div>
