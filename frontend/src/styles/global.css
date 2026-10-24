@@ -1202,6 +1202,39 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   margin-inline: auto;
 }
 
+/* ONE TYPEFACE IN THE DOCUMENT.
+   ---------------------------------------------------------------------
+   The report mixed two. Identifiers — the CIN, GST, PAN, domain and the
+   report reference — were set in the mono face while everything around
+   them was sans, so a client's printed PDF carried typewriter text inside
+   a set of otherwise ordinary rows. On a screen full of payloads that
+   distinction earns its keep; on a deliverable it just looks unfinished.
+
+   This overrides every descendant, so a component that brings its own
+   `.mono` into the document cannot reintroduce the mix. It is scoped to
+   `.doc`, which is the printed article and nothing else — the Findings
+   payload viewer and every other mono surface in the app are untouched.
+
+   `tabular-nums` below is what the mono face was really providing:
+   identifiers of equal length still line up down the column, without the
+   typewriter look. */
+.doc, .doc * { font-family: var(--font-sans); }
+.doc .mono,
+.doc .doc-ref-row b,
+.doc .doc-foot-ref {
+  /* Repeated here, not left to `.doc *` above: `.doc-ref-row b` is a
+     class plus an element and so outranks a class plus the universal
+     selector. Without this line the report reference stayed mono while
+     everything beside it changed, which is the mix this rule exists to
+     end. */
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+  /* `.mono` also shrinks a step. Inside a definition list beside
+     full-size values that read as a second inconsistency. */
+  font-size: inherit;
+}
+
 .doc-head {
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: var(--space-6); flex-wrap: wrap;
