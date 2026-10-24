@@ -873,8 +873,19 @@ def provider_status(session: Session = Depends(get_session)):
         {
             "provider": "finagg",
             "configured": settings.finagg_configured,
+            # Sandbox is reported here for the same reason /health reports
+            # it: a green run against a sandbox host is not evidence the
+            # live path works. This row said "Live. Prepaid wallet." while
+            # /health said "sandbox" for the same settings — the two
+            # endpoints contradicting each other about whether a source
+            # can produce real data, which is the exact confusion this
+            # platform exists to prevent.
+            "sandbox": settings.finagg_configured and settings.finagg_is_sandbox,
             "note": (
-                "Live. Prepaid wallet."
+                "Sandbox host — responses are fixtures, not the GST portal. "
+                "Not evidence the live path works."
+                if settings.finagg_configured and settings.finagg_is_sandbox
+                else "Live. Prepaid wallet."
                 if settings.finagg_configured
                 else "No key set. GST checks report not_configured."
             ),
