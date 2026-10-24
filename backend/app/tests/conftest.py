@@ -37,6 +37,11 @@ VENDOR_TABLES = (
     # second test to create CL000001 or US000001 failed on a duplicate key —
     # which looks like a bug in the code under test rather than in cleanup.
     "sessions", "users", "clients",
+    # Provider outages are GLOBAL, not per-vendor, so one left behind by
+    # a test blocks that provider for every test after it — and the
+    # symptom, "the check did not run", reads like a bug in the runner
+    # rather than like dirty state.
+    "provider_outages",
 )
 
 

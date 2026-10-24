@@ -20,7 +20,13 @@
  */
 
 import type { AuditEntry, Client, ManualEntry, User, Vendor } from '@/types/domain'
-import type { ClientInput, DecisionInput, RunChecksResult, VbcApi } from './contract'
+import type {
+  ClientInput,
+  DecisionInput,
+  ProviderStatus,
+  RunChecksResult,
+  VbcApi,
+} from './contract'
 
 const BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -300,6 +306,8 @@ export const httpApi: VbcApi = {
 
   listCostReference: () =>
     request<{ group: string; item: string; unit: string; source: string }[]>('/cost-reference'),
+
+  listProviderStatus: () => request<ProviderStatus[]>('/providers'),
 }
 
 export { ApiError }

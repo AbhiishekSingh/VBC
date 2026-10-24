@@ -37,6 +37,20 @@ class ProviderError(Exception):
     #: When true, a retry might succeed.
     transient = False
 
+    #: The HTTP status that caused it, when there was one.
+    #:
+    #: Carried on the exception rather than parsed back out of the
+    #: message, because the message is the PROVIDER'S text and parsing it
+    #: would make our handling depend on their wording. The outage table
+    #: stores this verbatim alongside the message so "403" and "402" can
+    #: be told apart without reading English.
+    status: int | None = None
+
+    def __init__(self, *args, status: int | None = None):
+        super().__init__(*args)
+        if status is not None:
+            self.status = status
+
 
 class ProviderUnavailable(ProviderError):
     """The provider could not be reached, or failed after every retry."""
@@ -77,6 +91,39 @@ class ProviderOutOfCredits(ProviderRejected):
     """
 
     transient = False
+
+
+class ProviderAccountBlocked(ProviderRejected):
+    """The provider refused the ACCOUNT, not the request. HTTP 401 or 403.
+
+    Sibling of ``ProviderOutOfCredits``, and separated for the same reason:
+    nothing about this is specific to the vendor being checked, so every
+    other check against the same provider will fail identically until
+    somebody attends to the account.
+
+    WhoisXML is why this exists as its own class. It does not answer 402
+    when the credits run out — it answers 403 with
+
+        Access restricted. Reasons: insufficient credits balance,
+        incorrect API key, or your IP address is not added to the
+        IP allowlist
+
+    which is three different problems behind one status code. Which one it
+    is does not change the response: stop calling, and tell somebody. The
+    provider's own words are carried through verbatim so the person reading
+    the screen can tell which of the three it was.
+    """
+
+    transient = False
+
+
+#: Statuses that mean "this account cannot call this provider right now".
+#:
+#: Deliberately short. A 404 is about one company, a 429 passes on its own,
+#: a 500 is the provider's bad afternoon — none of them say anything about
+#: the other checks, and treating them as account failures would let one
+#: bad CIN blank fourteen working checks.
+ACCOUNT_LEVEL_STATUSES = frozenset({401, 402, 403})
 
 
 class ProviderParseGap(ProviderError):
@@ -256,7 +303,19 @@ class HttpProvider:
                     f"{self.name}: out of credits — {detail}. The call was "
                     f"never made and nothing was charged. Top the account "
                     f"up and re-run; this is an account problem, not a "
-                    f"finding about the vendor."
+                    f"finding about the vendor.",
+                    status=402,
+                )
+
+            if response.status_code in (401, 403):
+                # The ACCOUNT was refused, not the request. Raised apart
+                # from a plain rejection so the runner can stop the other
+                # checks for this provider instead of failing each one in
+                # turn and charging for the attempts.
+                raise ProviderAccountBlocked(
+                    f"{self.name}: HTTP {response.status_code} — "
+                    f"{self._error_detail(response)}",
+                    status=response.status_code,
                 )
 
             if response.status_code >= 400:

@@ -56,6 +56,7 @@ from app.domain.types import CheckStatus
 from app.providers import archive as archive_mod
 from app.providers import factsets
 from app.services import documents as docs
+from app.services import provider_state
 from app.providers import filesure as fs_mod
 from app.providers import ecourts as ec_mod
 from app.providers import finagg as fa_mod
@@ -65,6 +66,7 @@ from app.providers import whoisxml as wx_mod
 from app.providers.base import (
     NotConfigured,
     PaidCallRefused,
+    ProviderAccountBlocked,
     ProviderError,
     ProviderOutOfCredits,
     ProviderParseGap,
@@ -157,11 +159,40 @@ class Finding:
     cost_paisa: int = 0
     credits: int = 0
     error: str | None = None
+    #: Set when the provider refused the ACCOUNT rather than the request
+    #: (401/402/403) — the provider's own words, verbatim. Carried on the
+    #: finding rather than written to ``provider_outages`` on the spot
+    #: because checks run in a thread pool and one SQLAlchemy Session is
+    #: not safe across threads. ``run`` reconciles it once the pool has
+    #: joined; nothing is visible to other sessions before the commit at
+    #: the end of the run either way, so nothing is lost by waiting.
+    account_blocked: str | None = None
+    account_blocked_status: int | None = None
     #: Stamped at CONSTRUCTION — when the provider returned, not when the
     #: row was written. The parallel block runs nine checks over tens of
     #: seconds. Application clock, not SQL now(), which is TRANSACTION START
     #: time and would stamp every row with the second the run began.
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+#: Providers that are not outside accounts and so can never be "blocked":
+#: in-house derivations and checks with no provider at all.
+_NOT_AN_ACCOUNT = frozenset({"in_house", "none", ""})
+
+
+def _provider_of(check_id: str) -> str | None:
+    """The outside account a check spends against, or None.
+
+    One spelling of the provider name, taken from the catalog, used by the
+    outage table, the runner and the API. If the runner recorded
+    "filesure" and the API asked about "FileSure", a blocked provider
+    would stay invisible on the screen that exists to show it.
+    """
+    definition = CHECKS_BY_ID.get(check_id)
+    if definition is None:
+        return None
+    provider = getattr(definition.provider, "value", "")
+    return None if provider in _NOT_AN_ACCOUNT else provider
 
 
 def _first_cnr(prior: dict) -> str | None:
@@ -307,6 +338,9 @@ class CheckRunner:
                 continue
             runnable.append(check_id)
 
+        # --- providers already known to be refusing this account ---------
+        runnable = self._hold_blocked_providers(runnable, result)
+
         # --- STEP 1: resolve identity when no CIN was supplied -----------
         cin = vendor.cin
         if not cin and "resolve" in runnable:
@@ -357,6 +391,8 @@ class CheckRunner:
             if check_id in runnable:
                 result.findings.append(self._run_inhouse(check_id, vendor))
 
+        self._settle_provider_state(vendor, result)
+
         self._persist(vendor, result)
         self._audit(
             vendor.id, "RUN_COMPLETE",
@@ -365,6 +401,120 @@ class CheckRunner:
             actor="system",
         )
         return result
+
+    # =================================================================
+    # Provider account state
+    # =================================================================
+
+    def _hold_blocked_providers(
+        self, runnable: list[str], result: RunResult
+    ) -> list[str]:
+        """Drop checks whose provider is already refusing this account.
+
+        This is the whole point of the outage table. The first analyst to
+        hit an empty balance waits for a call that cannot succeed; nobody
+        after them does, because their checks are marked here, before any
+        request goes out.
+
+        THE REASON SHOWN IS THE PROVIDER'S OWN SENTENCE, stored when it
+        was first seen. A fixed message of ours would be wrong two times
+        in three: WhoisXML returns an empty balance, a revoked key and a
+        blocked IP under one 403, and each needs a different person.
+
+        ONE check per blocked provider is let through per cool-off window,
+        so a topped-up account recovers by itself. Without that the block
+        would be permanent — nothing calls the provider, so nothing can
+        find out it is working again.
+        """
+        blocked = provider_state.open_outages(self.session)
+        if not blocked:
+            return runnable
+
+        allowed: list[str] = []
+        probing: set[str] = set()
+        for check_id in runnable:
+            provider = _provider_of(check_id)
+            outage = blocked.get(provider) if provider else None
+            if outage is None:
+                allowed.append(check_id)
+                continue
+
+            if provider not in probing and provider_state.due_for_probe(outage):
+                # One call, to find out whether the account is working
+                # again. Marked before it goes out, so a probe that hangs
+                # still moves the clock.
+                provider_state.mark_probed(self.session, outage)
+                probing.add(provider)
+                allowed.append(check_id)
+                continue
+
+            result.findings.append(
+                Finding(
+                    check_id,
+                    CheckStatus.UNAVAILABLE,
+                    "Source unavailable",
+                    f"This source is not answering for our account, so the "
+                    f"check was not run and nothing about this vendor was "
+                    f"examined — this is NOT a clean result. The source "
+                    f"said: {outage.provider_message}",
+                    error=outage.provider_message,
+                )
+            )
+        return allowed
+
+    def _settle_provider_state(self, vendor: Vendor, result: RunResult) -> None:
+        """Open, refresh or close outages from what this run just saw.
+
+        Deferred to here rather than done inside ``_run_one`` because that
+        runs in a thread pool and the Session is not thread-safe. Nothing
+        is visible to anyone else until this run commits, so waiting costs
+        nothing.
+
+        A SUCCESSFUL call clears an open outage, which is what makes
+        topping up a balance sufficient on its own: the probe gets through
+        and the provider reopens for everybody with no second action.
+        """
+        blocked_now: dict[str, Finding] = {}
+        answered: set[str] = set()
+
+        for finding in result.findings:
+            provider = _provider_of(finding.check_id)
+            if not provider:
+                continue
+            if finding.account_blocked:
+                blocked_now.setdefault(provider, finding)
+            elif finding.status.was_examined:
+                # Proof the account works: the provider answered about
+                # this vendor. A 404 does not qualify — it never reaches
+                # here — and neither does a parse gap, which is our fault
+                # and leaves the account's standing unknown.
+                answered.add(provider)
+
+        for provider, finding in blocked_now.items():
+            provider_state.record_outage(
+                self.session,
+                provider,
+                message=finding.account_blocked or "",
+                http_status=finding.account_blocked_status,
+                check_id=finding.check_id,
+                vendor_id=vendor.id,
+                source="run",
+            )
+
+        # A provider that both answered and refused in the same run stays
+        # blocked: the refusal is the newer fact about the account, and a
+        # cached or free endpoint answering proves nothing about the paid
+        # balance.
+        for provider in answered - set(blocked_now):
+            if provider_state.clear_outage(
+                self.session, provider, reason=f"a successful call on {vendor.id}"
+            ):
+                self._audit(
+                    vendor.id,
+                    "PROVIDER_RECOVERED",
+                    f"{provider} answered again during this run; its checks are "
+                    f"available to everyone once more.",
+                )
 
     # =================================================================
     # One check
@@ -391,6 +541,33 @@ class CheckRunner:
                 f"The provider served a sandbox response rather than real data: {exc}. "
                 f"This is not a finding about the vendor.",
                 error=str(exc),
+            )
+        except (ProviderOutOfCredits, ProviderAccountBlocked) as exc:
+            # BEFORE ProviderRejected, which is their parent class. They sat
+            # after it until 24 Oct 2026, so Python matched the parent first
+            # and this branch never ran once — an empty wallet reported
+            # "Provider rejected the call", which is exactly the wording
+            # whose absence cost an hour diagnosing a 40-paisa shortfall on
+            # the eCourts account. The comment claiming the order was right
+            # sat directly above the unreachable code.
+            #
+            # These two say nothing about the vendor and everything about
+            # OUR account, so they are true for every other check against
+            # the same provider. Recorded once, here, so the next analyst
+            # is told before they select anything instead of discovering it
+            # the same way.
+            out_of_credits = isinstance(exc, ProviderOutOfCredits)
+            return Finding(
+                check_id, CheckStatus.UNAVAILABLE,
+                "Provider account out of credits" if out_of_credits
+                else "Provider refused this account",
+                f"{exc} Nothing about this vendor was examined, and this is "
+                f"NOT a clean result — the check simply never ran. Every "
+                f"other check from the same source is now marked unavailable "
+                f"until the account is working again.",
+                error=str(exc),
+                account_blocked=str(exc),
+                account_blocked_status=getattr(exc, "status", None),
             )
         except ProviderRejected as exc:
             return Finding(
@@ -431,22 +608,6 @@ class CheckRunner:
             return Finding(
                 check_id, CheckStatus.UNAVAILABLE, "Source unavailable",
                 f"{exc} — recorded as unexamined, not as a pass.", error=str(exc),
-            )
-        except ProviderOutOfCredits as exc:
-            # Before the generic ProviderError branch — it is a subclass, so
-            # order is what makes this reachable at all.
-            #
-            # Deliberately its own row wording. "Check failed" sent an hour
-            # into diagnosing what turned out to be a 40-paisa shortfall on
-            # the eCourts wallet. The provider is healthy, the vendor is
-            # not implicated, and the fix is a top-up by a person who will
-            # never read a stack trace.
-            return Finding(
-                check_id, CheckStatus.UNAVAILABLE,
-                "Provider account out of credits",
-                f"{exc} Nothing about this vendor was examined, and this is "
-                f"NOT a clean result — the check simply never ran.",
-                error=str(exc),
             )
         except ProviderError as exc:
             return Finding(check_id, CheckStatus.UNAVAILABLE, "Check failed", str(exc),

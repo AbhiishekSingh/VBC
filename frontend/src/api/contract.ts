@@ -28,6 +28,33 @@ export interface DecisionInput {
   overrideReason?: string
 }
 
+/**
+ * One data source, and whether it can be called right now.
+ *
+ * `configured` and `blocked` are DIFFERENT QUESTIONS and the screen must
+ * not merge them. `configured` says a key is set; it is decided by the
+ * server's environment and does not change while the app is open.
+ * `blocked` says the source is refusing our account at this moment — an
+ * empty prepaid balance, a revoked key, an IP that is not allowlisted.
+ * A source can be perfectly configured and blocked, which is the normal
+ * shape of a prepaid account that has run out.
+ *
+ * `blockedReason` is the SOURCE'S OWN SENTENCE, passed through untouched.
+ * One provider returns an empty balance, a bad key and a blocked IP under
+ * a single status code, and each needs a different person to act, so a
+ * message of our own invention would be wrong most of the time.
+ */
+export interface ProviderStatus {
+  provider: string
+  configured: boolean
+  sandbox?: boolean
+  note?: string
+  blocked?: boolean
+  blockedReason?: string
+  blockedSince?: string | null
+  blockedStatus?: number | null
+}
+
 export interface ClientInput {
   name: string
   legalName?: string
@@ -73,4 +100,7 @@ export interface VbcApi {
   listCostReference(): Promise<
     readonly { group: string; item: string; unit: string; source: string }[]
   >
+
+  /** Which sources are live, and which are refusing our account. */
+  listProviderStatus(): Promise<readonly ProviderStatus[]>
 }
