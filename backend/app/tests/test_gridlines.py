@@ -147,6 +147,70 @@ class TestRequestShape:
             "/epfo-api/employment-history/fetch-by-uan")
         assert provider.sent["json"]["uan_number"] == "100123456789"
 
+    # -----------------------------------------------------------------
+    # THE OPTIONAL FIELDS, WHICH THIS ADAPTER GOT WRONG
+    # -----------------------------------------------------------------
+    #
+    # Both were INVENTED here rather than copied, and both were sent on
+    # ordinary calls rather than rare ones. The only evidence anyone has
+    # about what these endpoints accept is the Mobile Intelligence
+    # Suite's `third_party.py`, which is live against this same key and
+    # these same endpoints — so where this adapter disagrees with it,
+    # this adapter is wrong by definition.
+
+    def test_prefill_sends_the_name_FLAT_not_nested(self):
+        """Was `{"name": {"first_name": …, "last_name": …}}`.
+
+        `api_mobile_prefill` sends them at the top level.
+        """
+        provider = _Recorder({"data": {"name": "X"}})
+        provider.mobile_prefill("9876543210", consent="Y",
+                                first_name="RAJESH", last_name="SHARMA")
+        body = provider.sent["json"]
+        assert body["first_name"] == "RAJESH"
+        assert body["last_name"] == "SHARMA"
+        assert "name" not in body, (
+            "a nested name object was this adapter's invention and is not "
+            "what the live integration sends"
+        )
+
+    def test_epfo_member_sends_pan_not_pan_number(self):
+        """Was `pan_number`. `api_epfo_member` sends `pan`.
+
+        Not an edge case: the vendor record usually HAS a PAN, so the
+        wrong spelling was on almost every real request.
+        """
+        provider = _Recorder({"data": {"uan": "100123456789"}})
+        provider.epfo_member("9876543210", consent="Y", pan="abcde1234f")
+        body = provider.sent["json"]
+        assert body["pan"] == "ABCDE1234F"
+        assert "pan_number" not in body
+
+    def test_the_two_uan_spellings_are_NOT_normalised(self):
+        """`epfo_member` takes `pan`; `employment_history` takes
+        `uan_number`. The provider is inconsistent, and making the two
+        agree with each other would break one of them."""
+        one = _Recorder({"data": {"employment_history": [{"x": 1}]}})
+        one.employment_history("100123456789", consent="Y")
+        assert "uan_number" in one.sent["json"]
+
+    def test_the_body_matches_the_live_integration_field_for_field(self):
+        """A bare call — no optional fields — on all four mobile
+        endpoints sends EXACTLY what `third_party.py` sends, and nothing
+        extra. An unexpected key is how a request starts being rejected
+        for a reason the response does not name.
+        """
+        expected = {
+            "mobile_prefill": {"mobile_number": "9876543210", "consent": "Y"},
+            "digital_footprint": {"phone": "9876543210", "consent": "Y"},
+            "address_lookup": {"mobile_number": "9876543210", "consent": "Y"},
+            "epfo_member": {"mobile_number": "9876543210", "consent": "Y"},
+        }
+        for call, body in expected.items():
+            provider = _Recorder({"data": {"uan": "1", "name": "X"}})
+            getattr(provider, call)("9876543210", consent="Y")
+            assert provider.sent["json"] == body, call
+
     def test_no_key_is_not_configured_rather_than_an_error(self):
         """A coverage gap, not a failure. `not_configured` is NOT the same
         as a person having no record, and the screen says so."""
