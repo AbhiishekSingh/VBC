@@ -125,7 +125,7 @@ class TestNightlyCheck:
         session.flush()
 
         assert report["action"] == "blocked"
-        outage = provider_state.open_outages(session)["filesure"]
+        outage = provider_state.open_outages(session)[("filesure", "")]
         assert outage.source == "balance_check"
         assert "₹0.00" in outage.provider_message, (
             "the message has to say what the balance actually is — "
@@ -169,7 +169,7 @@ class TestNightlyCheck:
         session.flush()
 
         assert report["action"] == "blocked"
-        stored = provider_state.open_outages(session)["filesure"]
+        stored = provider_state.open_outages(session)[("filesure", "")]
         assert stored.provider_message == "filesure: wallet is empty", (
             "verbatim — the provider's sentence, not a classification of it"
         )
@@ -215,7 +215,7 @@ class TestNightlyCheck:
         balance_watch.check_filesure(session, _settings())
         session.flush()
 
-        assert "filesure" in provider_state.open_outages(session), (
+        assert ("filesure", "") in provider_state.open_outages(session), (
             "not knowing the balance is not evidence it was paid"
         )
 

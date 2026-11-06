@@ -612,23 +612,111 @@ def directors(rows: list[dict]) -> dict:
     )
 
 
+#: Where a director's name hides, in order of preference.
+#:
+#: ``fullName`` is what the live profile endpoint returns. It was not in
+#: this list until 6 Nov 2026, so every row fell through to the DIN and
+#: the Director column on a client-facing screen read "10946716" instead
+#: of "PARUL AHLAWAT".
+_PERSON_KEYS = ("fullName", "name", "directorName", "full_name")
+
+#: Where a directorship's start date hides. ``roleEffectiveDate`` is what
+#: the live payload carries; the two documented names never appear in it,
+#: so the From column was empty on every real response.
+_FROM_KEYS = (
+    "appointmentDate", "dateOfAppointment",
+    "roleEffectiveDate", "currentDesignationDate",
+)
+
+_COMPANY_KEYS = ("nameOfTheCompany", "companyName", "accountName")
+_CIN_KEYS = ("cin_LLPIN", "cin", "ucin")
+
+
+def _first_value(row: dict, keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _role_date(value: Any) -> str | None:
+    """A directorship date, rendered.
+
+    Through ``parse_date`` FIRST. ``human_date`` only understands ISO and
+    passes anything else through untouched, so a raw FileSure date would
+    print on an Indian audit report in American order — and this payload
+    proves the order is American: ``cessationDate: "05/27/2026"`` cannot
+    be day-first, because there is no twenty-seventh month.
+    """
+    return F.human_date(parse_date(value))
+
+
+def _directorship_rows(profile: dict, person: str) -> list[dict]:
+    """Every directorship on one profile — current AND ended.
+
+    THE SECOND BLOCK IS THE POINT OF THIS CHECK.
+
+    ``companyData`` holds roles the person currently occupies.
+    ``mcaSignatoryCessationMasterHistory`` holds the ones they have left,
+    with the dates they left on. Reading only the first made `dprof`
+    return exactly what the free `dirs` check already gives — a paid call
+    that added nothing — and, worse, showed a director with a single
+    directorship when the payload in front of it listed three.
+
+    A role someone resigned from, at a company that later failed, is
+    precisely what a vendor audit is for. It was in the response the
+    whole time and was being dropped on the floor.
+    """
+    rows: list[dict] = []
+    seen: set[tuple] = set()
+
+    current = profile.get("companyData") or profile.get("roles") or []
+    history = profile.get("mcaSignatoryCessationMasterHistory") or []
+
+    for source in (current, history):
+        for c in source:
+            if not isinstance(c, dict):
+                continue
+            row = {
+                "person": person,
+                "company": _first_value(c, _COMPANY_KEYS),
+                "cin": _first_value(c, _CIN_KEYS),
+                "role": c.get("designation") or c.get("role"),
+                "from": _role_date(_first_value(c, _FROM_KEYS)),
+                "to": _role_date(c.get("cessationDate")),
+            }
+            # The same role can appear in both blocks. Keyed on all four
+            # identifying fields rather than the company alone, because
+            # one person genuinely holds two roles at one company over
+            # time — Additional Director then Director is the ordinary
+            # progression, and collapsing them would hide a real date.
+            key = (row["cin"], row["role"], row["from"], row["to"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+
 def director_profiles(profiles: list[dict]) -> dict:
-    """Directorships held elsewhere, across every profile fetched.
+    """Every directorship held, across every profile fetched.
 
     ``dirs`` and ``dprof`` describe the same concept through different
     envelopes — ``roles``/``companyName``/``cin`` against
-    ``companyData``/``nameOfTheCompany``/``cin_LLPIN``. Reconciling that is
-    this function's job; the screen must never see both spellings.
+    ``companyData``/``nameOfTheCompany``/``cin_LLPIN``, and a third
+    spelling again in the cessation history. Reconciling that is this
+    function's job; the screen must never see more than one spelling.
     """
     rows: list[dict] = []
     flags: list[dict] = []
 
     for profile in profiles:
-        person = (profile.get("name") or profile.get("directorName")
-                  or profile.get("din") or "—")
+        person = _first_value(profile, _PERSON_KEYS) or profile.get("din") or "—"
         companies = profile.get("companyData") or profile.get("roles") or []
         row_disq = any(
-            str(c.get("isDisqualified") or "").upper() == "Y" for c in companies
+            str(c.get("isDisqualified") or "").upper() == "Y"
+            for c in companies if isinstance(c, dict)
         )
         # A top-level flag with nothing under it to support it is a
         # contradiction in the source, not a finding. It gets surfaced as
@@ -641,23 +729,27 @@ def director_profiles(profiles: list[dict]) -> dict:
                 "disagrees with itself; confirm against the MCA record before "
                 "either reading is used.",
             ))
-        for c in companies:
-            rows.append({
-                "person": person,
-                "company": c.get("nameOfTheCompany") or c.get("companyName"),
-                "cin": c.get("cin_LLPIN") or c.get("cin"),
-                "role": c.get("designation"),
-                "from": F.human_date(c.get("appointmentDate") or c.get("dateOfAppointment")),
-                "to": F.human_date(c.get("cessationDate")),
-            })
+        rows.extend(_directorship_rows(profile, person))
+
+    # Current roles first, then the ended ones most recent first. An
+    # analyst reads the top of a table; what the person does NOW belongs
+    # there, and among what they have left, the recent departures matter
+    # more than one from fifteen years ago.
+    rows.sort(key=lambda r: (bool(r["to"]), r["to"] or "", r["from"] or ""),
+              reverse=False)
 
     active = sum(1 for r in rows if not r["to"])
+    ended = len(rows) - active
     return F.build(
         F.TABLE,
         stats=[
             F.stat("Profiles retrieved", len(profiles)),
             F.stat("Directorships", len(rows)),
             F.stat("Currently active", active),
+            # Shown even at zero. "Past directorships: 0" is a fact about
+            # the person; omitting the tile would make an empty history
+            # indistinguishable from one nobody looked for.
+            F.stat("Ended", ended),
         ],
         rows=F.table(
             [

@@ -117,15 +117,15 @@ class TestExceptionsAreReachable:
 class TestRecording:
     def test_first_refusal_opens_an_outage(self, session):
         provider_state.record_outage(
-            session, "whoisxml",
+            session, "whoisxml", product="whois",
             message="Access restricted. Reasons: insufficient credits balance",
             http_status=403, check_id="whois", vendor_id=None,
         )
         session.flush()
 
         open_now = provider_state.open_outages(session)
-        assert set(open_now) == {"whoisxml"}
-        assert open_now["whoisxml"].http_status == 403
+        assert set(open_now) == {("whoisxml", "whois")}
+        assert open_now[("whoisxml", "whois")].http_status == 403
 
     def test_the_providers_own_words_are_stored_verbatim(self, session):
         """Not paraphrased, not classified, not replaced with 'out of credits'.
@@ -138,10 +138,10 @@ class TestRecording:
             "incorrect API key, or your IP address is not added to the IP "
             "allowlist"
         )
-        provider_state.record_outage(session, "whoisxml", message=message)
+        provider_state.record_outage(session, "whoisxml", product="whois", message=message)
         session.flush()
 
-        stored = provider_state.open_outages(session)["whoisxml"]
+        stored = provider_state.open_outages(session)[("whoisxml", "whois")]
         assert stored.provider_message == message
 
     def test_eight_failing_checks_produce_one_row(self, session):
@@ -165,7 +165,7 @@ class TestRecording:
         )
         session.flush()
 
-        row = provider_state.open_outages(session)["filesure"]
+        row = provider_state.open_outages(session)[("filesure", "")]
         assert row.provider_message == "API key revoked"
         assert row.http_status == 401
         assert session.query(ProviderOutage).count() == 1
@@ -206,7 +206,7 @@ class TestRecording:
         provider_state.record_outage(session, "finagg", message="second")
         session.flush()
 
-        assert provider_state.open_outages(session)["finagg"].provider_message == "second"
+        assert provider_state.open_outages(session)[("finagg", "")].provider_message == "second"
         assert session.query(ProviderOutage).filter_by(provider="finagg").count() == 2
 
 
@@ -218,13 +218,13 @@ class TestProbe:
     def test_a_fresh_outage_is_not_probed_immediately(self, session):
         provider_state.record_outage(session, "filesure", message="empty")
         session.flush()
-        outage = provider_state.open_outages(session)["filesure"]
+        outage = provider_state.open_outages(session)[("filesure", "")]
         assert provider_state.due_for_probe(outage) is False
 
     def test_a_stale_outage_is_probed(self, session):
         provider_state.record_outage(session, "filesure", message="empty")
         session.flush()
-        outage = provider_state.open_outages(session)["filesure"]
+        outage = provider_state.open_outages(session)[("filesure", "")]
 
         later = datetime.now(timezone.utc) + provider_state.PROBE_AFTER + timedelta(minutes=1)
         assert provider_state.due_for_probe(outage, now=later) is True
@@ -232,7 +232,7 @@ class TestProbe:
     def test_marking_a_probe_restarts_the_clock(self, session):
         provider_state.record_outage(session, "filesure", message="empty")
         session.flush()
-        outage = provider_state.open_outages(session)["filesure"]
+        outage = provider_state.open_outages(session)[("filesure", "")]
 
         later = datetime.now(timezone.utc) + provider_state.PROBE_AFTER + timedelta(minutes=1)
         assert provider_state.due_for_probe(outage, now=later) is True
@@ -315,11 +315,24 @@ def _vendor(session, vendor_id: str) -> Vendor:
 
 
 class TestRunnerHoldsBlockedProviders:
-    def test_checks_on_a_blocked_provider_never_leave_the_building(
+    def test_a_dead_pool_does_not_take_its_neighbours_down(
         self, session, seeded
     ):
+        """The case this whole mechanism was re-cut for.
+
+        On 6 Nov 2026 one WhoisXML key returned, in the same minute from
+        the same IP:
+
+            ssl-certificates   200      domain-reputation  200
+            whois-history      403      reverse-whois      403
+
+        The Domain Research Suite subscription had lapsed; the standalone
+        products were fine. Blocking by PROVIDER would have marked `ssl`
+        and `reput` unavailable too — the platform causing a wider outage
+        than the one it exists to prevent.
+        """
         provider_state.record_outage(
-            session, "whoisxml",
+            session, "whoisxml", product="whois",
             message="Access restricted. Reasons: insufficient credits balance",
             http_status=403,
         )
@@ -327,11 +340,37 @@ class TestRunnerHoldsBlockedProviders:
 
         runner = CheckRunner(session)
         result = RunResult(vendor_id="OU0001", spend=runner.spend)
-        allowed = runner._hold_blocked_providers(["whois", "ssl", "master"], result)
+        allowed = runner._hold_blocked_providers(
+            ["whois", "ssl", "reput", "master"], result
+        )
 
-        assert allowed == ["master"], "the FileSure check is untouched"
-        held = {f.check_id for f in result.findings}
-        assert held == {"whois", "ssl"}
+        assert allowed == ["ssl", "reput", "master"], (
+            "the other WhoisXML products answer normally and must keep "
+            "running; only the dead pool is held"
+        )
+        assert [f.check_id for f in result.findings] == ["whois"]
+
+    def test_a_single_wallet_provider_still_blocks_account_wide(
+        self, session, seeded
+    ):
+        """FileSure, eCourts and FinAGG each bill from ONE wallet.
+
+        Splitting those would mean every endpoint discovering an empty
+        wallet separately — the failure the mechanism exists to stop.
+        """
+        provider_state.record_outage(
+            session, "filesure", message="out of credits", http_status=402,
+        )
+        session.flush()
+
+        runner = CheckRunner(session)
+        result = RunResult(vendor_id="OU0001b", spend=runner.spend)
+        allowed = runner._hold_blocked_providers(
+            ["master", "filings", "dirs", "ssl"], result
+        )
+
+        assert allowed == ["ssl"], "every FileSure check is held, WhoisXML is not"
+        assert {f.check_id for f in result.findings} == {"master", "filings", "dirs"}
 
     def test_the_held_check_says_what_the_provider_said(self, session, seeded):
         message = (
@@ -339,7 +378,7 @@ class TestRunnerHoldsBlockedProviders:
             "incorrect API key, or your IP address is not added to the IP "
             "allowlist"
         )
-        provider_state.record_outage(session, "whoisxml", message=message)
+        provider_state.record_outage(session, "whoisxml", product="whois", message=message)
         session.flush()
 
         runner = CheckRunner(session)
@@ -358,9 +397,9 @@ class TestRunnerHoldsBlockedProviders:
         self, session, seeded
     ):
         """Otherwise the block is permanent and topping up fixes nothing."""
-        provider_state.record_outage(session, "whoisxml", message="empty")
+        provider_state.record_outage(session, "whoisxml", product="whois", message="empty")
         session.flush()
-        outage = provider_state.open_outages(session)["whoisxml"]
+        outage = provider_state.open_outages(session)[("whoisxml", "whois")]
         outage.last_probe_at = datetime.now(timezone.utc) - timedelta(hours=2)
         session.flush()
 
@@ -368,11 +407,11 @@ class TestRunnerHoldsBlockedProviders:
         result = RunResult(vendor_id="OU0003", spend=runner.spend)
         allowed = runner._hold_blocked_providers(["whois", "ssl", "master"], result)
 
-        assert allowed == ["whois", "master"], (
-            "exactly one probe for the blocked provider — and the FileSure "
-            "check, which was never blocked, goes through untouched"
+        assert allowed == ["whois", "ssl", "master"], (
+            "the probe goes out for the dead pool, and the two checks that "
+            "were never blocked are untouched"
         )
-        assert [f.check_id for f in result.findings] == ["ssl"]
+        assert result.findings == []
 
     def test_nothing_is_held_when_no_provider_is_blocked(self, session, seeded):
         runner = CheckRunner(session)
@@ -456,13 +495,13 @@ class TestRunnerSettlesProviderState:
         runner._settle_provider_state(vendor, result)
         session.flush()
 
-        outage = provider_state.open_outages(session)["whoisxml"]
+        outage = provider_state.open_outages(session)[("whoisxml", "whois")]
         assert outage.provider_message == "insufficient credits balance"
         assert outage.detected_on_vendor == vendor.id
 
     def test_a_successful_call_clears_an_open_outage(self, session, seeded):
         """What makes topping up a balance sufficient on its own."""
-        provider_state.record_outage(session, "whoisxml", message="empty")
+        provider_state.record_outage(session, "whoisxml", product="whois", message="empty")
         session.flush()
 
         vendor = _vendor(session, "OU0011")
@@ -484,16 +523,43 @@ class TestRunnerSettlesProviderState:
         vendor = _vendor(session, "OU0012")
         runner = CheckRunner(session)
         result = RunResult(vendor_id=vendor.id, spend=runner.spend)
+        # BOTH findings must be on the SAME pool for this to be the
+        # conflict being tested. `whois` and `ssl` are different WhoisXML
+        # products and can legitimately disagree — that is the point of
+        # the change, not a contradiction.
         result.findings.extend([
-            Finding("whois", CheckStatus.PASS, "ok", ""),
-            Finding("ssl", CheckStatus.UNAVAILABLE, "", "",
-                    account_blocked="insufficient credits balance"),
+            Finding("master", CheckStatus.PASS, "ok", ""),
+            Finding("filings", CheckStatus.UNAVAILABLE, "", "",
+                    account_blocked="out of credits"),
         ])
 
         runner._settle_provider_state(vendor, result)
         session.flush()
 
-        assert "whoisxml" in provider_state.open_outages(session)
+        assert ("filesure", "") in provider_state.open_outages(session)
+
+    def test_two_products_of_one_provider_can_disagree(self, session, seeded):
+        """A 403 on one WhoisXML product and a 200 on another is NORMAL.
+
+        It is what the live account actually did on 6 Nov 2026, and the
+        two facts must be recorded independently rather than one
+        overwriting the other.
+        """
+        vendor = _vendor(session, "OU0012b")
+        runner = CheckRunner(session)
+        result = RunResult(vendor_id=vendor.id, spend=runner.spend)
+        result.findings.extend([
+            Finding("ssl", CheckStatus.PASS, "ok", ""),
+            Finding("whois", CheckStatus.UNAVAILABLE, "", "",
+                    account_blocked="Access restricted."),
+        ])
+
+        runner._settle_provider_state(vendor, result)
+        session.flush()
+
+        open_now = provider_state.open_outages(session)
+        assert ("whoisxml", "whois") in open_now
+        assert ("whoisxml", "ssl") not in open_now
 
     def test_an_ordinary_failure_opens_nothing(self, session, seeded):
         """A 404 on one company must not kill every check on that provider."""
@@ -517,7 +583,7 @@ class TestRunnerSettlesProviderState:
         the account — and opening on it would blame the provider for our
         own defect.
         """
-        provider_state.record_outage(session, "whoisxml", message="empty")
+        provider_state.record_outage(session, "whoisxml", product="whois", message="empty")
         session.flush()
 
         vendor = _vendor(session, "OU0014")
@@ -530,7 +596,7 @@ class TestRunnerSettlesProviderState:
         runner._settle_provider_state(vendor, result)
         session.flush()
 
-        assert "whoisxml" in provider_state.open_outages(session)
+        assert ("whoisxml", "whois") in provider_state.open_outages(session)
 
     def test_in_house_findings_are_ignored_entirely(self, session, seeded):
         vendor = _vendor(session, "OU0015")

@@ -45,7 +45,7 @@ from app.domain.policy import DEFAULT_POLICY, Verdict, apply_policy
 from app.domain.validation import blocking, check_value
 from app.domain.scoring import score_scan, score_surveillance
 from app.services import auth, documents, provider_state
-from app.services.runner import CheckRunner
+from app.services.runner import CheckRunner, _checks_in_scope
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -905,16 +905,37 @@ def provider_status(session: Session = Depends(get_session)):
         },
     ]
 
+    # Outages are keyed on the POOL — (provider, product) — because
+    # providers do not all bill the same way. Resolve each one to the
+    # CHECK IDS it covers, so the screen never has to know which
+    # providers have separate pools. Teaching it that would mean a second
+    # copy of the rule, and the two would drift.
     for row in rows:
-        outage = outages.get(row["provider"])
-        if outage is None:
+        provider = row["provider"]
+        covered: dict[str, str] = {}
+        account_wide = None
+        for (outage_provider, product), outage in outages.items():
+            if outage_provider != provider:
+                continue
+            for check_id in _checks_in_scope(outage_provider, product):
+                covered[check_id] = outage.provider_message
+            if not product:
+                account_wide = outage
+        if not covered and account_wide is None:
             continue
-        row["blocked"] = True
-        row["blockedReason"] = outage.provider_message
-        row["blockedStatus"] = outage.http_status
-        row["blockedSince"] = (
-            outage.started_at.isoformat() if outage.started_at else None
-        )
+
+        row["blockedChecks"] = covered
+        # `blocked` stays account-wide. A single dead WhoisXML product
+        # must not make the provider itself read as down — that is the
+        # overreach this change exists to stop.
+        if account_wide is not None:
+            row["blocked"] = True
+            row["blockedReason"] = account_wide.provider_message
+            row["blockedStatus"] = account_wide.http_status
+            row["blockedSince"] = (
+                account_wide.started_at.isoformat()
+                if account_wide.started_at else None
+            )
     return rows
 
 

@@ -353,3 +353,126 @@ class TestReparse:
     def test_a_parser_version_travels_with_every_blob(self):
         """So a defective vintage can be found and rebuilt."""
         assert fx.master(normalise_master(ZEPTO))["parserVersion"] == F.PARSER_VERSION
+
+
+# =====================================================================
+# Director profiles — the live payload of 5 Nov 2026
+# =====================================================================
+
+#: A REAL `dprof` response, trimmed but never edited. DIN 10946716,
+#: captured from vendor #234481's run. Four separate defects were found
+#: against this one payload; every one of them was silent.
+LIVE_DIRECTOR_PROFILE = {
+    "din": "10946716",
+    "fullName": "PARUL AHLAWAT",
+    "lastName": "AHLAWAT",
+    "firstName": "PARUL",
+    "companyData": [
+        {
+            "role": "Director/Designated Partner",
+            "ucin": "U27102UP2025PTC220907",
+            "cin_LLPIN": "U27102UP2025PTC220907",
+            "designation": "Director",
+            "companyStatus": "Active",
+            "isDisqualified": "N",
+            "directorCategory": "Promoter",
+            "nameOfTheCompany": "AAHAN BRICK BOOST PRIVATE LIMITED",
+            "cessationDate": "",
+            "roleEffectiveDate": "04/09/2025 00:00:00",
+            "currentDesignationDate": "04/09/2025 00:00:00",
+        }
+    ],
+    "mcaSignatoryCessationMasterHistory": [
+        {
+            "cin": "U61900UP2023PTC183552",
+            "accountName": "SOLTEL TECHNOLOGIES PRIVATE LIMITED",
+            "designation": "Director",
+            "accountStatus": "Active",
+            "cessationDate": "05/27/2026",
+            "appointmentDate": "03/11/2025",
+        },
+        {
+            "cin": "U61900UP2023PTC183552",
+            "accountName": "SOLTEL TECHNOLOGIES PRIVATE LIMITED",
+            "designation": "Additional Director",
+            "accountStatus": "Active",
+            "cessationDate": "03/10/2025",
+            "appointmentDate": "02/13/2025",
+        },
+    ],
+}
+
+
+def _dprof_rows(profile=None):
+    blob = fx.director_profiles([profile or LIVE_DIRECTOR_PROFILE])
+    return blob, blob["table"]["rows"]
+
+
+class TestDirectorProfileLivePayload:
+    def test_ended_directorships_are_not_dropped(self):
+        """The defect that made a paid check worthless.
+
+        `companyData` holds current roles; the roles this person has LEFT
+        live in `mcaSignatoryCessationMasterHistory`. Reading only the
+        first returned exactly what the FREE `dirs` check already gives,
+        for Rs5 — and showed a director with one directorship while the
+        payload in front of it listed three.
+        """
+        _, rows = _dprof_rows()
+        assert len(rows) == 3
+        companies = {r["company"] for r in rows}
+        assert "SOLTEL TECHNOLOGIES PRIVATE LIMITED" in companies
+
+    def test_the_directors_name_is_shown_not_the_din(self):
+        """`fullName` was not in the lookup list, so every row fell
+        through to the DIN. A client-facing screen read "10946716"."""
+        _, rows = _dprof_rows()
+        assert all(r["person"] == "PARUL AHLAWAT" for r in rows)
+
+    def test_the_from_date_is_read(self):
+        """The live payload carries `roleEffectiveDate`. The builder
+        looked only for `appointmentDate`/`dateOfAppointment`, so the
+        From column was empty on every real response."""
+        current = [r for r in rows if not r["to"]] if (rows := _dprof_rows()[1]) else []
+        assert current and current[0]["from"] == "09 Apr 2025"
+
+    def test_american_dates_are_converted_not_printed_raw(self):
+        """`cessationDate: "05/27/2026"` CANNOT be day-first — there is no
+        twenty-seventh month. `human_date` understands ISO only and passes
+        anything else through untouched, so without `parse_date` first an
+        Indian audit report prints an American date.
+        """
+        _, rows = _dprof_rows()
+        ended = {r["to"] for r in rows if r["to"]}
+        assert ended == {"27 May 2026", "10 Mar 2025"}
+        assert not any("/" in (r["to"] or "") for r in rows)
+        assert not any("/" in (r["from"] or "") for r in rows)
+
+    def test_two_roles_at_one_company_are_both_kept(self):
+        """Additional Director then Director is the ordinary progression.
+        Collapsing them by company would hide a real appointment date."""
+        _, rows = _dprof_rows()
+        soltel = [r for r in rows if "SOLTEL" in r["company"]]
+        assert {r["role"] for r in soltel} == {"Director", "Additional Director"}
+
+    def test_current_roles_sort_above_ended_ones(self):
+        _, rows = _dprof_rows()
+        assert rows[0]["to"] is None, "what the person does NOW goes on top"
+
+    def test_the_tiles_count_both_kinds(self):
+        blob, _ = _dprof_rows()
+        stats = {s["label"]: s["value"] for s in blob["stats"]}
+        assert stats["Directorships"] == "3"
+        assert stats["Currently active"] == "1"
+        assert stats["Ended"] == "2"
+
+    def test_a_profile_with_no_history_block_still_works(self):
+        """`dirs` sends no cessation history at all. It must not break."""
+        profile = {"din": "1", "name": "X", "roles": [
+            {"companyName": "ACME", "cin": "U1", "designation": "Director",
+             "dateOfAppointment": "2020-01-01", "cessationDate": None}
+        ]}
+        blob, rows = _dprof_rows(profile)
+        assert len(rows) == 1
+        assert rows[0]["person"] == "X"
+        assert {s["label"]: s["value"] for s in blob["stats"]}["Ended"] == "0"

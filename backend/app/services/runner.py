@@ -195,6 +195,59 @@ def _provider_of(check_id: str) -> str | None:
     return None if provider in _NOT_AN_ACCOUNT else provider
 
 
+#: Providers that bill from SEPARATE POOLS per product, so a refusal says
+#: nothing about their other endpoints.
+#:
+#: Only WhoisXML, and it was proven rather than assumed. On 6 Nov 2026 one
+#: key, from one IP, inside a minute:
+#:
+#:     ssl-certificates  200      domain-reputation  200
+#:     whois-history     403      reverse-whois      403
+#:
+#: The Domain Research Suite subscription had lapsed. Treating that as a
+#: provider-wide outage would have disabled two checks that were answering
+#: normally.
+#:
+#: FileSure, eCourts and FinAGG each draw on ONE wallet — a refusal there
+#: genuinely is account-wide, and splitting them would mean every endpoint
+#: discovering an empty wallet separately, which is the failure this whole
+#: mechanism exists to stop.
+_PER_PRODUCT_PROVIDERS = frozenset({"whoisxml"})
+
+
+def _billing_scope(check_id: str) -> tuple[str, str] | None:
+    """``(provider, product)`` — which POOL this check spends from.
+
+    ``product`` is "" when the provider bills from a single wallet, which
+    is the common case and preserves provider-wide blocking for it.
+
+    The product key is the check id rather than the endpoint path: the two
+    are one-to-one for WhoisXML, and a check id is stable, already in the
+    catalog, and readable in a database row. An endpoint path would drift
+    the moment a provider renamed a route.
+    """
+    provider = _provider_of(check_id)
+    if provider is None:
+        return None
+    if provider in _PER_PRODUCT_PROVIDERS:
+        return provider, check_id
+    return provider, ""
+
+
+def _checks_in_scope(provider: str, product: str) -> list[str]:
+    """Every check a given outage actually covers.
+
+    The API hands this to the screen so the browser never has to know how
+    a provider bills. Without it, Step 2 would need its own copy of
+    ``_PER_PRODUCT_PROVIDERS``, and the two would drift — which is exactly
+    how the scoring engine once ended up 25 points apart from itself.
+    """
+    return [
+        c.id for c in CHECKS_BY_ID.values()
+        if _billing_scope(c.id) == (provider, product)
+    ]
+
+
 def _first_cnr(prior: dict) -> str | None:
     """The first CNR the case search turned up, if it ran."""
     found = prior.get("courtsearch")
@@ -421,30 +474,37 @@ class CheckRunner:
         in three: WhoisXML returns an empty balance, a revoked key and a
         blocked IP under one 403, and each needs a different person.
 
-        ONE check per blocked provider is let through per cool-off window,
-        so a topped-up account recovers by itself. Without that the block
+        ONE check per blocked POOL is let through per cool-off window, so
+        a topped-up account recovers by itself. Without that the block
         would be permanent — nothing calls the provider, so nothing can
         find out it is working again.
+
+        Blocking is per POOL, not per provider. WhoisXML bills its
+        products separately, and on 6 Nov 2026 one key returned 200 for
+        SSL and Domain Reputation while returning 403 for WHOIS History
+        and Reverse WHOIS. A provider-wide block there would have taken
+        two working checks away over a 403 from a different product —
+        the platform causing an outage of its own.
         """
         blocked = provider_state.open_outages(self.session)
         if not blocked:
             return runnable
 
         allowed: list[str] = []
-        probing: set[str] = set()
+        probing: set[tuple[str, str]] = set()
         for check_id in runnable:
-            provider = _provider_of(check_id)
-            outage = blocked.get(provider) if provider else None
+            scope = _billing_scope(check_id)
+            outage = blocked.get(scope) if scope else None
             if outage is None:
                 allowed.append(check_id)
                 continue
 
-            if provider not in probing and provider_state.due_for_probe(outage):
-                # One call, to find out whether the account is working
-                # again. Marked before it goes out, so a probe that hangs
-                # still moves the clock.
+            if scope not in probing and provider_state.due_for_probe(outage):
+                # One call, to find out whether the pool is working again.
+                # Marked before it goes out, so a probe that hangs still
+                # moves the clock.
                 provider_state.mark_probed(self.session, outage)
-                probing.add(provider)
+                probing.add(scope)
                 allowed.append(check_id)
                 continue
 
@@ -472,28 +532,33 @@ class CheckRunner:
 
         A SUCCESSFUL call clears an open outage, which is what makes
         topping up a balance sufficient on its own: the probe gets through
-        and the provider reopens for everybody with no second action.
+        and the pool reopens for everybody with no second action.
+
+        Everything here is keyed on the POOL — ``(provider, product)`` —
+        so a dead WhoisXML product neither blocks nor is cleared by the
+        WhoisXML products that are still answering.
         """
-        blocked_now: dict[str, Finding] = {}
-        answered: set[str] = set()
+        blocked_now: dict[tuple[str, str], Finding] = {}
+        answered: set[tuple[str, str]] = set()
 
         for finding in result.findings:
-            provider = _provider_of(finding.check_id)
-            if not provider:
+            scope = _billing_scope(finding.check_id)
+            if scope is None:
                 continue
             if finding.account_blocked:
-                blocked_now.setdefault(provider, finding)
+                blocked_now.setdefault(scope, finding)
             elif finding.status.was_examined:
-                # Proof the account works: the provider answered about
-                # this vendor. A 404 does not qualify — it never reaches
-                # here — and neither does a parse gap, which is our fault
-                # and leaves the account's standing unknown.
-                answered.add(provider)
+                # Proof the pool works: the provider answered about this
+                # vendor. A 404 does not qualify — it never reaches here —
+                # and neither does a parse gap, which is our fault and
+                # leaves the account's standing unknown.
+                answered.add(scope)
 
-        for provider, finding in blocked_now.items():
+        for (provider, product), finding in blocked_now.items():
             provider_state.record_outage(
                 self.session,
                 provider,
+                product=product,
                 message=finding.account_blocked or "",
                 http_status=finding.account_blocked_status,
                 check_id=finding.check_id,
@@ -501,18 +566,20 @@ class CheckRunner:
                 source="run",
             )
 
-        # A provider that both answered and refused in the same run stays
+        # A pool that both answered and refused in the same run stays
         # blocked: the refusal is the newer fact about the account, and a
         # cached or free endpoint answering proves nothing about the paid
         # balance.
-        for provider in answered - set(blocked_now):
+        for provider, product in answered - set(blocked_now):
             if provider_state.clear_outage(
-                self.session, provider, reason=f"a successful call on {vendor.id}"
+                self.session, provider, product=product,
+                reason=f"a successful call on {vendor.id}",
             ):
+                label = f"{provider}/{product}" if product else provider
                 self._audit(
                     vendor.id,
                     "PROVIDER_RECOVERED",
-                    f"{provider} answered again during this run; its checks are "
+                    f"{label} answered again during this run; its checks are "
                     f"available to everyone once more.",
                 )
 
@@ -1041,10 +1108,33 @@ class CheckRunner:
                 # director as having resigned.
                 if is_blank(c.get("cessationDate"))
             )
-            return Finding(check_id, CheckStatus.PASS, f"{len(profiles)} profiles retrieved",
-                           f"{active_elsewhere} active directorships across all profiles.",
-                           raw={"profiles": profiles},
-                           facts=factsets.director_profiles(profiles))
+            # ENDED directorships are counted too. The payload carries
+            # them in a second block, `mcaSignatoryCessationMasterHistory`,
+            # which this summary ignored — so a director who had resigned
+            # from two companies was described as holding one
+            # directorship, full stop. A role someone left, at a company
+            # that later failed, is exactly what this check is bought for.
+            ended_elsewhere = sum(
+                len(p.get("mcaSignatoryCessationMasterHistory") or [])
+                for p in profiles
+            )
+            detail = (
+                f"{active_elsewhere} active "
+                f"{'directorship' if active_elsewhere == 1 else 'directorships'}"
+            )
+            detail += (
+                f" and {ended_elsewhere} ended"
+                if ended_elsewhere else " and none ended"
+            )
+            detail += ", across all profiles."
+            return Finding(
+                check_id, CheckStatus.PASS,
+                f"{len(profiles)} "
+                f"{'profile' if len(profiles) == 1 else 'profiles'} retrieved",
+                detail,
+                raw={"profiles": profiles},
+                facts=factsets.director_profiles(profiles),
+            )
 
         if check_id == "dresolve":
             query = get("q")

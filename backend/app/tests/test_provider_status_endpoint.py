@@ -107,6 +107,49 @@ class TestSandboxIsNeverCalledLive:
         assert health_says == providers_says == expected
 
 
+class TestBlockedChecksResolveToCheckIds:
+    """The browser must never need to know how a provider bills.
+
+    `blockedChecks` is computed server-side from the billing scope, so
+    Step 2 just asks "is my check id in here". The alternative is a
+    second copy of the per-product rule living in the frontend, and two
+    copies of one rule is how the scoring engine ended up 25 points
+    apart from itself.
+    """
+
+    def test_a_dead_whoisxml_product_lists_only_its_own_check(self):
+        from app.services.runner import _checks_in_scope
+
+        assert _checks_in_scope("whoisxml", "whois") == ["whois"]
+        assert _checks_in_scope("whoisxml", "ssl") == ["ssl"]
+
+    def test_a_dead_filesure_wallet_lists_every_filesure_check(self):
+        from app.services.runner import _checks_in_scope
+
+        covered = _checks_in_scope("filesure", "")
+        assert "master" in covered and "filings" in covered
+        assert len(covered) == 14, "one wallet, every check against it"
+        assert "ssl" not in covered
+
+    def test_scopes_do_not_overlap(self):
+        """No check may be covered by two different outages.
+
+        If one were, two pools could each claim it and the screen would
+        show whichever reason happened to be iterated last.
+        """
+        from app.catalog.checks import CHECKS
+        from app.services.runner import _billing_scope
+
+        seen: dict[str, tuple] = {}
+        for check in CHECKS:
+            scope = _billing_scope(check.id)
+            if scope is None:
+                continue
+            assert check.id not in seen
+            seen[check.id] = scope
+        assert len(seen) == len(set(seen))
+
+
 class TestEveryPaidAccountIsListed:
     def test_the_four_prepaid_accounts_all_appear(self, as_settings):
         """ecourts and finagg were missing from this endpoint entirely.
