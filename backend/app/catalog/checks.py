@@ -21,13 +21,14 @@ from app.domain.types import (
 ACTIVE = CheckState.ACTIVE
 HOOK = CheckState.NOT_CONFIGURED
 
-FS, WX, FA, EC, AR, IH, NONE = (
+FS, WX, FA, EC, AR, IH, GL, NONE = (
     Provider.FILESURE,
     Provider.WHOISXML,
     Provider.FINAGG,
     Provider.ECOURTS,
     Provider.ARCHIVE,
     Provider.IN_HOUSE,
+    Provider.GRIDLINES,
     Provider.NONE,
 )
 
@@ -41,6 +42,11 @@ class CheckGroup:
     TAX = "tax"
     SANCTIONS = "sanctions"
     REP = "rep"
+    #: Person-level checks on the vendor's own contact number. Kept as its
+    #: OWN group, not folded into Identity & Tax, because these read a
+    #: named individual's records rather than a company's and the screen
+    #: has to make that visible before an analyst ticks one.
+    PERSON = "person"
 
 
 CHECK_GROUPS: tuple[dict, ...] = (
@@ -52,6 +58,7 @@ CHECK_GROUPS: tuple[dict, ...] = (
     {"id": CheckGroup.TAX, "name": "Identity & Tax", "source": "FinAGG GSP · GST", "mark": "G", "configured": True},
     {"id": CheckGroup.SANCTIONS, "name": "Sanctions & Watchlists", "source": "not configured", "mark": "—", "configured": False},
     {"id": CheckGroup.REP, "name": "Litigation & Reputation", "source": "eCourtsIndia · LegalCheck", "mark": "L", "configured": True},
+    {"id": CheckGroup.PERSON, "name": "Contact Person — personal records", "source": "Gridlines · consent required", "mark": "P", "configured": True},
 )
 
 
@@ -709,6 +716,92 @@ CHECKS: tuple[CheckDefinition, ...] = (
         id="dirlist", group=CheckGroup.REP, name="Business directory presence",
         endpoint="provider not selected", provider=NONE, state=HOOK,
     ),
+
+    # ---- P · Contact person — PERSONAL records · Gridlines -------------
+    #
+    # These five differ in kind from everything above. Every other check
+    # reads a REGISTRY about a company. These take a mobile number and
+    # return a NAMED INDIVIDUAL's PAN, date of birth, home address,
+    # digital footprint and EPFO employment history — and even a company's
+    # own number resolves to whoever holds the SIM.
+    #
+    # Each therefore carries a `consentRef` parameter. The runner warns
+    # when it is blank and records who proceeded anyway; that attestation
+    # is what the `consent` value sent to Gridlines is drawn from. Nothing
+    # here hardcodes it. See app/providers/gridlines.py.
+    #
+    # None of them feeds a SCAN parameter. No parameter among the eighteen
+    # means "the contact person's home address", and mapping one would be
+    # a versioned scoring migration, not a catalog edit.
+    CheckDefinition(
+        id="prefill", group=CheckGroup.PERSON,
+        name="Contact person — identity",
+        endpoint="POST /profile-api/mobile/prefill",
+        provider=GL,
+        note="Name, PAN, date of birth and address behind the contact "
+             "number. Personal data about an individual, not a company record.",
+        params=(
+            _p("mobile", "Contact mobile", required=True,
+               from_vendor="contact_mobile", placeholder="9876543210"),
+            _p("consentRef", "Consent reference",
+               placeholder="e.g. signed declaration dated 12 Oct 2026"),
+            _p("firstName", "First name", placeholder="narrows the match"),
+            _p("lastName", "Last name", placeholder="narrows the match"),
+        ),
+    ),
+    CheckDefinition(
+        id="footprint", group=CheckGroup.PERSON,
+        name="Contact person — digital footprint",
+        endpoint="POST /profile-api/mobile/digital-footprint",
+        provider=GL,
+        note="Which online services this number and email appear against.",
+        params=(
+            _p("mobile", "Contact mobile", required=True,
+               from_vendor="contact_mobile", placeholder="9876543210"),
+            _p("consentRef", "Consent reference"),
+            _p("email", "Email", placeholder="optional, narrows the match"),
+        ),
+    ),
+    CheckDefinition(
+        id="personaddr", group=CheckGroup.PERSON,
+        name="Contact person — address on record",
+        endpoint="POST /profile-api/mobile/address-lookup",
+        provider=GL,
+        note="Addresses recorded against the contact number. Compare with "
+             "the registered office before drawing any conclusion.",
+        params=(
+            _p("mobile", "Contact mobile", required=True,
+               from_vendor="contact_mobile", placeholder="9876543210"),
+            _p("consentRef", "Consent reference"),
+        ),
+    ),
+    CheckDefinition(
+        id="epfomember", group=CheckGroup.PERSON,
+        name="Contact person — EPFO membership",
+        endpoint="POST /epfo-api/fetch-uan",
+        provider=GL,
+        note="The UAN behind the contact number. PAN narrows the match.",
+        params=(
+            _p("mobile", "Contact mobile", required=True,
+               from_vendor="contact_mobile", placeholder="9876543210"),
+            _p("consentRef", "Consent reference"),
+            _p("pan", "PAN", from_vendor="pan", placeholder="ABCDE1234F"),
+        ),
+    ),
+    CheckDefinition(
+        id="emphistory", group=CheckGroup.PERSON,
+        name="Contact person — employment history",
+        endpoint="POST /epfo-api/employment-history/fetch-by-uan",
+        provider=GL,
+        note="Employers and dates against a UAN. Leave the UAN blank to "
+             "take it from the EPFO membership result.",
+        requires=("epfomember",),
+        params=(
+            _p("uan", "UAN", from_result="epfomember",
+               placeholder="blank = taken from the EPFO membership result"),
+            _p("consentRef", "Consent reference"),
+        ),
+    ),
 )
 
 CHECKS_BY_ID: dict[str, CheckDefinition] = {c.id: c for c in CHECKS}
@@ -762,13 +855,14 @@ def expand_selection(selected: list[str]) -> list[str]:
     return out
 
 
-#: 47 = 40 live + 7 hooks. History, because the count has been misquoted
+#: 52 = 45 live + 7 hooks, after the five Gridlines person-level checks
+#: landed on 2026-11-06. History, because the count has been misquoted
 #: in three project docs: 32 originally; 34 after the FileSure additions
 #: (`dresolve`, `frefresh`); 35 when the FinAGG integration replaced the
 #: single `gst` hook with two live checks — `gst` (search) and `gstret`
 #: (returns metadata), the two facts coming from two endpoints; then 47
 #: when the twelve live eCourts checks landed.
-assert len(CHECKS) == 47, f"expected 47 checks, got {len(CHECKS)}"
+assert len(CHECKS) == 52, f"expected 52 checks, got {len(CHECKS)}"
 #: 7, down from 8 on 2026-09-14: `court` came back from hook to ACTIVE.
 #: It had been demoted on 2026-09-08 when LegalCheck submit rejected every
 #: body shape tried — the cause turned out to be a single field, a company

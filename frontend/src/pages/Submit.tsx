@@ -64,6 +64,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
     pan: vendor?.pan ?? '',
     cin: vendor?.cin ?? '',
     website: vendor?.website ?? '',
+    contactMobile: vendor?.contactMobile ?? '',
   })
 
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
@@ -145,6 +146,7 @@ export default function Submit({ vendor, setPrimary }: Props) {
         pan: form.pan || null,
         cin: form.cin || null,
         website: form.website || null,
+        contactMobile: form.contactMobile || null,
         domain,
       })
       toast(`${created.name} filed as #${created.id}`)
@@ -367,6 +369,27 @@ export default function Submit({ vendor, setPrimary }: Props) {
                 }
               >
                 <input className="input" value={form.website} onChange={set('website')} placeholder="https://example.com" />
+              </Field>
+
+              {/*
+                The contact number is NOT another company identifier,
+                however much it looks like one sitting here. It resolves
+                to a person, and the hint says so before anyone types —
+                the alternative is an analyst discovering it from a PAN
+                and a home address on the findings screen.
+              */}
+              <Field
+                label="Contact mobile"
+                hint="Ten digits, no +91. Unlocks the contact-person checks — identity, address and EPFO. These read an INDIVIDUAL's records, so consent applies."
+              >
+                <input
+                  className="input"
+                  value={form.contactMobile}
+                  onChange={set('contactMobile')}
+                  placeholder="9876543210"
+                  inputMode="numeric"
+                  maxLength={10}
+                />
               </Field>
             </div>
           </Card>

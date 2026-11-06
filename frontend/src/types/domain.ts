@@ -211,6 +211,15 @@ export interface Vendor {
   cin: string | null
   domain: string | null
   website: string | null
+  /**
+   * The vendor's own contact number, for the five person-level checks.
+   *
+   * Worth knowing when reading this beside `gst` and `cin`: this one
+   * resolves to a PERSON. Even a company switchboard number belongs to
+   * whoever holds the SIM, and what comes back is that individual's PAN,
+   * date of birth and home address — not a company record.
+   */
+  contactMobile: string | null
   stage: VendorStage
   decision: string | null
   decisionRemarks?: string

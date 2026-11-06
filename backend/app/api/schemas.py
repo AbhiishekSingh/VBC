@@ -134,6 +134,7 @@ class VendorIn(ApiModel):
     cin: str | None = None
     domain: str | None = None
     website: str | None = None
+    contactMobile: str | None = None
 
 
 class VendorPatch(ApiModel):
@@ -148,6 +149,10 @@ class VendorPatch(ApiModel):
     cin: str | None = None
     domain: str | None = None
     website: str | None = None
+    #: The vendor's own contact number. Ten digits, no +91 — validated at
+    #: BLOCK level, because a mistyped mobile does not fail, it returns a
+    #: DIFFERENT PERSON'S records.
+    contactMobile: str | None = None
     stage: str | None = None
 
 
@@ -166,6 +171,7 @@ class VendorOut(ApiModel):
     cin: str | None
     domain: str | None
     website: str | None
+    contactMobile: str | None = None
     stage: str
     decision: str | None = None
     decisionRemarks: str | None = None

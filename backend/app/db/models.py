@@ -318,6 +318,21 @@ class Vendor(Base):
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     website: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: The vendor's own contact number — the one the five Gridlines
+    #: person-level checks run against.
+    #:
+    #: NULLABLE, like every other identifier here: nothing is compulsory
+    #: at intake, and a vendor without a number simply cannot have those
+    #: checks run, which the screen reports as a missing input rather than
+    #: as an empty result.
+    #:
+    #: Worth stating once, because it is easy to forget when reading the
+    #: column beside `gst` and `cin`: this one resolves to a PERSON. Even
+    #: a company's switchboard number belongs to whoever holds the SIM,
+    #: and what comes back is that individual's PAN, date of birth and
+    #: home address — not a company record.
+    contact_mobile: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
     stage: Mapped[str] = mapped_column(String(16), nullable=False, default="intake")
     unlocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     surveillance_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

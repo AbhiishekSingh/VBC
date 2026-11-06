@@ -37,7 +37,7 @@ def manual(entries):
 VENDORS = [
   {"id": "234478", "name": "Azahan Advertising", "legalName": "AZAHAN ADVERTISING",
    "address": "Bajirao Hule Chawl, Sainath Nagar Road, Shanti Nagar,\nGhatkopar West, Mumbai 400086, Maharashtra",
-   "pan": "FNNPM0105B", "gst": "27FNNPM0105B1ZE", "cin": None, "domain": None, "website": None,
+   "pan": "FNNPM0105B", "gst": "27FNNPM0105B1ZE", "cin": None, "domain": None, "website": None, "contactMobile": None,
    "material": "Services", "spoc": "Mohd. Azahan", "designation": "Proprietor",
    "submitted": "2026-07-24 11:20", "stage": "decided", "decision": "Rejected",
    "decisionRemarks": "Unincorporated, no premises, no web presence. Recommendation overridden.",
@@ -51,6 +51,8 @@ VENDORS = [
    "address": "Plot 44, MIDC Industrial Area, Andheri East,\nMumbai 400093, Maharashtra",
    "pan": "AAGCM4821K", "gst": "27AAGCM4821K1Z9", "cin": "U21029MH2013PTC245119",
    "domain": "meridianpack.in", "website": "https://meridianpack.in",
+   # Demo data. A plausible, deliberately non-real number.
+   "contactMobile": "9876543210",
    "material": "Goods — Corrugated packaging", "spoc": "Priya Deshmukh",
    "designation": "Head — Procurement", "submitted": "2026-07-28 09:05",
    "stage": "review", "decision": None, "unlocked": True,
@@ -89,6 +91,7 @@ VENDORS = [
    "address": "18/B Gandhi Market, Pune 411002, Maharashtra",
    "pan": "BXKPK9021J", "gst": "27BXKPK9021J1ZR", "cin": None,
    "domain": "kaveritraders.co.in", "website": "http://kaveritraders.co.in",
+   "contactMobile": None,
    "material": "Goods — Stationery", "spoc": "Nilesh Kulkarni", "designation": "Partner",
    "submitted": "2026-07-29 16:40", "stage": "scoring", "decision": None, "unlocked": False,
    "selected": fx.KAVERI_SELECTED, "inputs": {}, "checks": checks(fx.KAVERI_CHECKS),

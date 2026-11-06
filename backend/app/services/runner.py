@@ -60,6 +60,7 @@ from app.services import provider_state
 from app.providers import filesure as fs_mod
 from app.providers import ecourts as ec_mod
 from app.providers import finagg as fa_mod
+from app.providers import gridlines as gl_mod
 from app.providers import inhouse
 from app.providers import vision as vision_mod
 from app.providers import whoisxml as wx_mod
@@ -277,6 +278,19 @@ def _dins_from(prior: dict) -> list[str]:
     return [d["din"] for d in rows if isinstance(d, dict) and d.get("din")]
 
 
+def _uan_from(prior: dict) -> str | None:
+    """The UAN the EPFO membership check returned, if it ran.
+
+    Same guard order as `_dins_from`: `epfomember` may not have been
+    selected, and a missing finding must not raise here.
+    """
+    found = prior.get("epfomember")
+    if found is None or not found.raw:
+        return None
+    uan = found.raw.get("uan")
+    return str(uan).strip() if uan else None
+
+
 def _director_names(prior: dict) -> list[str]:
     """The board, for the LegalCheck submit.
 
@@ -351,10 +365,12 @@ class CheckRunner:
         self.finagg = fa_mod.FinaggProvider(self.settings, spend=self.spend)
         self.ecourts = ec_mod.EcourtsProvider(self.settings, spend=self.spend)
         self.vision = vision_mod.VisionProvider(self.settings, spend=self.spend)
+        self.gridlines = gl_mod.GridlinesProvider(self.settings, spend=self.spend)
 
     def close(self) -> None:
         for provider in (self.filesure, self.whoisxml, self.archive,
-                         self.finagg, self.ecourts, self.vision):
+                         self.finagg, self.ecourts, self.vision,
+                         self.gridlines):
             provider.close()
 
     # =================================================================
@@ -454,6 +470,176 @@ class CheckRunner:
             actor="system",
         )
         return result
+
+    # =================================================================
+    # Contact person — personal records
+    # =================================================================
+
+    #: The value sent to Gridlines in every `consent` field.
+    #:
+    #: A constant, but NOT a hardcoded assertion: it is only ever reached
+    #: through `_person_consent`, which refuses to return it without
+    #: either a recorded reference or an analyst attestation written to
+    #: the audit log first. The difference is the whole point — when
+    #: somebody asks on what basis a person's PAN was pulled, the answer
+    #: is a name and a timestamp rather than a line of source.
+    _CONSENT_GIVEN = "Y"
+
+    def _person_consent(self, check_id: str, vendor: Vendor,
+                        consent_ref: str) -> str | None:
+        """The consent value for a Gridlines call, or None to refuse.
+
+        SOFT GATE. A reference is not required; proceeding without one is
+        allowed and RECORDED. What is never allowed is calling with
+        nobody behind the claim.
+
+        Hard gate mode (`VBC_GRIDLINES_CONSENT_SOFT_GATE=false`) turns the
+        warning into a refusal, for a client whose policy needs the
+        document on file before the call rather than after.
+        """
+        reference = (consent_ref or "").strip()
+        if reference:
+            self._audit(
+                vendor.id, "PERSON_CHECK_CONSENT",
+                f"{check_id}: consent recorded — {reference}. The contact "
+                f"number's personal records were read on that basis.",
+            )
+            return self._CONSENT_GIVEN
+
+        if not self.settings.gridlines_consent_soft_gate:
+            return None
+
+        self._audit(
+            vendor.id, "PERSON_CHECK_CONSENT_UNVERIFIED",
+            f"{check_id}: run with NO consent reference. This check reads a "
+            f"named individual's personal records, and the analyst who ran "
+            f"it attested that consent exists without citing it. Recorded "
+            f"so the basis can be produced if it is ever asked for.",
+        )
+        return self._CONSENT_GIVEN
+
+    def _run_person_check(self, check_id: str, vendor: Vendor,
+                          get, prior: dict) -> Finding:
+        """The five Gridlines checks, which read a PERSON, not a company."""
+        gl = self.gridlines
+        consent_ref = str(get("consentRef", "") or "").strip()
+        consent = self._person_consent(check_id, vendor, consent_ref)
+        if consent is None:
+            return Finding(
+                check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                "No consent reference",
+                "This check reads a named individual's personal records and "
+                "the consent gate is set to refuse without a reference. "
+                "Record how consent was obtained, then run it. No call was "
+                "made and nothing was charged.",
+            )
+
+        # Every finding carries the basis, so the report can state it and
+        # a reader is never left to assume.
+        basis = (f"Consent reference: {consent_ref}." if consent_ref
+                 else "No consent reference was recorded; the analyst "
+                      "attested that consent exists.")
+        personal = ("This is personal data about an individual — the holder "
+                    "of the contact number — not a company record.")
+
+        mobile = str(get("mobile", vendor.contact_mobile or "") or "").strip()
+
+        if check_id == "emphistory":
+            uan = str(get("uan", "") or "").strip() or _uan_from(prior)
+            if not uan:
+                return Finding(
+                    check_id, CheckStatus.SKIPPED_MISSING_INPUT, "No UAN",
+                    "Supply a UAN, or run the EPFO membership check first so "
+                    "one can be taken from its result. The call was never made.",
+                )
+            data = gl.employment_history(uan, consent=consent)
+            rows = data.get("employments") or []
+            return Finding(
+                check_id,
+                CheckStatus.PASS if rows else CheckStatus.WARN,
+                f"{len(rows)} employment record(s)" if rows
+                else "No employment history returned",
+                f"{'Employers and dates are on file against this UAN. ' if rows else ''}"
+                f"{personal} {basis}",
+                raw=data,
+                cost_paisa=self.settings.gridlines_employment_paisa,
+                facts=factsets.person_employment(data),
+            )
+
+        if not mobile:
+            return Finding(
+                check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                "No contact number",
+                "This check needs the vendor's contact mobile number. Add it "
+                "on the vendor record, or type it here. The call was never "
+                "made and nothing was charged.",
+            )
+
+        if check_id == "prefill":
+            data = gl.mobile_prefill(
+                mobile, consent=consent,
+                first_name=str(get("firstName", "") or ""),
+                last_name=str(get("lastName", "") or ""),
+            )
+            found = data.get("name") or data.get("pan")
+            return Finding(
+                check_id,
+                CheckStatus.PASS if found else CheckStatus.WARN,
+                str(data.get("name") or "No identity returned"),
+                f"{personal} {basis}",
+                raw=data,
+                cost_paisa=self.settings.gridlines_prefill_paisa,
+                facts=factsets.person_identity(data),
+            )
+
+        if check_id == "footprint":
+            data = gl.digital_footprint(
+                mobile, consent=consent,
+                email=str(get("email", "") or ""),
+            )
+            found = data.get("platforms") or []
+            return Finding(
+                check_id, CheckStatus.PASS,
+                f"{len(found)} service(s) found" if found else "No footprint returned",
+                f"{personal} {basis}",
+                raw=data,
+                cost_paisa=self.settings.gridlines_footprint_paisa,
+                facts=factsets.person_footprint(data),
+            )
+
+        if check_id == "personaddr":
+            data = gl.address_lookup(mobile, consent=consent)
+            found = data.get("addresses") or []
+            if isinstance(found, dict):
+                found = [found]
+            return Finding(
+                check_id, CheckStatus.PASS,
+                f"{len(found)} address(es) on record" if found
+                else "No address returned",
+                f"Compare against the registered office before drawing any "
+                f"conclusion — a personal address differing from it is "
+                f"ordinary for a proprietor. {personal} {basis}",
+                raw=data,
+                cost_paisa=self.settings.gridlines_address_paisa,
+                facts=factsets.person_addresses(data),
+            )
+
+        # epfomember
+        data = gl.epfo_member(
+            mobile, consent=consent,
+            pan=str(get("pan", vendor.pan or "") or "") or None,
+        )
+        uan = data.get("uan")
+        return Finding(
+            check_id,
+            CheckStatus.PASS if uan else CheckStatus.WARN,
+            f"UAN {uan}" if uan else "No UAN returned",
+            f"{'The employment history check can now run from this UAN. ' if uan else ''}"
+            f"{personal} {basis}",
+            raw=data,
+            cost_paisa=self.settings.gridlines_epfo_member_paisa,
+            facts=factsets.person_epfo(data),
+        )
 
     # =================================================================
     # Provider account state
@@ -1254,6 +1440,16 @@ class CheckRunner:
                 raw=data, credits=1,
                 facts=factsets.reputation(data),
             )
+
+        # ---- P · contact person — PERSONAL records · Gridlines --------
+        #
+        # The consent value sent to Gridlines comes from here and nowhere
+        # else. `_person_consent` warns-and-records when no reference was
+        # given, so the attestation is a named analyst rather than a
+        # constant in the adapter. See app/providers/gridlines.py.
+        if check_id in ("prefill", "footprint", "personaddr",
+                        "epfomember", "emphistory"):
+            return self._run_person_check(check_id, vendor, get, prior)
 
         if check_id == "ssl":
             domain = get("domainName", vendor.domain or "")

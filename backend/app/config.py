@@ -231,6 +231,36 @@ class Settings(BaseSettings):
     #: refused — so a misconfigured staging box cannot spend real money.
     allow_paid_calls: bool = False
 
+    # --- Gridlines (person-level checks on the vendor's own number) -----
+    #
+    # Header auth, two headers, both required:
+    #     X-API-Key: <key>
+    #     X-Auth-Type: API-Key
+    #
+    #: Separate key from the Mobile Intelligence Suite's, so VBC's spend is
+    #: attributable. Without it the five Gridlines checks report
+    #: not_configured — which is NOT the same as a vendor having no record.
+    gridlines_api_key: str = ""
+    gridlines_base_url: str = "https://api.gridlines.io"
+
+    #: Per-call price. ALL ZERO UNTIL THE RATE CARD IS KNOWN, and that is a
+    #: live hazard, not a placeholder: `guard_paid()` returns immediately at
+    #: `paisa <= 0`, so while these stay 0, VBC_ALLOW_PAID_CALLS=false does
+    #: NOT stop a Gridlines call and every run reports Rs0.00 for it. Same
+    #: defect already open on eCourts and FinAGG. Set these the day the
+    #: rate card arrives.
+    gridlines_prefill_paisa: int = 0
+    gridlines_footprint_paisa: int = 0
+    gridlines_address_paisa: int = 0
+    gridlines_epfo_member_paisa: int = 0
+    gridlines_employment_paisa: int = 0
+
+    #: Soft consent gate. True means the analyst is WARNED and may proceed;
+    #: proceeding records who attested, and that attestation is what the
+    #: `consent` value on the wire is drawn from. Set false to make it a
+    #: hard gate — the check then refuses without an attestation.
+    gridlines_consent_soft_gate: bool = True
+
     # --- prepaid balance watch ------------------------------------------
     #
     # Checked nightly against FileSure's FREE /v1/account/usage endpoint,
@@ -272,6 +302,10 @@ class Settings(BaseSettings):
     @property
     def ecourts_configured(self) -> bool:
         return bool(self.ecourts_api_key)
+
+    @property
+    def gridlines_configured(self) -> bool:
+        return bool(self.gridlines_api_key)
 
     @property
     def finagg_configured(self) -> bool:

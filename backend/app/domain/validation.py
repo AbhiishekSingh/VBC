@@ -107,6 +107,26 @@ RULES: dict[str, Rule] = {
         example="09054126",
     ),
 
+    "mobile": Rule(
+        # Indian mobile numbers start 6-9 and are exactly ten digits.
+        # BLOCK, like the other identifiers, for the same reason: this is
+        # an argument to a paid call, and a mistyped number does not fail
+        # — it returns a DIFFERENT PERSON'S record. That is worse than an
+        # error, because nothing about the response says it is wrong.
+        pattern=r"^[6-9]\d{9}$",
+        level=BLOCK,
+        hint="Ten digits starting 6-9. No +91, no spaces.",
+        example="9876543210",
+        normalise=False,
+    ),
+    "uan": Rule(
+        pattern=r"^\d{12}$",
+        level=BLOCK,
+        hint="A UAN is exactly 12 digits.",
+        example="100123456789",
+        normalise=False,
+    ),
+
     # --- everything below warns only -----------------------------------
     "cnr": Rule(
         pattern=r"^[A-Za-z]{4}\d{2}[A-Za-z0-9]{6}\d{4}$",

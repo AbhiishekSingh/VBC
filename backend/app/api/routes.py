@@ -136,6 +136,7 @@ def _serialise(session: Session, vendor: Vendor) -> s.VendorOut:
         address=vendor.address, material=vendor.material, spoc=vendor.spoc,
         designation=vendor.designation, gst=vendor.gst, pan=vendor.pan,
         cin=vendor.cin, domain=vendor.domain, website=vendor.website,
+        contactMobile=vendor.contact_mobile,
         stage=vendor.stage,
         decision=decision.decision if decision else None,
         decisionRemarks=decision.remarks if decision else None,
@@ -217,7 +218,14 @@ def get_vendor(vendor_id: str, session: Session = Depends(get_session)):
 #: rules are keyed by CHECK PARAMETER. One mapping, written out, because
 #: guessing it from the name would silently skip whichever one did not
 #: happen to match.
-VENDOR_ID_FIELDS = {"cin": "cin", "gst": "gstin", "pan": "pan"}
+VENDOR_ID_FIELDS = {
+    "cin": "cin", "gst": "gstin", "pan": "pan",
+    # Guarded like the others, and for a sharper reason. A mistyped CIN
+    # produces an error from the provider. A mistyped mobile number
+    # produces a DIFFERENT PERSON'S name, PAN and home address, with
+    # nothing in the response to say so.
+    "contactMobile": "mobile",
+}
 
 
 def _refuse_bad_identifiers(**values: str | None) -> None:
@@ -277,6 +285,7 @@ def create_vendor(
         address=body.address, material=body.material, spoc=body.spoc,
         designation=body.designation, gst=body.gst or None, pan=body.pan or None,
         cin=body.cin or None, domain=body.domain or None, website=body.website or None,
+        contact_mobile=body.contactMobile or None,
         stage="select",
         # NOTHING is selected on the analyst's behalf. A new vendor starts
         # with an empty selection, and every check is a deliberate choice.
@@ -312,7 +321,8 @@ def update_vendor(vendor_id: str, body: s.VendorPatch, session: Session = Depend
         "legalName": "legal_name", "name": "name", "address": "address",
         "material": "material", "spoc": "spoc", "designation": "designation",
         "gst": "gst", "pan": "pan", "cin": "cin", "domain": "domain",
-        "website": "website", "stage": "stage",
+        "website": "website", "contactMobile": "contact_mobile",
+        "stage": "stage",
     }
     for api_field, column in field_map.items():
         value = getattr(body, api_field, None)
