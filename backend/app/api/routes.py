@@ -915,6 +915,29 @@ def provider_status(session: Session = Depends(get_session)):
             ),
         },
         {
+            # ADDED LATE AND LEFT OUT OF THIS LIST, which is the same
+            # omission the docstring above records for ecourts and
+            # finagg. The consequence is not cosmetic: this endpoint is
+            # where Step 2 and the Step 3 "run more checks" dialog learn
+            # which checks a refusal covers. With no row here, a refused
+            # Gridlines account greys nothing and explains nothing — the
+            # analyst picks five person checks, waits, and gets five
+            # unavailable results with no warning beforehand. That is
+            # precisely the failure the outage work exists to prevent,
+            # reintroduced by forgetting one list.
+            "provider": "gridlines",
+            "configured": settings.gridlines_configured,
+            "note": (
+                "Live. Person-level checks — these return a NAMED "
+                "INDIVIDUAL's records, not a company's, and each one is "
+                "charged per person looked up."
+                if settings.gridlines_configured
+                else "No key set. The five person checks report "
+                     "not_configured, which is NOT the same as a person "
+                     "having no record."
+            ),
+        },
+        {
             "provider": "archive",
             "configured": True,
             "note": "Free, no key required.",

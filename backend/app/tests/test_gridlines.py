@@ -944,3 +944,91 @@ class TestPersonCheckRunsEverySubject:
         ], "subject_count": 2}
         blob = BUILDERS["prefill"](raw, None)
         assert any("Not examined" in f["label"] for f in blob["flags"])
+
+
+# =====================================================================
+# 10. The status endpoints must KNOW about this provider
+# =====================================================================
+
+class TestGridlinesIsVisibleToTheStatusEndpoints:
+    """`/api/providers` is where Step 2 and the Step 3 dialog learn which
+    checks a refusal covers. A provider with no row there greys nothing
+    and explains nothing: the analyst picks five person checks, waits,
+    and gets five unavailable results with no warning beforehand.
+
+    This is the same omission the endpoint's own docstring records for
+    ecourts and finagg — two live paid accounts no screen could ask
+    about — reintroduced by adding a provider and forgetting one list.
+    """
+
+    def _rows(self, **over):
+        """The /providers payload, built without standing up the app.
+
+        Same harness as `test_provider_status_endpoint.py`: called
+        directly with a session stand-in, because the endpoint makes one
+        query and a real database adds nothing to what is being asserted.
+        """
+        from app.api import routes
+
+        class _NoOutages:
+            def scalars(self, *_a, **_k):
+                return self
+
+            def all(self):
+                return []
+
+        base = {"filesure_api_key": "f", "whoisxml_api_key": "w",
+                "ecourts_api_key": "e", "finagg_api_key": "fa",
+                "gridlines_api_key": "g"}
+        base.update(over)
+        import app.api.routes as r
+        real = r.get_settings
+        r.get_settings = lambda: Settings(**base)
+        try:
+            rows = routes.provider_status(session=_NoOutages())
+        finally:
+            r.get_settings = real
+        return {row["provider"]: row for row in rows}
+
+    def test_every_provider_with_checks_has_a_status_row(self):
+        """Not a list of names kept in step by hand. Anything the catalog
+        runs checks against must be reportable, or the next provider
+        added repeats this."""
+        from app.catalog.checks import CHECKS
+
+        reported = set(self._rows())
+        expected = {c.provider.value for c in CHECKS} - {"none", "in_house"}
+        assert expected <= reported, f"missing: {expected - reported}"
+
+    def test_gridlines_reports_configured_from_the_key(self):
+        assert self._rows()["gridlines"]["configured"] is True
+        assert self._rows(gridlines_api_key="")["gridlines"]["configured"] is False
+
+    def test_gridlines_is_in_the_health_payload(self):
+        from fastapi.testclient import TestClient
+
+        from app.api.main import app
+
+        body = TestClient(app).get("/health").json()
+        assert "gridlines" in body["providers"]
+
+    def test_an_outage_resolves_to_the_five_person_checks(self):
+        """The point of the row. A refused Gridlines account must name
+        the checks it covers, so the screen greys exactly those."""
+        from app.services.runner import _checks_in_scope
+
+        assert set(_checks_in_scope("gridlines", "")) == {
+            "prefill", "footprint", "personaddr", "epfomember", "emphistory",
+        }
+
+    def test_the_row_says_these_are_a_person_not_a_company(self):
+        """Every other provider reads a registry about a company. This
+        one returns a named individual's records, and the one line a
+        screen shows has to say so."""
+        assert "person" in self._rows()["gridlines"]["note"].lower()
+
+    def test_an_unset_key_does_not_read_as_no_record(self):
+        """`not_configured` is a coverage gap. The note must not let it
+        pass for a person who came back clean."""
+        note = self._rows(gridlines_api_key="")["gridlines"]["note"]
+        assert "not the same as a person having no record" in note.lower()
