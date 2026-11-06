@@ -264,3 +264,17 @@ class ProviderStatusOut(ApiModel):
 
     #: 401, 402 or 403 — which the provider actually returned.
     blockedStatus: int | None = None
+
+    #: The CHECK IDS this provider's outages actually cover, each with the
+    #: provider's own reason.
+    #:
+    #: Computed here rather than on the screen because providers do not
+    #: all bill the same way. WhoisXML charges its products from separate
+    #: pools — on 6 Nov 2026 one key returned 200 for SSL and 403 for
+    #: WHOIS History in the same minute — while FileSure, eCourts and
+    #: FinAGG each draw on one wallet. Teaching the browser that
+    #: distinction would mean a second copy of it, and the two copies
+    #: would drift. The browser just asks "is my check id in here".
+    #:
+    #: Empty while nothing is blocked, which is the normal case.
+    blockedChecks: dict[str, str] = {}

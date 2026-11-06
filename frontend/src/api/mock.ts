@@ -471,11 +471,11 @@ export const mockApi: VbcApi = {
    */
   async listProviderStatus() {
     return latency([
-      { provider: 'filesure', configured: true, blocked: false },
-      { provider: 'whoisxml', configured: true, blocked: false },
-      { provider: 'ecourts', configured: true, blocked: false },
-      { provider: 'finagg', configured: true, blocked: false },
-      { provider: 'archive', configured: true, blocked: false },
+      { provider: 'filesure', configured: true, blocked: false, blockedChecks: {} },
+      { provider: 'whoisxml', configured: true, blocked: false, blockedChecks: {} },
+      { provider: 'ecourts', configured: true, blocked: false, blockedChecks: {} },
+      { provider: 'finagg', configured: true, blocked: false, blockedChecks: {} },
+      { provider: 'archive', configured: true, blocked: false, blockedChecks: {} },
     ])
   },
 }

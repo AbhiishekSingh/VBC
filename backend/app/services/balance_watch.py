@@ -118,6 +118,11 @@ def check_filesure(
         provider_state.record_outage(
             session,
             "filesure",
+            # FileSure bills from ONE wallet, so an account refusal really
+            # is provider-wide. Stated rather than defaulted, because the
+            # moment a provider gains separate pools this is the line that
+            # has to change.
+            product="",
             message=str(exc),
             http_status=getattr(exc, "status", None),
             source="balance_check",

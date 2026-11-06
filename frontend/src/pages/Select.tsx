@@ -82,15 +82,19 @@ function dependentsOf(checkId: string): string[] {
 /**
  * A selectable check is one with a source behind it that is answering.
  *
- * `blocked` is a map of source name to the source's own error text, built
- * from /providers. It is deliberately a parameter rather than module
- * state: a stale copy of "which sources are down" is worse than none,
- * because it silently drops checks the analyst chose.
+ * `blocked` maps a CHECK ID to the source's own error text. Keyed on the
+ * check rather than the provider because providers do not all bill the
+ * same way — the server works that out and hands down the list of checks
+ * actually affected, so this file holds no copy of that rule.
+ *
+ * Deliberately a parameter rather than module state: a stale copy of
+ * "what is down" is worse than none, because it silently drops checks the
+ * analyst chose.
  */
 const isSelectable = (id: string, blocked?: ReadonlyMap<string, string>): boolean => {
   const def = CHECKS.find((c) => c.id === id)
   if (!def || def.state === 'not_configured' || def.always) return false
-  return !blocked?.has(def.provider)
+  return !blocked?.has(id)
 }
 
 /** Names rather than raw ids — "needs mca, dirs" told nobody anything. */
@@ -141,13 +145,17 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
       .listProviderStatus()
       .then((rows) => {
         if (!live) return
-        setBlocked(
-          new Map(
-            rows
-              .filter((r) => r.blocked)
-              .map((r) => [r.provider, r.blockedReason || 'No reason was returned.']),
-          ),
-        )
+        // One flat map of check id -> the source's own words. The
+        // server has already resolved which checks each outage covers,
+        // so a provider that bills per product takes down only the
+        // checks on the dead pool.
+        const next = new Map<string, string>()
+        for (const row of rows) {
+          for (const [checkId, reason] of Object.entries(row.blockedChecks ?? {})) {
+            next.set(checkId, reason || 'No reason was returned.')
+          }
+        }
+        setBlocked(next)
       })
       .catch(() => {
         /* see above: an empty map is the safe failure */
@@ -157,11 +165,21 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     }
   }, [])
 
+  /*
+    The DISTINCT reasons behind the blocked checks.
+
+    A provider that bills per product can have one pool down and the
+    others fine, so the number of blocked checks and the number of actual
+    faults are different numbers. The headline uses this one.
+  */
+  const reasons = useMemo(
+    () => Array.from(new Set(blocked.values())),
+    [blocked],
+  )
+
   /** The source's own words for why this check cannot run, or null. */
-  const blockedReason = (checkId: string): string | null => {
-    const def = CHECKS.find((c) => c.id === checkId)
-    return (def && blocked.get(def.provider)) || null
-  }
+  const blockedReason = (checkId: string): string | null =>
+    blocked.get(checkId) ?? null
 
   /**
    * One write for any selection change, whether it came from a single
@@ -192,7 +210,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     // Switching OFF a blocked check is always allowed — it is the only
     // way out of a selection made before the source went down. Switching
     // one ON is not: the call cannot be made.
-    if (!selected.includes(checkId) && blocked.has(def.provider)) return
+    if (!selected.includes(checkId) && blocked.has(checkId)) return
 
     let next: string[]
     if (selected.includes(checkId)) {
@@ -472,23 +490,29 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
 
       {/*
         One line at the top, so nobody has to scroll eight groups to find
-        out why a familiar check is greyed out. Counted by SOURCE, not by
-        check: "11 checks unavailable" reads like eleven separate faults
-        when it is one account that needs paying.
+        out why a familiar check is greyed out.
+
+        COUNTED BY FAULT, NOT BY CHECK. "11 checks unavailable" reads as
+        eleven separate problems when it is one account that needs
+        paying, and a reader who thinks eleven things are broken reaches
+        for the wrong response. Distinct reasons is the honest count: one
+        empty wallet is one line however many checks it stops.
       */}
-      {blocked.size > 0 && (
+      {reasons.length > 0 && (
         <Callout
           kind="warn"
           title={
-            blocked.size === 1
+            reasons.length === 1
               ? 'One data source is not answering'
-              : `${blocked.size} data sources are not answering`
+              : `${reasons.length} data sources are not answering`
           }
         >
-          Their checks are switched off below and will not be charged for. What
-          the source said:
+          {blocked.size === 1
+            ? 'One check is switched off below and will not be charged for.'
+            : `${blocked.size} checks are switched off below and will not be charged for.`}{' '}
+          What the source said:
           <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
-            {Array.from(blocked.values()).map((reason) => (
+            {reasons.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>

@@ -51,6 +51,20 @@ export interface ProviderStatus {
   note?: string
   blocked?: boolean
   blockedReason?: string
+
+  /**
+   * The CHECK IDS this provider's outages cover, each with the source's
+   * own reason. Resolved on the SERVER, because providers do not all
+   * bill the same way: one of them charges its products from separate
+   * pools, so a refusal on one says nothing about the others, while the
+   * rest draw on a single wallet where a refusal really is account-wide.
+   *
+   * Working that out here would mean a second copy of the rule living in
+   * the browser, and two copies of one rule is how the scoring engine
+   * once ended up 25 points apart from itself. This screen only asks
+   * "is my check id in here".
+   */
+  blockedChecks?: Record<string, string>
   blockedSince?: string | null
   blockedStatus?: number | null
 }

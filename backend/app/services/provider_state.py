@@ -63,16 +63,35 @@ from app.db.models import AuditLog, ProviderOutage
 PROBE_AFTER = timedelta(minutes=15)
 
 
-def open_outages(session: Session) -> dict[str, ProviderOutage]:
-    """Every provider currently blocked, keyed by provider name.
+def open_outages(session: Session) -> dict[tuple[str, str], ProviderOutage]:
+    """Every pool currently blocked, keyed by ``(provider, product)``.
 
     One query per run and one per page load. Returned as a dict because
-    both callers ask "is THIS provider blocked" repeatedly.
+    both callers ask "is THIS pool blocked" repeatedly.
+
+    Keyed by a PAIR, not by provider, because WhoisXML bills its products
+    from separate pools: on 6 Nov 2026 one key returned 200 for SSL and
+    Domain Reputation and 403 for WHOIS History and Reverse WHOIS, in the
+    same minute. A provider-keyed dict cannot express that, and blocking
+    the lot would disable two checks that were answering normally.
+
+    ``product`` is "" for the providers that bill from one wallet, so for
+    them the behaviour is exactly as before.
     """
     rows = session.scalars(
         select(ProviderOutage).where(ProviderOutage.cleared_at.is_(None))
     ).all()
-    return {row.provider: row for row in rows}
+    return {(row.provider, row.product or ""): row for row in rows}
+
+
+def _label(provider: str, product: str) -> str:
+    """How an outage is named in the audit log.
+
+    The pool, not just the provider, because "whoisxml blocked" and
+    "whoisxml/whois blocked" are very different events and the log is read
+    months later by someone reconstructing a complaint.
+    """
+    return f"{provider}/{product}" if product else provider
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -111,6 +130,7 @@ def record_outage(
     session: Session,
     provider: str,
     *,
+    product: str = "",
     message: str,
     http_status: int | None = None,
     check_id: str | None = None,
@@ -127,6 +147,7 @@ def record_outage(
     existing = session.scalar(
         select(ProviderOutage).where(
             ProviderOutage.provider == provider,
+            ProviderOutage.product == product,
             ProviderOutage.cleared_at.is_(None),
         )
     )
@@ -139,13 +160,14 @@ def record_outage(
                     vendor_id=vendor_id,
                     actor="system",
                     action="PROVIDER_OUTAGE_CHANGED",
-                    detail=f"{provider}: {message}",
+                    detail=f"{_label(provider, product)}: {message}",
                 )
             )
         return existing
 
     outage = ProviderOutage(
         provider=provider,
+        product=product,
         http_status=http_status,
         provider_message=message,
         detected_on_check=check_id,
@@ -159,9 +181,15 @@ def record_outage(
             actor="system",
             action="PROVIDER_OUTAGE_OPENED",
             detail=(
-                f"{provider} blocked (HTTP {http_status}) — {message}. "
-                f"Every {provider} check is unavailable until this clears. "
-                f"Detected on {check_id or 'the nightly balance check'}."
+                f"{_label(provider, product)} blocked (HTTP {http_status}) — "
+                f"{message}. "
+                + (
+                    f"Every {provider} check is unavailable until this clears. "
+                    if not product
+                    else f"Only the {product} check is affected; the rest of "
+                         f"{provider} is untouched. "
+                )
+                + f"Detected on {check_id or 'the nightly balance check'}."
             ),
         )
     )
@@ -170,7 +198,11 @@ def record_outage(
 
 
 def clear_outage(
-    session: Session, provider: str, *, reason: str = "a successful call"
+    session: Session,
+    provider: str,
+    *,
+    product: str = "",
+    reason: str = "a successful call",
 ) -> bool:
     """Close an open outage. Returns True if there was one to close.
 
@@ -185,6 +217,7 @@ def clear_outage(
     outage = session.scalar(
         select(ProviderOutage).where(
             ProviderOutage.provider == provider,
+            ProviderOutage.product == product,
             ProviderOutage.cleared_at.is_(None),
         )
     )
@@ -198,7 +231,8 @@ def clear_outage(
             actor="system",
             action="PROVIDER_OUTAGE_CLEARED",
             detail=(
-                f"{provider} is answering again, cleared by {reason}. "
+                f"{_label(provider, product)} is answering again, "
+                f"cleared by {reason}. "
                 f"It was blocked from {outage.started_at:%Y-%m-%d %H:%M} — "
                 f"{outage.provider_message}"
             ),

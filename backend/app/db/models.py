@@ -826,6 +826,33 @@ class ProviderOutage(Base):
     #: "filesure", "whoisxml", "finagg", "ecourts" — matches Provider.value.
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
 
+    #: WHICH POOL ran out, when a provider bills more than one.
+    #:
+    #: Empty string = the provider's whole account. FileSure, eCourts and
+    #: FinAGG each draw on a single wallet, so one refusal really does mean
+    #: every check against them is dead, and they use "".
+    #:
+    #: WhoisXML does not work that way. Its products are billed from
+    #: SEPARATE pools, and on 6 Nov 2026 one key returned, in the same
+    #: minute from the same IP:
+    #:
+    #:     ssl-certificates    200      domain-reputation  200
+    #:     whois-history       403      reverse-whois      403
+    #:
+    #: The Domain Research Suite subscription had lapsed; the standalone
+    #: products were fine. Blocking by provider would have taken two
+    #: working checks away on the strength of a 403 from a different
+    #: product — the platform causing an outage of its own, which is worse
+    #: than the one it exists to prevent.
+    #:
+    #: NOT NULL with a "" default rather than nullable, deliberately:
+    #: Postgres treats NULLs as distinct in a unique index, so a nullable
+    #: column would let two open rows exist for the same provider and
+    #: silently break the idempotency the table depends on.
+    product: Mapped[str] = mapped_column(
+        String(48), nullable=False, default="", server_default=""
+    )
+
     #: The HTTP status that triggered it: 401, 402 or 403.
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -859,11 +886,13 @@ class ProviderOutage(Base):
     )
 
     __table_args__ = (
-        # One OPEN outage per provider. A partial index rather than a plain
-        # unique: closed rows accumulate on purpose, as the outage history.
+        # One OPEN outage per provider AND POOL. A partial index rather
+        # than a plain unique: closed rows accumulate on purpose, as the
+        # outage history.
         Index(
             "uq_provider_outage_open",
             "provider",
+            "product",
             unique=True,
             postgresql_where=text("cleared_at IS NULL"),
             # Local development runs on SQLite, which supports partial

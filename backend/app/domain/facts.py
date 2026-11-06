@@ -36,7 +36,21 @@ from typing import Any, Iterable, Literal
 
 #: Bumped whenever a parser's output changes meaning. Stored beside the
 #: blob so a re-parse can be told apart from the original.
-PARSER_VERSION = "1"
+#:
+#: "2" — 6 Nov 2026. The director-profile parser was dropping ENDED
+#: directorships: `companyData` holds the roles a person currently
+#: occupies, and the ones they have left live in a second block,
+#: `mcaSignatoryCessationMasterHistory`, which was never read. One live
+#: profile rendered as a single directorship when the payload listed
+#: three. The director's name and the appointment date were being missed
+#: the same way, and slashed dates were printed unparsed.
+#:
+#: That is a change of MEANING, not of presentation — a blob saying
+#: "1 directorship" and a blob saying "3" cannot both be version 1, or
+#: the version stops telling anyone anything. Rebuild historical rows
+#: with `python -m scripts.backfill_facts`; it reads stored payloads and
+#: costs nothing.
+PARSER_VERSION = "2"
 
 Shape = Literal["detail", "summary", "table", "document", "reference", "none"]
 
