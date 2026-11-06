@@ -87,6 +87,13 @@ def health():
                 else "not_configured"
             ),
             "ecourts": "live" if settings.ecourts_configured else "not_configured",
+            # Added late, and omitted here when it was — so this endpoint
+            # reported six healthy providers while a seventh, with five
+            # live checks against it, was not mentioned at all. A status
+            # endpoint that silently leaves a provider out is worse than
+            # one that says it is down: nobody goes looking for a row that
+            # is not there.
+            "gridlines": "live" if settings.gridlines_configured else "not_configured",
             "archive": "live",
             # Three states, not two. A key that is present but switched off
             # is a different situation from no key at all, and "why is this
