@@ -296,6 +296,7 @@ export const mockApi: VbcApi = {
       cin: draft.cin || null,
       domain: draft.domain || null,
       website: draft.website || null,
+      contactMobile: draft.contactMobile || null,
       stage: 'select',
       decision: null,
       unlocked: false,

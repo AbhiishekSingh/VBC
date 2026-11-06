@@ -2084,3 +2084,185 @@ def catalog(summary: str, items: list[str]) -> dict:
         fields=[F.field("Values", ", ".join(str(i) for i in items[:40])
                         + (f" … and {len(items) - 40} more" if len(items) > 40 else ""))],
     )
+
+# =====================================================================
+# Contact person — PERSONAL records (Gridlines)
+# =====================================================================
+#
+# These five render a named individual's records, not a company's. Every
+# builder therefore leads with that fact rather than burying it, and none
+# of them infers anything: an address that differs from the registered
+# office is shown, never flagged, because for a proprietor it is the
+# ordinary case.
+#
+# The response shape is not yet known — the Mobile Intelligence Suite
+# calls these endpoints but renders whatever arrives generically, so it
+# records no field names, and this project has been wrong three times
+# about what a provider's documentation says it returns. The adapter
+# therefore extracts across several spellings and keeps `_raw_keys`, the
+# literal top-level keys of the payload. When the first real response
+# lands, `_raw_keys` says exactly what to parse, and
+# `scripts/backfill_facts` rebuilds every historical row from the stored
+# payload for nothing.
+
+def _unknown_shape(data: dict) -> list[dict]:
+    """A flag naming the payload's real keys, while the shape is unproven.
+
+    Deliberately a flag and not a silent omission. A screen that shows
+    three empty rows looks like a person with no records; a screen that
+    says "the response carried these nine keys and this adapter reads
+    none of them" looks like what it is.
+    """
+    keys = data.get("_raw_keys") or []
+    body = {k: v for k, v in data.items() if k != "_raw_keys"}
+    if any(v not in (None, "", [], {}) for v in body.values()) or not keys:
+        return []
+    return [F.flag(
+        "warn", "Response shape not yet mapped",
+        "The provider answered and this adapter read nothing from it. The "
+        "payload's top-level fields were: " + ", ".join(map(str, keys)) +
+        ". The full response is stored with this result — the parser can be "
+        "corrected and every past result rebuilt without paying again.",
+    )]
+
+
+def person_identity(data: dict) -> dict:
+    """Name, PAN, date of birth and address behind a contact number."""
+    rows = [
+        {"field": "Name", "value": data.get("name")},
+        {"field": "PAN", "value": data.get("pan")},
+        {"field": "Date of birth", "value": F.human_date(parse_date(data.get("dob")))
+                                            or data.get("dob")},
+        {"field": "Gender", "value": data.get("gender")},
+        {"field": "Email", "value": data.get("email")},
+        {"field": "Address", "value": _flat(data.get("address"))},
+    ]
+    return F.build(
+        F.TABLE,
+        stats=[F.stat("Fields returned",
+                      sum(1 for r in rows if r["value"] not in (None, "", [], {})))],
+        rows=F.table(
+            [F.column("field", "Field"), F.column("value", "Value")],
+            [r for r in rows if r["value"] not in (None, "", [], {})],
+            empty_note="No identity fields were returned for this number.",
+        ),
+        flags=_unknown_shape(data),
+    )
+
+
+def person_footprint(data: dict) -> dict:
+    """Online services this number or email appears against."""
+    found = data.get("platforms") or []
+    if isinstance(found, dict):
+        found = [found]
+    rows = [
+        {"service": _label_of(p), "detail": _flat(p)}
+        for p in found if p not in (None, "", {})
+    ]
+    return F.build(
+        F.TABLE,
+        stats=[F.stat("Services found", len(rows))],
+        rows=F.table(
+            [F.column("service", "Service"), F.column("detail", "Detail")],
+            rows,
+            empty_note="No online services were returned for this number.",
+        ),
+        flags=_unknown_shape(data),
+    )
+
+
+def person_addresses(data: dict) -> dict:
+    """Addresses on record against a contact number.
+
+    Shown, never judged. An address that differs from the registered
+    office is the ordinary case for a proprietor, and a flag here would
+    read as an adverse finding where there is none.
+    """
+    found = data.get("addresses") or []
+    if isinstance(found, (dict, str)):
+        found = [found]
+    rows = [{"address": _flat(a)} for a in found if a not in (None, "", {})]
+    return F.build(
+        F.TABLE,
+        stats=[F.stat("Addresses on record", len(rows))],
+        rows=F.table(
+            [F.column("address", "Address")],
+            rows,
+            empty_note="No address was returned for this number.",
+        ),
+        flags=_unknown_shape(data),
+    )
+
+
+def person_epfo(data: dict) -> dict:
+    """The UAN behind a contact number."""
+    rows = [
+        {"field": "UAN", "value": data.get("uan")},
+        {"field": "Name", "value": data.get("name")},
+        {"field": "Status", "value": data.get("status")},
+    ]
+    return F.build(
+        F.TABLE,
+        stats=[F.stat("UAN found", "Yes" if data.get("uan") else "No")],
+        rows=F.table(
+            [F.column("field", "Field"), F.column("value", "Value")],
+            [r for r in rows if r["value"] not in (None, "", [], {})],
+            empty_note="No EPFO membership was returned for this number.",
+        ),
+        flags=_unknown_shape(data),
+    )
+
+
+def person_employment(data: dict) -> dict:
+    """Employers and dates against a UAN."""
+    rows = []
+    for e in (data.get("employments") or []):
+        if not isinstance(e, dict):
+            rows.append({"employer": str(e), "from": None, "to": None})
+            continue
+        rows.append({
+            "employer": _first_value(e, ("establishment_name", "employer_name",
+                                        "company", "name")),
+            "from": F.human_date(parse_date(_first_value(
+                e, ("date_of_joining", "doj", "from", "start_date")))),
+            "to": F.human_date(parse_date(_first_value(
+                e, ("date_of_exit", "doe", "to", "end_date")))),
+        })
+    return F.build(
+        F.TABLE,
+        stats=[
+            F.stat("Employers on record", len(rows)),
+            F.stat("Currently employed",
+                   sum(1 for r in rows if not r["to"])),
+        ],
+        rows=F.table(
+            [F.column("employer", "Employer"),
+             F.column("from", "From", format="date"),
+             F.column("to", "To", format="date")],
+            rows,
+            empty_note="No employment history was returned for this UAN.",
+        ),
+        flags=_unknown_shape(data),
+    )
+
+
+def _flat(value) -> str | None:
+    """A nested address or record as one readable line."""
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts = [str(v) for v in value.values()
+                 if v not in (None, "", [], {}) and not isinstance(v, (dict, list))]
+        return ", ".join(parts) or None
+    if isinstance(value, list):
+        return "; ".join(filter(None, (_flat(v) for v in value))) or None
+    return str(value)
+
+
+def _label_of(value) -> str | None:
+    if isinstance(value, dict):
+        return _first_value(value, ("name", "platform", "service",
+                                    "provider", "type"))
+    return str(value) if value not in (None, "", [], {}) else None

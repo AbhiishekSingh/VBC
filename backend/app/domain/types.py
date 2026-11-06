@@ -110,6 +110,7 @@ class Provider(str, Enum):
     WHOISXML = "whoisxml"
     FINAGG = "finagg"
     ECOURTS = "ecourts"
+    GRIDLINES = "gridlines"
     ARCHIVE = "archive"
     IN_HOUSE = "in_house"
     NONE = "none"

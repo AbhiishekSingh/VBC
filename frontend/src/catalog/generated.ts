@@ -720,6 +720,13 @@ export const CHECK_GROUPS = [
     "source": "eCourtsIndia · LegalCheck",
     "mark": "L",
     "configured": true
+  },
+  {
+    "id": "person",
+    "name": "Contact Person — personal records",
+    "source": "Gridlines · consent required",
+    "mark": "P",
+    "configured": true
   }
 ] as const;
 
@@ -751,6 +758,20 @@ export const INPUT_RULES = {
     "hint": "Exactly 8 digits.",
     "example": "09054126",
     "normalise": true
+  },
+  "mobile": {
+    "pattern": "^[6-9]\\d{9}$",
+    "level": "block",
+    "hint": "Ten digits starting 6-9. No +91, no spaces.",
+    "example": "9876543210",
+    "normalise": false
+  },
+  "uan": {
+    "pattern": "^\\d{12}$",
+    "level": "block",
+    "hint": "A UAN is exactly 12 digits.",
+    "example": "100123456789",
+    "normalise": false
   },
   "cnr": {
     "pattern": "^[A-Za-z]{4}\\d{2}[A-Za-z0-9]{6}\\d{4}$",
@@ -2515,6 +2536,262 @@ export const CHECKS = [
     "always": false,
     "admin": false,
     "params": []
+  },
+  {
+    "id": "prefill",
+    "group": "person",
+    "name": "Contact person — identity",
+    "endpoint": "POST /profile-api/mobile/prefill",
+    "provider": "gridlines",
+    "note": "Name, PAN, date of birth and address behind the contact number. Personal data about an individual, not a company record.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "mobile",
+        "label": "Contact mobile",
+        "required": true,
+        "fromVendor": "contact_mobile",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "9876543210"
+      },
+      {
+        "key": "consentRef",
+        "label": "Consent reference",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "e.g. signed declaration dated 12 Oct 2026"
+      },
+      {
+        "key": "firstName",
+        "label": "First name",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "narrows the match"
+      },
+      {
+        "key": "lastName",
+        "label": "Last name",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "narrows the match"
+      }
+    ]
+  },
+  {
+    "id": "footprint",
+    "group": "person",
+    "name": "Contact person — digital footprint",
+    "endpoint": "POST /profile-api/mobile/digital-footprint",
+    "provider": "gridlines",
+    "note": "Which online services this number and email appear against.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "mobile",
+        "label": "Contact mobile",
+        "required": true,
+        "fromVendor": "contact_mobile",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "9876543210"
+      },
+      {
+        "key": "consentRef",
+        "label": "Consent reference",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "email",
+        "label": "Email",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "optional, narrows the match"
+      }
+    ]
+  },
+  {
+    "id": "personaddr",
+    "group": "person",
+    "name": "Contact person — address on record",
+    "endpoint": "POST /profile-api/mobile/address-lookup",
+    "provider": "gridlines",
+    "note": "Addresses recorded against the contact number. Compare with the registered office before drawing any conclusion.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "mobile",
+        "label": "Contact mobile",
+        "required": true,
+        "fromVendor": "contact_mobile",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "9876543210"
+      },
+      {
+        "key": "consentRef",
+        "label": "Consent reference",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      }
+    ]
+  },
+  {
+    "id": "epfomember",
+    "group": "person",
+    "name": "Contact person — EPFO membership",
+    "endpoint": "POST /epfo-api/fetch-uan",
+    "provider": "gridlines",
+    "note": "The UAN behind the contact number. PAN narrows the match.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "mobile",
+        "label": "Contact mobile",
+        "required": true,
+        "fromVendor": "contact_mobile",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "9876543210"
+      },
+      {
+        "key": "consentRef",
+        "label": "Consent reference",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      },
+      {
+        "key": "pan",
+        "label": "PAN",
+        "required": false,
+        "fromVendor": "pan",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "ABCDE1234F"
+      }
+    ]
+  },
+  {
+    "id": "emphistory",
+    "group": "person",
+    "name": "Contact person — employment history",
+    "endpoint": "POST /epfo-api/employment-history/fetch-by-uan",
+    "provider": "gridlines",
+    "note": "Employers and dates against a UAN. Leave the UAN blank to take it from the EPFO membership result.",
+    "state": "active",
+    "requires": [
+      "epfomember"
+    ],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 0,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "uan",
+        "label": "UAN",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": "epfomember",
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "blank = taken from the EPFO membership result"
+      },
+      {
+        "key": "consentRef",
+        "label": "Consent reference",
+        "required": false,
+        "fromVendor": null,
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": ""
+      }
+    ]
   }
 ] as const;
 
