@@ -187,8 +187,18 @@ class GridlinesProvider(HttpProvider):
         docstring.
         """
         body: dict[str, Any] = {"mobile_number": mobile, "consent": consent}
+        # TOP-LEVEL, not nested under "name".
+        #
+        # This adapter sent `{"name": {"first_name": …, "last_name": …}}`,
+        # which was invented here. The Mobile Intelligence Suite — the
+        # integration that is live and working against this same key and
+        # this same endpoint — sends them flat, and it is the only
+        # evidence anyone has about what this endpoint accepts. Copied
+        # from `third_party.py:api_mobile_prefill`, verbatim.
         if first_name:
-            body["name"] = {"first_name": first_name, "last_name": last_name}
+            body["first_name"] = first_name
+        if last_name:
+            body["last_name"] = last_name
         payload = self._call(PREFILL, body,
                              paisa=self.settings.gridlines_prefill_paisa,
                              label="gridlines.prefill")
@@ -268,8 +278,19 @@ class GridlinesProvider(HttpProvider):
         then `employment_history` simply requires the UAN as an input.
         """
         body: dict[str, Any] = {"mobile_number": mobile, "consent": consent}
+        # `pan`, NOT `pan_number`.
+        #
+        # `pan_number` was invented here. The live integration sends
+        # `pan` (`third_party.py:api_epfo_member`), and because the
+        # vendor record usually HAS a PAN this field was present on
+        # almost every real call — so the wrong spelling was not an edge
+        # case, it was the normal request.
+        #
+        # Note the employment-history call below really does send
+        # `uan_number`. The two are inconsistent at the provider, and
+        # normalising them to match each other would break one of them.
         if pan:
-            body["pan_number"] = pan.strip().upper()
+            body["pan"] = pan.strip().upper()
         payload = self._call(EPFO_UAN, body,
                              paisa=self.settings.gridlines_epfo_member_paisa,
                              label="gridlines.epfo_member")
