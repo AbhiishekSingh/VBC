@@ -32,12 +32,49 @@ type RuleShape = {
   hint: string
   example: string
   normalise: boolean
+  /** ONE FIELD, MANY VALUES — see `cleanSubject` below. */
+  multi?: boolean
 }
 
 const RULES = INPUT_RULES as unknown as Record<string, RuleShape>
 
 export function ruleFor(key: string): RuleShape | undefined {
   return RULES[key]
+}
+
+/**
+ * One entry of a multi-value field, as the runner will send it.
+ *
+ * Mirrors `clean_subject` in `app/domain/validation.py`. Digits only, with
+ * a pasted `+91` or leading `0` dropped — both are the commonest paste off
+ * a contact sheet rather than a mistake.
+ *
+ * The two copies must agree, and the reason is the one Select.tsx is full
+ * of: if this box accepts a value the runner would send differently, the
+ * analyst is shown one thing and the provider receives another.
+ */
+export function cleanSubject(entry: string): string {
+  const digits = (entry || '').replace(/\D/g, '')
+  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2)
+  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1)
+  return digits
+}
+
+/**
+ * A multi-value field as the list the runner will loop over.
+ *
+ * Order preserved, duplicates dropped. Two directors sharing a number is a
+ * real thing; paying twice for one answer is not.
+ */
+export function splitSubjects(text: string | null | undefined): string[] {
+  const raw = (text || '').trim()
+  if (!raw) return []
+  const out: string[] = []
+  for (const part of raw.replace(/[,;]/g, '\n').split('\n')) {
+    const value = cleanSubject(part)
+    if (value && !out.includes(value)) out.push(value)
+  }
+  return out
 }
 
 const GSTIN_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -97,6 +134,22 @@ export function checkValue(key: string, value: string | null | undefined): Probl
 
   const raw = (value || '').trim()
   if (!raw) return null
+
+  if (rule.multi) {
+    // Each entry on its own, and the message NAMES the bad one. "Ten
+    // digits starting 6-9" against a box holding five numbers does not
+    // tell the analyst which of the five to look at.
+    for (const entry of raw.replace(/[,;]/g, '\n').split('\n')) {
+      if (!entry.trim()) continue
+      if (!new RegExp(rule.pattern).test(cleanSubject(entry))) {
+        return { key, level: rule.level as Level, message: `“${entry.trim()}” is not usable. ${rule.hint}` }
+      }
+    }
+    if (splitSubjects(raw).length === 0) {
+      return { key, level: rule.level as Level, message: rule.hint }
+    }
+    return null
+  }
 
   const candidate = rule.normalise ? raw.toUpperCase() : raw
   if (!new RegExp(rule.pattern).test(candidate)) {

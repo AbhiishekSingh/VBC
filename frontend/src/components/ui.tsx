@@ -109,6 +109,79 @@ export function RuleStateBadge({ state }: { state: RuleState }) {
 /* ---- layout primitives ----------------------------------------------- */
 
 /**
+ * A modal, on the native `<dialog>`.
+ *
+ * Escape, focus trapping, inert background and the backdrop all come from
+ * the browser. `InfoButton` below was the first use of this and carried its
+ * own copy; a second one was about to make it three, so the mechanics are
+ * here once and the two callers differ only in what they put inside.
+ *
+ * `footer` is a separate slot rather than part of `children` so the actions
+ * stay pinned while a long body scrolls. On a dialog whose confirm button
+ * SPENDS MONEY, a footer that can scroll out of sight is how someone
+ * clicks the wrong thing — the total and the button have to be visible
+ * together at every scroll position.
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  sub,
+  footer,
+  wide,
+  children,
+}: {
+  open: boolean
+  onClose: () => void
+  title: string
+  /** One line under the title. Optional. */
+  sub?: string
+  footer?: ReactNode
+  /** For a dialog holding a list rather than a paragraph. */
+  wide?: boolean
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // showModal() throws if already open, and close() if already closed.
+    if (open && !el.open) el.showModal()
+    if (!open && el.open) el.close()
+  }, [open])
+
+  return (
+    <dialog
+      ref={ref}
+      className={`modal${wide ? ' is-wide' : ''}`}
+      // Fires on Escape as well as close(), so our state cannot drift out
+      // of step with what the browser is actually showing.
+      onClose={onClose}
+      // A click landing on the dialog ELEMENT rather than its contents is a
+      // click on the backdrop.
+      onClick={(e) => {
+        if (e.target === ref.current) onClose()
+      }}
+    >
+      <div className="modal-head">
+        <div>
+          <h3 className="modal-h">{title}</h3>
+          {sub && <p className="small muted modal-sub">{sub}</p>}
+        </div>
+        <button type="button" className="btn sm ghost" onClick={onClose} aria-label="Close">
+          Close
+        </button>
+      </div>
+
+      <div className="modal-body">{children}</div>
+
+      {footer && <div className="modal-foot">{footer}</div>}
+    </dialog>
+  )
+}
+
+/**
  * An `ⓘ` that opens its content in a modal.
  *
  * For reference material — the rules behind a number, which do not change

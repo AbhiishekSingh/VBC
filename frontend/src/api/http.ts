@@ -284,7 +284,11 @@ export const httpApi: VbcApi = {
   setCheckInput: (id, checkId, key, value) =>
     post<Vendor>(`/vendors/${id}/inputs`, { checkId, key, value }),
 
-  runChecks: (id) => post<RunChecksResult>(`/vendors/${id}/run`),
+  // NO BODY AT ALL when the whole selection is wanted, so the Step 2
+  // caller sends exactly what it always sent and the server's optional
+  // body stays optional.
+  runChecks: (id, only) =>
+    post<RunChecksResult>(`/vendors/${id}/run`, only ? { only } : undefined),
 
   addManualEntry: (id, entry: Omit<ManualEntry, 'id'>) =>
     post<Vendor>(`/vendors/${id}/manual`, entry),

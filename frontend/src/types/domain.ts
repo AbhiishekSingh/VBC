@@ -129,6 +129,12 @@ export interface CheckFacts {
    *  evidence is, instead of showing a "no payload stored" placeholder that
    *  is true of this row and misleading about the finding. */
   derivedFrom?: string
+  /** Standing prose printed ABOVE the data, where `note` is printed below
+   *  it. The difference is not cosmetic: the person-level checks return a
+   *  named individual's PAN, date of birth and home address, and "this is
+   *  personal data about a person, not a company record" has to be read
+   *  BEFORE the table rather than after it. */
+  lede?: string
   note?: string
 }
 

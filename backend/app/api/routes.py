@@ -371,13 +371,18 @@ def set_input(vendor_id: str, body: s.CheckInputIn, session: Session = Depends(g
 
 
 @router.post("/vendors/{vendor_id}/run", response_model=s.RunResultOut)
-def run_checks(vendor_id: str, session: Session = Depends(get_session)):
+def run_checks(vendor_id: str, body: s.RunIn | None = None,
+               session: Session = Depends(get_session)):
     """Run the selected checks against the live providers.
 
     Synchronous for now. This is the call that belongs behind Celery once
     real vendors are being processed — a run with a company unlock and a
     full parallel block can take tens of seconds, which is too long to hold
     an HTTP connection open in production.
+
+    ``body.only`` narrows the run to specific checks and skips the ones
+    that have already answered — see ``RunIn``. The body is optional so
+    that the Step 2 caller, which posts nothing, is unchanged.
     """
     vendor = _vendor_or_404(session, vendor_id)
 
@@ -409,16 +414,25 @@ def run_checks(vendor_id: str, session: Session = Depends(get_session)):
             },
         )
 
+    only = body.only if body else None
     runner = CheckRunner(session)
     try:
-        result = runner.run(vendor)
+        result = runner.run(vendor, only=only)
     finally:
         runner.close()
 
     # Automated findings write the SCAN parameters they feed.
     _write_auto_ratings(session, vendor, result)
 
-    vendor.stage = "manual"
+    # A PARTIAL RUN NEVER MOVES THE STAGE.
+    #
+    # The stage is a position in the workflow, not a record of the last
+    # action. A vendor at `report` or `review` whose analyst runs two more
+    # checks from Step 3 is still at `report`; setting it back to `manual`
+    # here would walk them backwards through the screens they had already
+    # finished, and on a `decided` vendor it would reopen a closed file.
+    if only is None:
+        vendor.stage = "manual"
     session.commit()
 
     return s.RunResultOut(

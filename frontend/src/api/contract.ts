@@ -98,7 +98,17 @@ export interface VbcApi {
 
   setSelection(id: string, selected: string[]): Promise<Vendor>
   setCheckInput(id: string, checkId: string, key: string, value: string): Promise<Vendor>
-  runChecks(id: string): Promise<RunChecksResult>
+  /**
+   * Run the vendor's selection, or ONLY the checks named in `only`.
+   *
+   * `only` exists because re-running costs money. The server does not skip
+   * a check that already answered — it runs what it is given — so a "run
+   * more checks" control that re-posted the whole selection would silently
+   * re-call and re-bill every check the analyst had already paid for.
+   * Passing the delta is what makes that control safe, and the server
+   * drops any prerequisite already on file rather than buying it twice.
+   */
+  runChecks(id: string, only?: string[]): Promise<RunChecksResult>
 
   addManualEntry(id: string, entry: Omit<ManualEntry, 'id'>): Promise<Vendor>
   removeManualEntry(id: string, entryId: string): Promise<Vendor>

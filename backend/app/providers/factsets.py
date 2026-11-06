@@ -2126,15 +2126,62 @@ def _unknown_shape(data: dict) -> list[dict]:
     )]
 
 
+def _mask_pan(value: Any) -> str | None:
+    """``ABCDE1234F`` → ``******234F``.
+
+    ``facts`` is the tier a client-facing screen reads and this module's
+    own rule is that a PAN never reaches it — ``test_no_pan_reaches_the_facts``
+    pins that for the director rows. The last four are kept because the
+    one thing an analyst does with this field is check it against the PAN
+    already on the vendor record; the whole value stays in
+    ``raw_response`` behind its own grants.
+    """
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    if len(text) <= 4:
+        return "*" * len(text)
+    return "*" * (len(text) - 4) + text[-4:]
+
+
+def _mask_mobile(value: Any) -> str | None:
+    """``9876543210`` → ``9876****10``.
+
+    Partial rather than full, and the reason is specific to this screen:
+    the number is the ROW KEY of a five-director table. Masked whole, the
+    five rows become indistinguishable and the table stops saying whose
+    record is whose — which is the entire reason these checks were put on
+    one row. Enough is hidden that what is printed is not a dialable
+    number; the exact value is in ``raw_response`` and in the check's
+    recorded input.
+    """
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        text = str(value or "").strip()
+        return text or None
+    if len(digits) <= 6:
+        return digits[:2] + "*" * (len(digits) - 2)
+    return f"{digits[:4]}{'*' * (len(digits) - 6)}{digits[-2:]}"
+
+
+#: Said once, next to any blob that carries a person's records.
+_PERSON_NOTE = (
+    "Personal data about a named individual — the holder of this number — "
+    "not a company record. PAN and contact details are part-masked here; "
+    "the response exactly as the provider sent it is stored with this "
+    "result."
+)
+
+
 def person_identity(data: dict) -> dict:
     """Name, PAN, date of birth and address behind a contact number."""
     rows = [
         {"field": "Name", "value": data.get("name")},
-        {"field": "PAN", "value": data.get("pan")},
+        {"field": "PAN", "value": _mask_pan(data.get("pan"))},
         {"field": "Date of birth", "value": F.human_date(parse_date(data.get("dob")))
                                             or data.get("dob")},
         {"field": "Gender", "value": data.get("gender")},
-        {"field": "Email", "value": data.get("email")},
+        {"field": "Email", "value": _mask_email(data.get("email"))},
         {"field": "Address", "value": _flat(data.get("address"))},
     ]
     return F.build(
@@ -2147,6 +2194,7 @@ def person_identity(data: dict) -> dict:
             empty_note="No identity fields were returned for this number.",
         ),
         flags=_unknown_shape(data),
+        lede=_PERSON_NOTE,
     )
 
 
@@ -2168,6 +2216,7 @@ def person_footprint(data: dict) -> dict:
             empty_note="No online services were returned for this number.",
         ),
         flags=_unknown_shape(data),
+        lede=_PERSON_NOTE,
     )
 
 
@@ -2191,6 +2240,7 @@ def person_addresses(data: dict) -> dict:
             empty_note="No address was returned for this number.",
         ),
         flags=_unknown_shape(data),
+        lede=_PERSON_NOTE,
     )
 
 
@@ -2210,6 +2260,7 @@ def person_epfo(data: dict) -> dict:
             empty_note="No EPFO membership was returned for this number.",
         ),
         flags=_unknown_shape(data),
+        lede=_PERSON_NOTE,
     )
 
 
@@ -2243,6 +2294,218 @@ def person_employment(data: dict) -> dict:
             empty_note="No employment history was returned for this UAN.",
         ),
         flags=_unknown_shape(data),
+        lede=_PERSON_NOTE,
+    )
+
+
+# =====================================================================
+# ONE CHECK, MANY PEOPLE
+# =====================================================================
+
+#: The single-subject builder for each person check, so the one-number
+#: case renders exactly as it did before this was a list.
+_PERSON_ONE = {
+    "prefill": person_identity,
+    "footprint": person_footprint,
+    "personaddr": person_addresses,
+    "epfomember": person_epfo,
+    "emphistory": person_employment,
+}
+
+#: What the first column of the per-subject table is. `emphistory` keys on
+#: a UAN; the rest key on a mobile number.
+_SUBJECT_COLUMN = {"emphistory": "UAN"}
+
+
+def _subject_label(check_id: str, row: dict) -> str:
+    """How one subject is named in the table.
+
+    For employment history the row carries BOTH — the UAN it was called
+    with and the number that UAN was found against — and both are printed,
+    because "UAN 100123456789" on its own does not tell an analyst which
+    of five directors they are reading.
+    """
+    subject = row.get("subject")
+    uan = row.get("uan")
+    if check_id == "emphistory":
+        if uan and subject and str(uan) != str(subject):
+            return f"{uan} ({_mask_mobile(subject)})"
+        return str(uan or subject or "—")
+    return str(_mask_mobile(subject) or "—")
+
+
+def _not_examined(check_id: str, failed: list[dict]) -> list[dict]:
+    """One flag per subject that did not return.
+
+    The rule this product turns on: a person who was not examined must
+    never read as a person who came back clean. A failed lookup is
+    therefore named here, with the provider's own error, rather than
+    quietly leaving that person out of a table of four successes.
+    """
+    return [
+        F.flag(
+            "warn", f"Not examined: {_subject_label(check_id, row)}",
+            f"This lookup did not return, so nothing is known about this "
+            f"person from this check — it is a gap, not a clearance. "
+            f"{row.get('error') or 'No reason was recorded.'}",
+        )
+        for row in failed
+    ]
+
+
+def _subject_rows(check_id: str, ok: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Columns and rows for the per-subject table.
+
+    One row per subject for the three checks that return a single record,
+    and one row per ADDRESS or EMPLOYER for the two that return lists —
+    with the subject repeated down the first column. The alternative, a
+    count per subject with the detail collapsed into one cell, is the
+    shape that made the director profile unreadable.
+    """
+    first = F.column("subject", _SUBJECT_COLUMN.get(check_id, "Number"))
+
+    if check_id == "prefill":
+        cols = [first, F.column("name", "Name"),
+                F.column("pan", "PAN", format="id"),
+                F.column("dob", "Date of birth", format="date"),
+                F.column("address", "Address")]
+        rows = [{
+            "subject": _subject_label(check_id, r),
+            "name": (r.get("data") or {}).get("name"),
+            "pan": _mask_pan((r.get("data") or {}).get("pan")),
+            "dob": (F.human_date(parse_date((r.get("data") or {}).get("dob")))
+                    or (r.get("data") or {}).get("dob")),
+            "address": _flat((r.get("data") or {}).get("address")),
+        } for r in ok]
+        return cols, rows
+
+    if check_id == "epfomember":
+        cols = [first, F.column("uan", "UAN", format="id"),
+                F.column("name", "Name"), F.column("status", "Status")]
+        rows = [{
+            "subject": _subject_label(check_id, r),
+            "uan": (r.get("data") or {}).get("uan"),
+            "name": (r.get("data") or {}).get("name"),
+            "status": (r.get("data") or {}).get("status"),
+        } for r in ok]
+        return cols, rows
+
+    if check_id == "footprint":
+        cols = [first, F.column("service", "Service"), F.column("detail", "Detail")]
+        rows = []
+        for r in ok:
+            found = (r.get("data") or {}).get("platforms") or []
+            if isinstance(found, dict):
+                found = [found]
+            label = _subject_label(check_id, r)
+            for p in found:
+                if p in (None, "", {}):
+                    continue
+                rows.append({"subject": label, "service": _label_of(p),
+                             "detail": _flat(p)})
+        return cols, rows
+
+    if check_id == "personaddr":
+        cols = [first, F.column("address", "Address")]
+        rows = []
+        for r in ok:
+            found = (r.get("data") or {}).get("addresses") or []
+            if isinstance(found, (dict, str)):
+                found = [found]
+            label = _subject_label(check_id, r)
+            for a in found:
+                if a in (None, "", {}):
+                    continue
+                rows.append({"subject": label, "address": _flat(a)})
+        return cols, rows
+
+    cols = [first, F.column("employer", "Employer"),
+            F.column("from", "From", format="date"),
+            F.column("to", "To", format="date")]
+    rows = []
+    for r in ok:
+        label = _subject_label(check_id, r)
+        for e in ((r.get("data") or {}).get("employments") or []):
+            if not isinstance(e, dict):
+                rows.append({"subject": label, "employer": str(e),
+                             "from": None, "to": None})
+                continue
+            rows.append({
+                "subject": label,
+                "employer": _first_value(e, ("establishment_name",
+                                             "employer_name", "company",
+                                             "name")),
+                "from": F.human_date(parse_date(_first_value(
+                    e, ("date_of_joining", "doj", "from", "start_date")))),
+                "to": F.human_date(parse_date(_first_value(
+                    e, ("date_of_exit", "doe", "to", "end_date")))),
+            })
+    return cols, rows
+
+
+_SUBJECT_EMPTY = {
+    "prefill": "No identity was returned for any of these numbers.",
+    "footprint": "No online services were returned for any of these numbers.",
+    "personaddr": "No address was returned for any of these numbers.",
+    "epfomember": "No EPFO membership was returned for any of these numbers.",
+    "emphistory": "No employment history was returned for any of these UANs.",
+}
+
+
+def person_subjects(check_id: str, raw: dict) -> dict:
+    """The facts for a person check run against one OR MANY subjects.
+
+    A company with five directors is five lookups on ONE check row —
+    ``raw_response`` holds
+    ``{"subjects": [{"subject", "ok", "data"|"error"}], "subject_count": n}``
+    — so this is the builder the runner calls for all five person checks.
+
+    One subject delegates to the single-record builder, so the ordinary
+    case renders exactly as every other check does: a Field/Value panel,
+    not a one-row table. More than one gets a table keyed on the number,
+    which is the only shape in which five people's records stay legible.
+
+    An empty or unrecognised ``raw`` returns ``none()`` rather than an
+    empty table: "nothing was parsed" and "nobody has any records" are
+    different findings and this layer may not conflate them.
+    """
+    rows = raw.get("subjects") if isinstance(raw, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return F.none("No per-subject results were stored for this check.")
+
+    ok = [r for r in rows if isinstance(r, dict) and r.get("ok")]
+    failed = [r for r in rows if isinstance(r, dict) and not r.get("ok")]
+    total = int(raw.get("subject_count") or len(rows))
+    flags = _not_examined(check_id, failed)
+
+    if total <= 1 and len(ok) == 1 and check_id in _PERSON_ONE:
+        out = _PERSON_ONE[check_id](ok[0].get("data") or {})
+        out["fields"] = [
+            F.field(_SUBJECT_COLUMN.get(check_id, "Number"),
+                    _subject_label(check_id, ok[0]))
+        ] + list(out.get("fields") or [])
+        if flags:
+            out["flags"] = list(out.get("flags") or []) + flags
+        return out
+
+    cols, table_rows = _subject_rows(check_id, ok)
+    # Deduplicated: five numbers against an unmapped response shape is ONE
+    # defect in this adapter, not five separate findings.
+    shape_gaps = [f for r in ok for f in _unknown_shape(r.get("data") or {})]
+    return F.build(
+        F.TABLE,
+        stats=[
+            F.stat("People looked up", total),
+            F.stat("Returned", len(ok),
+                   tone="good" if len(ok) == total else "warn"),
+            F.stat("Not examined", len(failed),
+                   tone="bad" if failed else "neutral"),
+        ],
+        rows=F.table(cols, table_rows,
+                     empty_note=_SUBJECT_EMPTY.get(
+                         check_id, "Nothing was returned.")),
+        flags=flags + shape_gaps[:1],
+        lede=_PERSON_NOTE,
     )
 
 

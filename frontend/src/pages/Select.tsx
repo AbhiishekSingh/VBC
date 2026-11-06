@@ -45,7 +45,14 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '@/api'
 import { errorMessage, errorTitle } from '@/api/http'
 import { inputValue, missingInputs } from '@/api/mock'
-import { blockingProblems, checkValue, detectIdType, ruleFor } from '@/lib/validate'
+import { checkCostPaisa } from '@/lib/pricing'
+import {
+  blockingProblems,
+  checkValue,
+  detectIdType,
+  ruleFor,
+  splitSubjects,
+} from '@/lib/validate'
 import {
   CHECKS,
   CHECK_GROUPS,
@@ -279,7 +286,11 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   /* ---- cost, kept in three separate currencies ---------------------- */
   const cost = useMemo(() => {
     const active = selected.map((id) => CHECKS.find((c) => c.id === id)).filter(Boolean)
-    const reads = active.reduce((a, c) => a + (c!.costPaisa || 0), 0)
+    // PEOPLE COUNTED, not calls assumed. The person-level checks take a
+    // list — five directors in one field — and are charged per person, so
+    // the flat catalogue price would quote a fifth of the real figure on
+    // exactly the checks the analyst cannot price by eye.
+    const reads = active.reduce((a, c) => a + checkCostPaisa(vendor, c!.id), 0)
     const credits = active.reduce((a, c) => a + (c!.credits || 0), 0)
     const shots = active.reduce((a, c) => a + (c!.screenshots || 0), 0)
     const needsUnlock = active.some((c) => c!.needsCompanyUnlock) && !vendor.unlocked
@@ -295,7 +306,10 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
         (needsUnlock ? COMPANY_UNLOCK_PAISA : 0) +
         (needsDirectorUnlock ? DIRECTOR_UNLOCK_PAISA : 0),
     }
-  }, [selected, vendor.unlocked])
+    // `vendor` whole, not just `vendor.unlocked`: the person-level prices
+    // are read off the check inputs, so typing a fourth number has to move
+    // the figure the Run button is standing next to.
+  }, [selected, vendor])
 
   /* ---- which SCAN parameters this selection can fill ---------------- */
   const coverage = useMemo(() => {
@@ -915,6 +929,25 @@ function ParamField({
   const rule = ruleFor(param.key)
 
   /*
+    ONE FIELD, MANY PEOPLE.
+
+    The person-level checks take a list: a company with five directors is
+    five lookups, and they belong on ONE check so that each answer stays
+    tagged with the number it came from. Run as five separate checks the
+    analyst gets five rows and no way to tell which answer was whose.
+
+    A one-line input cannot show a list. It scrolls sideways, the analyst
+    cannot see what they have entered, and the only affordance for "put
+    several here" would be a sentence under the box.
+
+    `multi` comes from the generated rule, so this is not a hardcoded list
+    of field names — a field becomes multi-valued in
+    `app/domain/validation.py` and the form follows.
+  */
+  const multi = Boolean(rule?.multi)
+  const subjects = multi ? splitSubjects(local) : []
+
+  /*
     THE IDENTIFIER TYPE FOLLOWS THE IDENTIFIER.
 
     This select used to carry an "Auto-detect" option, which existed
@@ -1005,9 +1038,19 @@ function ParamField({
                 ? `Identifier type is set to "${chosenIdType}", but this looks ` +
                   `like a ${detectIdType(local).toUpperCase()}. The setting will be ` +
                   `ignored and the source asked to detect it.`
-                : rule?.example
-                  ? `e.g. ${rule.example}`
-                  : undefined
+                : // THE COUNT REPLACES THE EXAMPLE once there is something
+                  // to count. Five numbers in a box is five paid calls,
+                  // and that is worth more than "e.g. 9876543210" under a
+                  // field the analyst has evidently understood. Computed
+                  // with the splitter the runner uses, so it is the number
+                  // of calls that will be made, duplicates already gone.
+                  subjects.length > 0
+                  ? `${subjects.length} ${subjects.length === 1 ? 'person' : 'people'} — ` +
+                    `this check is charged once per person`
+                  : rule?.example
+                    ? `e.g. ${rule.example}` +
+                      (multi ? ' · one per line for several people' : '')
+                    : undefined
       }
       tone={isMissing ? 'block' : problem?.level}
     >
@@ -1023,6 +1066,29 @@ function ParamField({
             </option>
           ))}
         </select>
+      ) : multi ? (
+        <textarea
+          className={`input input-multi${isMissing ? ' is-invalid' : ''}${
+            problem ? (problem.level === 'block' ? ' is-invalid' : ' is-warning') : ''
+          }`}
+          data-field={param.key}
+          // Grows with the list, to a ceiling. A fixed height is either
+          // three empty lines under one number or a scrollbar over five,
+          // and the whole value of a textarea here is seeing the lot.
+          rows={Math.min(6, Math.max(2, subjects.length + 1))}
+          value={local}
+          placeholder={param.placeholder || 'One per line'}
+          aria-invalid={isMissing || problem?.level === 'block' || undefined}
+          onFocus={() => {
+            editing.current = true
+          }}
+          onBlur={() => {
+            editing.current = false
+            setTouched(true)
+            setEditCount((n) => n + 1)
+          }}
+          onChange={(e) => void write(e.target.value)}
+        />
       ) : (
         <input
           // RED, not amber. It used to be amber because a blank required

@@ -60,6 +60,54 @@ class Rule:
     #: capitals, and analysts paste them in whatever case they found them.
     normalise: bool = True
 
+    #: ONE FIELD, MANY VALUES — one per line, or comma or semicolon
+    #: separated, and each entry tested on its own.
+    #:
+    #: Set for the person-level checks, where a company with five
+    #: directors is five lookups on one check row. Without it the whole
+    #: field is matched against a single-value pattern, so the second
+    #: number an analyst types makes the field invalid and the API refuses
+    #: the run with a 422 — a feature that cannot be used.
+    #:
+    #: Entries pass through ``clean_subject`` before being tested, so what
+    #: this ACCEPTS is exactly what the runner SENDS. Those two diverging
+    #: is how a screen comes to show one value while the provider receives
+    #: another.
+    multi: bool = False
+
+
+def clean_subject(entry: str) -> str:
+    """One entry of a multi-value field, as the runner will send it.
+
+    Digits only, with a pasted ``+91`` or leading ``0`` dropped. Both are
+    the commonest paste off a contact sheet rather than a mistake, and
+    this is the ONE definition of that — ``runner._subjects`` calls it, so
+    the field cannot accept a value the runner would send differently.
+    """
+    digits = "".join(ch for ch in entry if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        return digits[2:]
+    if len(digits) == 11 and digits.startswith("0"):
+        return digits[1:]
+    return digits
+
+
+def split_subjects(text: str | None) -> list[str]:
+    """A multi-value field as the list the runner will loop over.
+
+    Order is preserved and duplicates dropped — two directors sharing a
+    number is a real thing, and paying twice for one answer is not.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in raw.replace(",", "\n").replace(";", "\n").split("\n"):
+        value = clean_subject(part)
+        if value and value not in out:
+            out.append(value)
+    return out
+
 
 # --- the identifiers ---------------------------------------------------
 #
@@ -115,16 +163,19 @@ RULES: dict[str, Rule] = {
         # error, because nothing about the response says it is wrong.
         pattern=r"^[6-9]\d{9}$",
         level=BLOCK,
-        hint="Ten digits starting 6-9. No +91, no spaces.",
+        hint="Ten digits starting 6-9. Several people, one per line. "
+             "A pasted +91 or leading 0 is dropped.",
         example="9876543210",
         normalise=False,
+        multi=True,
     ),
     "uan": Rule(
         pattern=r"^\d{12}$",
         level=BLOCK,
-        hint="A UAN is exactly 12 digits.",
+        hint="A UAN is exactly 12 digits. Several people, one per line.",
         example="100123456789",
         normalise=False,
+        multi=True,
     ),
 
     # --- everything below warns only -----------------------------------
@@ -243,6 +294,23 @@ def check_value(key: str, value: str | None) -> Problem | None:
         return None
     raw = (value or "").strip()
     if not raw:
+        return None
+
+    if rule.multi:
+        # Each entry on its own, and the message NAMES the bad one. "Ten
+        # digits starting 6-9" against a box holding five numbers tells
+        # the analyst nothing about which of the five to look at.
+        entries = [e for e in raw.replace(",", "\n").replace(";", "\n").split("\n")
+                   if e.strip()]
+        for entry in entries:
+            cleaned = clean_subject(entry)
+            if not re.match(rule.pattern, cleaned):
+                return Problem(
+                    key, rule.level,
+                    f"“{entry.strip()}” is not usable. {rule.hint}",
+                )
+        if not split_subjects(raw):
+            return Problem(key, rule.level, rule.hint)
         return None
 
     candidate = raw.upper() if rule.normalise else raw

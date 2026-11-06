@@ -151,6 +151,10 @@ def build() -> str:
                     "hint": rule.hint,
                     "example": rule.example,
                     "normalise": rule.normalise,
+                    # ONE FIELD, MANY VALUES. The form reads this to put a
+                    # textarea where a one-line input would be, and to
+                    # validate each entry rather than the whole box.
+                    "multi": rule.multi,
                 }
                 for key, rule in VALIDATION_RULES.items()
             },

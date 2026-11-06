@@ -217,6 +217,24 @@ class DecisionIn(ApiModel):
     overrideReason: str | None = None
 
 
+class RunIn(ApiModel):
+    """An optional narrowing of a run to specific checks.
+
+    Omitted — or ``only=None`` — runs the whole selection, which is what
+    Step 2 does and what every existing caller sends.
+
+    SUPPLIED, it runs ONLY those ids, and only the ones that have not
+    already produced a result. That restriction is the whole reason this
+    field exists: ``run()`` does not skip checks that already answered, and
+    ``_persist`` increments ``attempts``, so a Step 3 "run more checks"
+    button that re-posted the full selection would silently re-bill every
+    check the analyst had already paid for — on a full MCA set, around ₹40
+    a click, with no way to tell from the screen that it had happened.
+    """
+
+    only: list[str] | None = None
+
+
 class RunResultOut(ApiModel):
     vendor: VendorOut
     ran: int

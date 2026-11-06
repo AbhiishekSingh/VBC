@@ -736,98 +736,112 @@ export const INPUT_RULES = {
     "level": "block",
     "hint": "A 21-character CIN, an LLPIN like AAA-1234, or an FCIN like F01234.",
     "example": "U93090MH2011PTC215361",
-    "normalise": true
+    "normalise": true,
+    "multi": false
   },
   "gstin": {
     "pattern": "^\\d{2}[A-Za-z]{5}\\d{4}[A-Za-z]{1}[A-Za-z\\d]{1}[Zz]{1}[A-Za-z\\d]{1}$",
     "level": "block",
     "hint": "15 characters: 2-digit state code, 10-character PAN, entity digit, Z, then the check character.",
     "example": "22AAAAA0000A1Z5",
-    "normalise": true
+    "normalise": true,
+    "multi": false
   },
   "pan": {
     "pattern": "^[A-Za-z]{5}\\d{4}[A-Za-z]$",
     "level": "block",
     "hint": "10 characters, five letters then four digits then a letter.",
     "example": "AAAAA0000A",
-    "normalise": true
+    "normalise": true,
+    "multi": false
   },
   "din": {
     "pattern": "^\\d{8}$",
     "level": "block",
     "hint": "Exactly 8 digits.",
     "example": "09054126",
-    "normalise": true
+    "normalise": true,
+    "multi": false
   },
   "mobile": {
     "pattern": "^[6-9]\\d{9}$",
     "level": "block",
-    "hint": "Ten digits starting 6-9. No +91, no spaces.",
+    "hint": "Ten digits starting 6-9. Several people, one per line. A pasted +91 or leading 0 is dropped.",
     "example": "9876543210",
-    "normalise": false
+    "normalise": false,
+    "multi": true
   },
   "uan": {
     "pattern": "^\\d{12}$",
     "level": "block",
-    "hint": "A UAN is exactly 12 digits.",
+    "hint": "A UAN is exactly 12 digits. Several people, one per line.",
     "example": "100123456789",
-    "normalise": false
+    "normalise": false,
+    "multi": true
   },
   "cnr": {
     "pattern": "^[A-Za-z]{4}\\d{2}[A-Za-z0-9]{6}\\d{4}$",
     "level": "warn",
     "hint": "A CNR is normally 16 characters, e.g. MHAU010012342024.",
     "example": "MHAU010012342024",
-    "normalise": true
+    "normalise": true,
+    "multi": false
   },
   "domainName": {
     "pattern": "^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$",
     "level": "warn",
     "hint": "Just the domain — no https://, no path.",
     "example": "example.com",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "fy": {
     "pattern": "^\\d{4}-\\d{2}$",
     "level": "warn",
     "hint": "Financial year as 2023-24.",
     "example": "2023-24",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "limit": {
     "pattern": "^\\d+$",
     "level": "warn",
     "hint": "A whole number.",
     "example": "",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "offset": {
     "pattern": "^\\d+$",
     "level": "warn",
     "hint": "A whole number.",
     "example": "",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "page": {
     "pattern": "^\\d+$",
     "level": "warn",
     "hint": "A whole number.",
     "example": "",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "page_size": {
     "pattern": "^\\d+$",
     "level": "warn",
     "hint": "A whole number.",
     "example": "",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   },
   "rows": {
     "pattern": "^\\d+$",
     "level": "warn",
     "hint": "A whole number.",
     "example": "",
-    "normalise": false
+    "normalise": false,
+    "multi": false
   }
 } as const;
 

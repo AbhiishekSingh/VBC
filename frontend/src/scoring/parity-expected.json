@@ -1300,6 +1300,192 @@
       }
     }
   },
+  "validation": {
+    "checkValue": [
+      {
+        "key": "mobile",
+        "value": "9876543210",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "+919876543210",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "09876543210",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "98765 43210",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "+91-98765-43210",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "5876543210",
+        "expected": {
+          "level": "block",
+          "message": "“5876543210” is not usable. Ten digits starting 6-9. Several people, one per line. A pasted +91 or leading 0 is dropped."
+        }
+      },
+      {
+        "key": "mobile",
+        "value": "987654321",
+        "expected": {
+          "level": "block",
+          "message": "“987654321” is not usable. Ten digits starting 6-9. Several people, one per line. A pasted +91 or leading 0 is dropped."
+        }
+      },
+      {
+        "key": "mobile",
+        "value": "",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "9876543210\n9876543211\n9876543212",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "9876543210, 9876543211; 9876543212",
+        "expected": null
+      },
+      {
+        "key": "mobile",
+        "value": "9876543210\n5876543211",
+        "expected": {
+          "level": "block",
+          "message": "“5876543211” is not usable. Ten digits starting 6-9. Several people, one per line. A pasted +91 or leading 0 is dropped."
+        }
+      },
+      {
+        "key": "mobile",
+        "value": "9876543210\n\n9876543210",
+        "expected": null
+      },
+      {
+        "key": "uan",
+        "value": "100123456789",
+        "expected": null
+      },
+      {
+        "key": "uan",
+        "value": "100123456789\n100123456780",
+        "expected": null
+      },
+      {
+        "key": "uan",
+        "value": "10012345678",
+        "expected": {
+          "level": "block",
+          "message": "“10012345678” is not usable. A UAN is exactly 12 digits. Several people, one per line."
+        }
+      },
+      {
+        "key": "gstin",
+        "value": "27AANCB8469J1ZS",
+        "expected": {
+          "level": "block",
+          "message": "The check character does not match the rest of the GSTIN — usually one mistyped digit. Compare it against the source document."
+        }
+      },
+      {
+        "key": "gstin",
+        "value": "29AANCB8469J1ZS",
+        "expected": null
+      },
+      {
+        "key": "cin",
+        "value": "U93090MH2011PTC215361",
+        "expected": null
+      },
+      {
+        "key": "cin",
+        "value": "AAA-1234",
+        "expected": null
+      },
+      {
+        "key": "cin",
+        "value": "NOT-A-CIN",
+        "expected": {
+          "level": "block",
+          "message": "A 21-character CIN, an LLPIN like AAA-1234, or an FCIN like F01234."
+        }
+      },
+      {
+        "key": "pan",
+        "value": "ABCDE1234F",
+        "expected": null
+      },
+      {
+        "key": "din",
+        "value": "09054126",
+        "expected": null
+      },
+      {
+        "key": "cnr",
+        "value": "MHAU010012342024",
+        "expected": null
+      },
+      {
+        "key": "domainName",
+        "value": "https://example.com",
+        "expected": {
+          "level": "warn",
+          "message": "Just the domain — no https://, no path."
+        }
+      }
+    ],
+    "splitSubjects": [
+      {
+        "value": "9876543210",
+        "expected": [
+          "9876543210"
+        ]
+      },
+      {
+        "value": "+919876543210\n09876543211\n91 98765 43212",
+        "expected": [
+          "9876543210",
+          "9876543211",
+          "9876543212"
+        ]
+      },
+      {
+        "value": "9876543210, 9876543210",
+        "expected": [
+          "9876543210"
+        ]
+      },
+      {
+        "value": "9876543212\n9876543210",
+        "expected": [
+          "9876543212",
+          "9876543210"
+        ]
+      },
+      {
+        "value": "",
+        "expected": []
+      },
+      {
+        "value": "   ",
+        "expected": []
+      },
+      {
+        "value": "abc",
+        "expected": []
+      }
+    ]
+  },
   "policy": {
     "azahanDefault": {
       "input": {
