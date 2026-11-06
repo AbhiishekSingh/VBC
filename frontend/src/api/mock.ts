@@ -100,29 +100,50 @@ export function inputValue(vendor: Vendor, checkId: string, paramKey: string): s
   return param.default ?? ''
 }
 
-/** Required inputs still blank across the current selection. */
-export function missingInputs(
+export interface InputGap {
+  checkId: string
+  checkName: string
+  paramKey: string
+  paramLabel: string
+}
+
+/**
+ * Required inputs still blank for ONE check.
+ *
+ * `assumedSelected` is which checks are to be treated as in scope, and it
+ * is a parameter because the question is asked about checks that are NOT
+ * selected yet: the "run more checks" dialog on Step 3 has to say "this
+ * one needs a GSTIN" about a check the analyst is considering, before any
+ * selection has changed. Defaults to the vendor's real selection, which is
+ * what `missingInputs` wants.
+ */
+export function inputGaps(
   vendor: Vendor,
-): { checkId: string; checkName: string; paramKey: string; paramLabel: string }[] {
-  const out: ReturnType<typeof missingInputs> = []
-  for (const checkId of vendor.selected) {
-    const def = checkDef(checkId)
-    if (!def) continue
-    for (const param of def.params) {
-      if (!param.required) continue
-      // A value another check supplies is not the analyst's problem.
-      if (param.fromResult && vendor.selected.includes(param.fromResult)) continue
-      if (!inputValue(vendor, checkId, param.key).trim()) {
-        out.push({
-          checkId,
-          checkName: def.name,
-          paramKey: param.key,
-          paramLabel: param.label,
-        })
-      }
+  checkId: string,
+  assumedSelected: readonly string[] = vendor.selected,
+): InputGap[] {
+  const def = checkDef(checkId)
+  if (!def) return []
+  const out: InputGap[] = []
+  for (const param of def.params) {
+    if (!param.required) continue
+    // A value another check supplies is not the analyst's problem.
+    if (param.fromResult && assumedSelected.includes(param.fromResult)) continue
+    if (!inputValue(vendor, checkId, param.key).trim()) {
+      out.push({
+        checkId,
+        checkName: def.name,
+        paramKey: param.key,
+        paramLabel: param.label,
+      })
     }
   }
   return out
+}
+
+/** Required inputs still blank across the current selection. */
+export function missingInputs(vendor: Vendor): InputGap[] {
+  return vendor.selected.flatMap((checkId) => inputGaps(vendor, checkId))
 }
 
 /**
@@ -332,15 +353,36 @@ export const mockApi: VbcApi = {
     return latency(clone(v), 0)
   },
 
-  async runChecks(id) {
+  async runChecks(id, only) {
     const v = find(id)
     const missing = new Set(missingInputs(v).map((m) => m.checkId))
     let costPaisa = 0
     let credits = 0
     const skipped: string[] = []
 
-    v.checks = {}
-    for (const checkId of v.selected) {
+    /*
+      A DELTA RUN KEEPS THE RESULTS ALREADY ON FILE.
+
+      The full run clears `v.checks` first, which is right: a fresh run
+      over a changed selection must not leave a stale answer beside a live
+      one. A delta run doing the same would wipe the twelve results the
+      analyst is looking at in order to add one — the exact opposite of
+      what the control promises.
+
+      And the checks already answered are not re-called, because this
+      mirrors the server: re-running is what costs money.
+    */
+    const answered = new Set(
+      Object.values(v.checks)
+        .filter((c) => ['pass', 'warn', 'fail'].includes(c.status))
+        .map((c) => c.checkId),
+    )
+    const wanted = only
+      ? v.selected.filter((c) => only.includes(c) || !answered.has(c))
+      : v.selected
+
+    if (!only) v.checks = {}
+    for (const checkId of wanted) {
       const def = checkDef(checkId)
       if (!def) continue
 
@@ -362,13 +404,16 @@ export const mockApi: VbcApi = {
       credits += def.credits
     }
 
-    if (v.selected.some((c) => checkDef(c)?.needsCompanyUnlock) && !v.unlocked) {
+    if (wanted.some((c) => checkDef(c)?.needsCompanyUnlock) && !v.unlocked) {
       v.unlocked = true
       costPaisa += 22000
       log(id, 'COMPANY_UNLOCKED', 'Company unlocked for one year · ₹220')
     }
 
-    v.stage = 'manual'
+    // A partial run never moves the stage. A vendor at `report` whose
+    // analyst runs two more checks is still at `report`; sending them
+    // back to `manual` would walk them through screens they finished.
+    if (!only) v.stage = 'manual'
     const settled = Object.values(v.checks)
     log(
       id,

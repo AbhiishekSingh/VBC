@@ -245,6 +245,7 @@ def build(
     documents: Iterable[dict] | None = None,
     flags: Iterable[dict] | None = None,
     derived_from: str | None = None,
+    lede: str | None = None,
     note: str | None = None,
 ) -> dict:
     """Assemble the envelope. Empty sections are omitted, not sent as ``[]``.
@@ -254,6 +255,14 @@ def build(
     screen then says where the evidence is instead of showing a "no payload
     stored" placeholder, which would be true of this row and misleading
     about the finding.
+
+    ``lede`` and ``note`` are both standing prose about the result, and the
+    difference between them is WHERE THEY RENDER. A ``note`` is a footnote
+    under the data. A ``lede`` is printed above it, and exists for the one
+    case where that distinction is not cosmetic: the person-level checks
+    return a named individual's PAN, date of birth and home address, and
+    "this is personal data about a person, not a company record" has to be
+    read BEFORE the table, not after it.
     """
     out: dict[str, Any] = {"shape": shape, "parserVersion": PARSER_VERSION}
     if stats:
@@ -268,6 +277,8 @@ def build(
         out["flags"] = list(flags)
     if derived_from:
         out["derivedFrom"] = derived_from
+    if lede:
+        out["lede"] = lede
     if note:
         out["note"] = note
     return out

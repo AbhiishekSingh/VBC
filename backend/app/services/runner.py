@@ -48,7 +48,7 @@ from app.catalog.checks import CHECKS_BY_ID, expand_selection
 from app.config import Settings, get_settings
 from app.db.models import AuditLog, Unlock, Vendor, VendorCheck, VendorCheckInput
 from app.db.models import StoredDocument as StoredDocumentRow
-from app.domain.validation import detect_id_type
+from app.domain.validation import detect_id_type, split_subjects
 from app.domain.facts import crore as _crore
 from app.domain.facts import paisa as _paisa
 from app.domain.facts import human_date as _human_date
@@ -278,6 +278,43 @@ def _dins_from(prior: dict) -> list[str]:
     return [d["din"] for d in rows if isinstance(d, dict) and d.get("din")]
 
 
+def _one_line(check_id: str, data: dict) -> str:
+    """The headline for a single-subject person check."""
+    if check_id == "prefill":
+        return str(data.get("name") or "No identity returned")
+    if check_id == "epfomember":
+        return f"UAN {data['uan']}" if data.get("uan") else "No UAN returned"
+    if check_id == "footprint":
+        return f"{len(data.get('platforms') or [])} service(s) found"
+    if check_id == "personaddr":
+        found = data.get("addresses") or []
+        if isinstance(found, dict):
+            found = [found]
+        return f"{len(found)} address(es) on record"
+    return f"{len(data.get('employments') or [])} employment record(s)"
+
+
+def _subjects(raw: str | None, fallback: str | None = None) -> list[str]:
+    """The list of mobile numbers a person-level check runs against.
+
+    ONE CHECK, MANY PEOPLE. A company with five directors is five
+    lookups, and an analyst should enter five numbers rather than run the
+    same check five times and lose which answer belonged to whom.
+
+    Stored in the existing `vendor_check_inputs` row — one per line, or
+    comma separated, whichever the analyst typed. No schema change: the
+    column is already Text and already unique on (vendor, check, key).
+
+    The splitting itself lives in `app.domain.validation`, which is also
+    what the field validator and the form use. One definition, so the box
+    cannot accept a value this would send differently — the mismatch that
+    had SSL being told one domain while the screen showed another.
+    """
+    return split_subjects(
+        (raw or "").strip() or (fallback or "").strip()
+    )
+
+
 def _uan_from(prior: dict) -> str | None:
     """The UAN the EPFO membership check returned, if it ran.
 
@@ -287,8 +324,31 @@ def _uan_from(prior: dict) -> str | None:
     found = prior.get("epfomember")
     if found is None or not found.raw:
         return None
+    for row in (found.raw.get("subjects") or []):
+        uan = (row.get("data") or {}).get("uan")
+        if uan:
+            return str(uan).strip()
     uan = found.raw.get("uan")
     return str(uan).strip() if uan else None
+
+
+def _uans_by_mobile(prior: dict) -> dict[str, str]:
+    """Every UAN the EPFO membership check found, keyed by the number.
+
+    Keyed rather than listed because with five directors the employment
+    history has to say WHOSE. A list would put five employment records
+    on screen with no way to tell which belongs to whom, which is worse
+    than not running it.
+    """
+    found = prior.get("epfomember")
+    if found is None or not found.raw:
+        return {}
+    out: dict[str, str] = {}
+    for row in (found.raw.get("subjects") or []):
+        uan = (row.get("data") or {}).get("uan")
+        if uan and row.get("subject"):
+            out[str(row["subject"])] = str(uan).strip()
+    return out
 
 
 def _director_names(prior: dict) -> list[str]:
@@ -375,9 +435,44 @@ class CheckRunner:
 
     # =================================================================
 
-    def run(self, vendor: Vendor) -> RunResult:
+    def run(self, vendor: Vendor, *, only: list[str] | None = None) -> RunResult:
+        """Run the vendor's selection, or only the checks named in ``only``.
+
+        ``only`` EXISTS BECAUSE RE-RUNNING COSTS MONEY.
+
+        Nothing here skips a check that already has a result — it runs
+        what it is given and `_persist` increments `attempts`. That is
+        correct for a deliberate re-run, and catastrophic for a "run more
+        checks" control on the findings screen, which would silently
+        re-call and re-bill the entire selection every time an analyst
+        added one more. On a full MCA selection that is upwards of ₹40 a
+        click, with nothing on screen to say so.
+
+        So the findings screen passes the DELTA, and only the delta is
+        called. Prerequisites are still expanded, because a new check
+        that needs `master` must get it — but one already on file is not
+        bought twice.
+        """
         result = RunResult(vendor_id=vendor.id, spend=self.spend)
         selected = expand_selection(list(vendor.selected or []))
+
+        if only is not None:
+            wanted = expand_selection([c for c in only if c in selected])
+            # Prerequisites ALREADY ON FILE are dropped rather than
+            # re-bought. `master` fetched an hour ago is still `master`.
+            already = {
+                row.check_id for row in vendor.checks
+                if row.status in ("pass", "warn", "fail")
+            }
+            selected = [c for c in wanted if c in only or c not in already]
+            self._audit(
+                vendor.id, "RUN_PARTIAL",
+                f"Running {len(selected)} check(s) only: "
+                f"{', '.join(selected) or 'none'}. "
+                f"{len(already)} already on file were not re-run, and not "
+                f"re-charged.",
+            )
+
         inputs = self._inputs(vendor)
 
         self._audit(vendor.id, "RUN_STARTED",
@@ -520,7 +615,23 @@ class CheckRunner:
 
     def _run_person_check(self, check_id: str, vendor: Vendor,
                           get, prior: dict) -> Finding:
-        """The five Gridlines checks, which read a PERSON, not a company."""
+        """The five Gridlines checks — ONE CHECK, MANY PEOPLE.
+
+        A company with five directors is five lookups, and they belong in
+        one finding: run separately, the analyst ends up with five rows
+        and no way to tell which answer belonged to whom.
+
+        So each subject is called in turn and the results are kept as a
+        LIST on one `vendor_checks` row, every entry tagged with the
+        number it came from. The primary key is untouched, scoring is
+        untouched (these feed nothing), and the facts layer already
+        renders tables.
+
+        THE LOOP STOPS ON AN ACCOUNT REFUSAL. A 402 on the second of five
+        numbers means the next three will fail identically; carrying on
+        would spend nothing but would turn one clear "top the account up"
+        into five confusing failures.
+        """
         gl = self.gridlines
         consent_ref = str(get("consentRef", "") or "").strip()
         consent = self._person_consent(check_id, vendor, consent_ref)
@@ -528,118 +639,152 @@ class CheckRunner:
             return Finding(
                 check_id, CheckStatus.SKIPPED_MISSING_INPUT,
                 "No consent reference",
-                "This check reads a named individual's personal records and "
+                "This check reads named individuals' personal records and "
                 "the consent gate is set to refuse without a reference. "
                 "Record how consent was obtained, then run it. No call was "
                 "made and nothing was charged.",
             )
 
-        # Every finding carries the basis, so the report can state it and
-        # a reader is never left to assume.
         basis = (f"Consent reference: {consent_ref}." if consent_ref
                  else "No consent reference was recorded; the analyst "
                       "attested that consent exists.")
-        personal = ("This is personal data about an individual — the holder "
-                    "of the contact number — not a company record.")
+        personal = ("This is personal data about individuals — the holders "
+                    "of these numbers — not a company record.")
 
-        mobile = str(get("mobile", vendor.contact_mobile or "") or "").strip()
-
+        # ---- who are we running against --------------------------------
         if check_id == "emphistory":
-            uan = str(get("uan", "") or "").strip() or _uan_from(prior)
-            if not uan:
+            by_mobile = _uans_by_mobile(prior)
+            typed = [u for u in _subjects(str(get("uan", "") or "")) if u]
+            if typed:
+                pairs = [(None, u) for u in typed]
+            elif by_mobile:
+                pairs = list(by_mobile.items())
+            else:
+                one = _uan_from(prior)
+                pairs = [(None, one)] if one else []
+            if not pairs:
                 return Finding(
                     check_id, CheckStatus.SKIPPED_MISSING_INPUT, "No UAN",
-                    "Supply a UAN, or run the EPFO membership check first so "
-                    "one can be taken from its result. The call was never made.",
+                    "Supply one UAN per line, or run the EPFO membership "
+                    "check first so they can be taken from its results. "
+                    "The call was never made.",
                 )
-            data = gl.employment_history(uan, consent=consent)
-            rows = data.get("employments") or []
+        else:
+            numbers = _subjects(str(get("mobile", "") or ""),
+                                vendor.contact_mobile)
+            if not numbers:
+                return Finding(
+                    check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                    "No contact number",
+                    "This check needs at least one mobile number — one per "
+                    "line for several people. Add one on the vendor record "
+                    "or type them here. The call was never made and nothing "
+                    "was charged.",
+                )
+            pairs = [(n, None) for n in numbers]
+
+        # ---- call, once per subject ------------------------------------
+        price = {
+            "prefill": self.settings.gridlines_prefill_paisa,
+            "footprint": self.settings.gridlines_footprint_paisa,
+            "personaddr": self.settings.gridlines_address_paisa,
+            "epfomember": self.settings.gridlines_epfo_member_paisa,
+            "emphistory": self.settings.gridlines_employment_paisa,
+        }[check_id]
+
+        rows: list[dict] = []
+        blocked: ProviderRejected | None = None
+        for mobile, uan in pairs:
+            label = mobile or uan or "—"
+            # BOTH are kept on the row, not just whichever one was the
+            # input. Employment history is called with a UAN, but the
+            # analyst knows the directors by their numbers, and a table of
+            # five UANs with no numbers beside them does not say whose
+            # employment history is whose.
+            who = {"subject": label, **({"uan": uan} if uan else {})}
+            try:
+                data = self._one_person_call(
+                    gl, check_id, consent=consent, get=get,
+                    mobile=mobile, uan=uan, vendor=vendor,
+                )
+                rows.append({**who, "ok": True, "data": data})
+            except (ProviderOutOfCredits, ProviderAccountBlocked) as exc:
+                # Every remaining subject would fail identically. Stop,
+                # and let the outage machinery say so once.
+                blocked = exc
+                rows.append({**who, "ok": False, "error": str(exc)})
+                break
+            except (ProviderParseGap, ProviderError, ValueError) as exc:
+                # ONE subject failing must not lose the other four. The
+                # row records which, and why, and the status below counts
+                # them honestly.
+                rows.append({**who, "ok": False,
+                             "error": f"{type(exc).__name__}: {exc}"})
+
+        raw = {"subjects": rows, "subject_count": len(pairs)}
+        ok = [r for r in rows if r["ok"]]
+        failed = [r for r in rows if not r["ok"]]
+        cost = price * len(ok)
+
+        if blocked is not None:
             return Finding(
-                check_id,
-                CheckStatus.PASS if rows else CheckStatus.WARN,
-                f"{len(rows)} employment record(s)" if rows
-                else "No employment history returned",
-                f"{'Employers and dates are on file against this UAN. ' if rows else ''}"
-                f"{personal} {basis}",
-                raw=data,
-                cost_paisa=self.settings.gridlines_employment_paisa,
-                facts=factsets.person_employment(data),
+                check_id, CheckStatus.UNAVAILABLE,
+                "Provider refused this account",
+                f"{blocked} Stopped after {len(ok)} of {len(pairs)}; the "
+                f"remaining lookups would have failed identically.",
+                raw=raw, cost_paisa=cost, error=str(blocked),
+                account_blocked=str(blocked),
+                account_blocked_status=getattr(blocked, "status", None),
+                facts=factsets.person_subjects(check_id, raw),
             )
 
-        if not mobile:
+        if not ok:
             return Finding(
-                check_id, CheckStatus.SKIPPED_MISSING_INPUT,
-                "No contact number",
-                "This check needs the vendor's contact mobile number. Add it "
-                "on the vendor record, or type it here. The call was never "
-                "made and nothing was charged.",
+                check_id, CheckStatus.UNAVAILABLE,
+                f"0 of {len(pairs)} returned",
+                f"No lookup succeeded. Nothing here is a finding about "
+                f"anybody — the calls did not produce an answer. {basis}",
+                raw=raw, cost_paisa=cost,
+                error=failed[0]["error"] if failed else None,
+                facts=factsets.person_subjects(check_id, raw),
             )
 
+        status = CheckStatus.PASS if not failed else CheckStatus.WARN
+        value = (f"{len(ok)} of {len(pairs)} returned"
+                 if len(pairs) > 1 else _one_line(check_id, ok[0]["data"]))
+        detail = (
+            (f"{len(failed)} lookup(s) did not return; those people are "
+             f"NOT cleared, they were not examined. " if failed else "")
+            + f"{personal} {basis}"
+        )
+        return Finding(
+            check_id, status, value, detail,
+            raw=raw, cost_paisa=cost,
+            facts=factsets.person_subjects(check_id, raw),
+        )
+
+    def _one_person_call(self, gl, check_id: str, *, consent: str, get,
+                         mobile: str | None, uan: str | None,
+                         vendor: Vendor) -> dict:
+        """One subject, one provider call."""
         if check_id == "prefill":
-            data = gl.mobile_prefill(
+            return gl.mobile_prefill(
                 mobile, consent=consent,
                 first_name=str(get("firstName", "") or ""),
                 last_name=str(get("lastName", "") or ""),
             )
-            found = data.get("name") or data.get("pan")
-            return Finding(
-                check_id,
-                CheckStatus.PASS if found else CheckStatus.WARN,
-                str(data.get("name") or "No identity returned"),
-                f"{personal} {basis}",
-                raw=data,
-                cost_paisa=self.settings.gridlines_prefill_paisa,
-                facts=factsets.person_identity(data),
-            )
-
         if check_id == "footprint":
-            data = gl.digital_footprint(
-                mobile, consent=consent,
-                email=str(get("email", "") or ""),
+            return gl.digital_footprint(
+                mobile, consent=consent, email=str(get("email", "") or ""),
             )
-            found = data.get("platforms") or []
-            return Finding(
-                check_id, CheckStatus.PASS,
-                f"{len(found)} service(s) found" if found else "No footprint returned",
-                f"{personal} {basis}",
-                raw=data,
-                cost_paisa=self.settings.gridlines_footprint_paisa,
-                facts=factsets.person_footprint(data),
-            )
-
         if check_id == "personaddr":
-            data = gl.address_lookup(mobile, consent=consent)
-            found = data.get("addresses") or []
-            if isinstance(found, dict):
-                found = [found]
-            return Finding(
-                check_id, CheckStatus.PASS,
-                f"{len(found)} address(es) on record" if found
-                else "No address returned",
-                f"Compare against the registered office before drawing any "
-                f"conclusion — a personal address differing from it is "
-                f"ordinary for a proprietor. {personal} {basis}",
-                raw=data,
-                cost_paisa=self.settings.gridlines_address_paisa,
-                facts=factsets.person_addresses(data),
+            return gl.address_lookup(mobile, consent=consent)
+        if check_id == "epfomember":
+            return gl.epfo_member(
+                mobile, consent=consent,
+                pan=str(get("pan", vendor.pan or "") or "") or None,
             )
-
-        # epfomember
-        data = gl.epfo_member(
-            mobile, consent=consent,
-            pan=str(get("pan", vendor.pan or "") or "") or None,
-        )
-        uan = data.get("uan")
-        return Finding(
-            check_id,
-            CheckStatus.PASS if uan else CheckStatus.WARN,
-            f"UAN {uan}" if uan else "No UAN returned",
-            f"{'The employment history check can now run from this UAN. ' if uan else ''}"
-            f"{personal} {basis}",
-            raw=data,
-            cost_paisa=self.settings.gridlines_epfo_member_paisa,
-            facts=factsets.person_epfo(data),
-        )
+        return gl.employment_history(uan, consent=consent)
 
     # =================================================================
     # Provider account state

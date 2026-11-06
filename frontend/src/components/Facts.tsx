@@ -267,6 +267,12 @@ export default function Facts({ facts }: { facts?: CheckFacts }) {
     <div className="facts">
       {flags && flags.length > 0 && <Flags flags={flags} />}
 
+      {/* ABOVE the data, which is the whole reason this is not `note`. The
+          person-level checks put a named individual's PAN, date of birth
+          and home address on screen, and the sentence saying so has to be
+          read before the table rather than found underneath it. */}
+      {facts.lede && <p className="fact-lede small">{facts.lede}</p>}
+
       {facts.derivedFrom && (
         <p className="small muted fact-note">
           Read from the <strong>{facts.derivedFrom}</strong> response — this check

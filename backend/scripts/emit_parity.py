@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.domain.scoring import score_scan, score_risk, score_surveillance   # noqa: E402
 from app.domain.policy import apply_policy, DEFAULT_POLICY, PROTOTYPE_POLICY  # noqa: E402
+from app.domain.validation import check_value, split_subjects  # noqa: E402
 from app.catalog.scan import SCAN_PARAMETERS  # noqa: E402
 from app.tests import fixtures as fx  # noqa: E402
 
@@ -61,6 +62,55 @@ def policy_payload(ratings, policy):
             "reasonCount": len(g.reasons), "headline": g.headline}
 
 
+# --- validation ------------------------------------------------------
+#
+# The format rules are mirrored by hand in `frontend/src/lib/validate.ts`,
+# and until now nothing proved the two agreed. Scoring has had a parity
+# test since the engines were written, for the obvious reason; validation
+# earned one the moment a field stopped being a single regex test.
+#
+# `mobile` and `uan` hold a LIST, and their normalisation — a pasted +91,
+# a leading 0, spaces — is procedural rather than expressible in the
+# pattern the two languages share. So the mirror can now be wrong in a way
+# a shared regex could not be, and the failure mode is a field that
+# accepts a value the runner would send differently.
+VALIDATION_CASES: list[tuple[str, str]] = [
+    ("mobile", "9876543210"),
+    ("mobile", "+919876543210"),
+    ("mobile", "09876543210"),
+    ("mobile", "98765 43210"),
+    ("mobile", "+91-98765-43210"),
+    ("mobile", "5876543210"),
+    ("mobile", "987654321"),
+    ("mobile", ""),
+    ("mobile", "9876543210\n9876543211\n9876543212"),
+    ("mobile", "9876543210, 9876543211; 9876543212"),
+    ("mobile", "9876543210\n5876543211"),
+    ("mobile", "9876543210\n\n9876543210"),
+    ("uan", "100123456789"),
+    ("uan", "100123456789\n100123456780"),
+    ("uan", "10012345678"),
+    ("gstin", "27AANCB8469J1ZS"),
+    ("gstin", "29AANCB8469J1ZS"),
+    ("cin", "U93090MH2011PTC215361"),
+    ("cin", "AAA-1234"),
+    ("cin", "NOT-A-CIN"),
+    ("pan", "ABCDE1234F"),
+    ("din", "09054126"),
+    ("cnr", "MHAU010012342024"),
+    ("domainName", "https://example.com"),
+]
+
+SUBJECT_CASES = [
+    "9876543210",
+    "+919876543210\n09876543211\n91 98765 43212",
+    "9876543210, 9876543210",
+    "9876543212\n9876543210",
+    "",
+    "   ",
+    "abc",
+]
+
 all_first = {p.id: p.options[0][0] for p in SCAN_PARAMETERS}
 all_worst = {p.id: p.options[-1][0] for p in SCAN_PARAMETERS}
 
@@ -101,6 +151,18 @@ data = {
     "hardGateFails": {"input": {**fx.MERIDIAN_SURVEILLANCE, "V1": "No"}, "done": True,
                       "expected": sv_payload({**fx.MERIDIAN_SURVEILLANCE, "V1": "No"})},
     "notConducted": {"input": {}, "done": False, "expected": sv_payload({}, done=False)},
+  },
+  "validation": {
+    "checkValue": [
+      {"key": key, "value": value,
+       "expected": (None if (p := check_value(key, value)) is None
+                    else {"level": p.level, "message": p.message})}
+      for key, value in VALIDATION_CASES
+    ],
+    "splitSubjects": [
+      {"value": value, "expected": split_subjects(value)}
+      for value in SUBJECT_CASES
+    ],
   },
   "policy": {
     "azahanDefault": {"input": fx.AZAHAN_SCAN, "policy": "default",

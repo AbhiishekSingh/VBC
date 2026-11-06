@@ -154,6 +154,29 @@ BUILDERS: dict[str, Callable[[dict, Any], dict]] = {
     "courtchecks": lambda r, v: fx.catalog(
         "Legal checks submitted on this account.",
         [str((i or {}).get("code") or i) for i in (r.get("items") or [])]),
+    # --- contact person — personal records ----------------------------
+    #
+    # THESE FIVE ARE WHY THIS SCRIPT IS LOAD-BEARING RATHER THAN
+    # CONVENIENT.
+    #
+    # The Gridlines response shape is not known. The Mobile Intelligence
+    # Suite calls these endpoints and renders whatever arrives
+    # generically, so it records no field name anywhere, and this
+    # project's documentation has been wrong about a provider's response
+    # three times. The adapter therefore extracts across several
+    # spellings, stores the payload whole, and keeps `_raw_keys`.
+    #
+    # That is only a defensible way to ship because of these five lines.
+    # When the first real response lands, `_raw_keys` says exactly what
+    # to parse, the parser is corrected, and every row already paid for
+    # is rebuilt from its stored payload for nothing. Without an entry
+    # here a person check is counted `no_builder` and skipped SILENTLY,
+    # and those rows have to be bought again.
+    "prefill":    lambda r, v: fx.person_subjects("prefill", r),
+    "footprint":  lambda r, v: fx.person_subjects("footprint", r),
+    "personaddr": lambda r, v: fx.person_subjects("personaddr", r),
+    "epfomember": lambda r, v: fx.person_subjects("epfomember", r),
+    "emphistory": lambda r, v: fx.person_subjects("emphistory", r),
 }
 
 
