@@ -314,23 +314,39 @@ def _vendor(session, vendor_id: str) -> Vendor:
     return vendor
 
 
-class TestRunnerHoldsBlockedProviders:
-    def test_a_dead_pool_does_not_take_its_neighbours_down(
+class TestNothingIsEverHeld:
+    """THE HOLD IS GONE, 7 Nov 2026, and these tests exist to keep it
+    gone.
+
+    What it did: a check whose provider had recently refused anybody was
+    refused LOCALLY — free, instant, with that provider's own sentence
+    attached — so that one analyst met the error and nobody after them
+    waited on a call that could not succeed.
+
+    Why it was removed, on the product owner's instruction, with live
+    evidence behind it. Gridlines refused ONE of its five products
+    (`FORBIDDEN_ACCESS: Credential does not have access to this
+    product`, on address-lookup) while prefill, digital-footprint and
+    fetch-uan all returned 200 in the same second. The hold turned that
+    into five dead checks on every later run, and kept them dead,
+    because nothing was left to discover that four of them worked.
+
+    Narrowing the scope fixed that instance. It does not fix the shape
+    of the mistake: a cache of "this will fail" is a PREDICTION, and
+    this platform's whole argument is that a prediction must never stand
+    in for an examination.
+
+    The asymmetry settles it. A refused call is rejected BEFORE billing
+    — 401, 402 and 403 all charge nothing — so the hold bought latency
+    and paid for it in checks that could not recover on their own.
+
+    Outages are still recorded and still shown. See
+    `TestRunnerSettlesProviderState` below, which is unchanged.
+    """
+
+    def test_a_blocked_provider_does_not_stop_its_own_checks(
         self, session, seeded
     ):
-        """The case this whole mechanism was re-cut for.
-
-        On 6 Nov 2026 one WhoisXML key returned, in the same minute from
-        the same IP:
-
-            ssl-certificates   200      domain-reputation  200
-            whois-history      403      reverse-whois      403
-
-        The Domain Research Suite subscription had lapsed; the standalone
-        products were fine. Blocking by PROVIDER would have marked `ssl`
-        and `reput` unavailable too — the platform causing a wider outage
-        than the one it exists to prevent.
-        """
         provider_state.record_outage(
             session, "whoisxml", product="whois",
             message="Access restricted. Reasons: insufficient credits balance",
@@ -339,87 +355,67 @@ class TestRunnerHoldsBlockedProviders:
         session.flush()
 
         runner = CheckRunner(session)
-        result = RunResult(vendor_id="OU0001", spend=runner.spend)
-        allowed = runner._hold_blocked_providers(
-            ["whois", "ssl", "reput", "master"], result
+        try:
+            result = RunResult(vendor_id="OU0001", spend=runner.spend)
+            allowed = runner._hold_blocked_providers(
+                ["whois", "ssl", "reput", "master"], result)
+        finally:
+            runner.close()
+
+        assert allowed == ["whois", "ssl", "reput", "master"]
+        assert result.findings == [], (
+            "nothing may be pre-refused: a provider that said no to "
+            "somebody else is a prediction, not an examination"
         )
 
-        assert allowed == ["ssl", "reput", "master"], (
-            "the other WhoisXML products answer normally and must keep "
-            "running; only the dead pool is held"
-        )
-        assert [f.check_id for f in result.findings] == ["whois"]
-
-    def test_a_single_wallet_provider_still_blocks_account_wide(
+    def test_an_empty_wallet_does_not_stop_them_either(
         self, session, seeded
     ):
-        """FileSure, eCourts and FinAGG each bill from ONE wallet.
-
-        Splitting those would mean every endpoint discovering an empty
-        wallet separately — the failure the mechanism exists to stop.
-        """
+        """The hardest case for this decision, and still the right
+        answer. A 402 charges nothing, so the cost of asking again is a
+        round trip — and the cost of NOT asking is a check that stays
+        dead after the invoice is paid."""
         provider_state.record_outage(
-            session, "filesure", message="out of credits", http_status=402,
+            session, "filesure", product="",
+            message="out of credits", http_status=402,
         )
         session.flush()
 
         runner = CheckRunner(session)
-        result = RunResult(vendor_id="OU0001b", spend=runner.spend)
-        allowed = runner._hold_blocked_providers(
-            ["master", "filings", "dirs", "ssl"], result
+        try:
+            result = RunResult(vendor_id="OU0002", spend=runner.spend)
+            allowed = runner._hold_blocked_providers(
+                ["master", "dirs", "charges"], result)
+        finally:
+            runner.close()
+
+        assert allowed == ["master", "dirs", "charges"]
+
+    def test_the_run_path_does_not_call_the_hold_at_all(self):
+        """Read the source. Leaving the call in place with a no-op
+        behind it would be one edit away from coming back silently."""
+        import inspect
+
+        from app.services import runner as runner_mod
+
+        source = inspect.getsource(runner_mod.CheckRunner.run)
+        assert "_hold_blocked_providers" not in source
+        assert "RUN_NO_HOLD" in source, (
+            "the run must record that it held nothing, so the audit log "
+            "says why every check was attempted"
         )
 
-        assert allowed == ["ssl"], "every FileSure check is held, WhoisXML is not"
-        assert {f.check_id for f in result.findings} == {"master", "filings", "dirs"}
-
-    def test_the_held_check_says_what_the_provider_said(self, session, seeded):
-        message = (
-            "Access restricted. Reasons: insufficient credits balance, "
-            "incorrect API key, or your IP address is not added to the IP "
-            "allowlist"
+    def test_the_outage_record_itself_is_untouched(self, session, seeded):
+        """Recording is the half that survives. `/api/providers` still
+        reports what is refusing us and why, in the provider's own
+        words, so somebody can go and pay the invoice — it is
+        information for a person now, not a gate in front of a call."""
+        provider_state.record_outage(
+            session, "finagg", product="", message="Forbidden",
+            http_status=403,
         )
-        provider_state.record_outage(session, "whoisxml", product="whois", message=message)
         session.flush()
-
-        runner = CheckRunner(session)
-        result = RunResult(vendor_id="OU0002", spend=runner.spend)
-        runner._hold_blocked_providers(["whois"], result)
-
-        finding = result.findings[0]
-        assert finding.status is CheckStatus.UNAVAILABLE
-        assert message in finding.detail
-        assert "NOT a clean result" in finding.detail, (
-            "rule 4: something that was not examined must never look like "
-            "something that came back clean"
-        )
-
-    def test_one_check_per_blocked_provider_is_let_through_as_a_probe(
-        self, session, seeded
-    ):
-        """Otherwise the block is permanent and topping up fixes nothing."""
-        provider_state.record_outage(session, "whoisxml", product="whois", message="empty")
-        session.flush()
-        outage = provider_state.open_outages(session)[("whoisxml", "whois")]
-        outage.last_probe_at = datetime.now(timezone.utc) - timedelta(hours=2)
-        session.flush()
-
-        runner = CheckRunner(session)
-        result = RunResult(vendor_id="OU0003", spend=runner.spend)
-        allowed = runner._hold_blocked_providers(["whois", "ssl", "master"], result)
-
-        assert allowed == ["whois", "ssl", "master"], (
-            "the probe goes out for the dead pool, and the two checks that "
-            "were never blocked are untouched"
-        )
-        assert result.findings == []
-
-    def test_nothing_is_held_when_no_provider_is_blocked(self, session, seeded):
-        runner = CheckRunner(session)
-        result = RunResult(vendor_id="OU0004", spend=runner.spend)
-        checks = ["whois", "ssl", "master"]
-
-        assert runner._hold_blocked_providers(checks, result) == checks
-        assert result.findings == []
+        assert provider_state.open_outages(session)[("finagg", "")]
 
 
 class TestRunOneTagsTheFinding:
@@ -608,3 +604,113 @@ class TestRunnerSettlesProviderState:
         session.flush()
 
         assert provider_state.open_outages(session) == {}
+
+
+# =====================================================================
+# 7. AN ENTITLEMENT REFUSAL MUST NOT TAKE DOWN WHAT STILL ANSWERS
+# =====================================================================
+
+class TestProductScopedRefusals:
+    """Observed live on 7 Nov 2026, one Gridlines run, one key, one
+    second:
+
+        /profile-api/mobile/address-lookup      403
+        /epfo-api/fetch-uan                     200
+        /profile-api/mobile/prefill             200
+        /profile-api/mobile/digital-footprint   200
+
+    with the body `FORBIDDEN_ACCESS: Credential does not have access to
+    this product`. Recorded account-wide, that single refusal held all
+    five person checks on every later run — the platform causing a
+    wider outage than the one it exists to prevent. Same failure the
+    WhoisXML pool split was built to stop, not applied here until it
+    happened in production.
+    """
+
+    def test_a_403_is_scoped_to_the_product_that_was_refused(self):
+        from app.services.runner import _outage_scope
+
+        assert _outage_scope("personaddr", 403) == ("gridlines", "personaddr")
+
+    def test_an_empty_wallet_still_blocks_the_whole_account(self):
+        """A 402 really does affect every product, and discovering that
+        five times over is the failure the shared record exists for."""
+        from app.services.runner import _outage_scope
+
+        assert _outage_scope("personaddr", 402) == ("gridlines", "")
+        assert _outage_scope("prefill", 401) == ("gridlines", "")
+
+    def test_whoisxml_is_untouched_by_this(self):
+        """Its 403 covers an empty balance, a revoked key AND a blocked
+        IP — all genuinely account-wide — so it is deliberately not in
+        the product-scoped set and keeps its pools the other way."""
+        from app.services.runner import _outage_scope
+
+        assert _outage_scope("whois", 403) == ("whoisxml", "whois")
+        assert _outage_scope("ssl", 403) == ("whoisxml", "ssl")
+
+    def test_the_refused_product_is_the_only_check_covered(self):
+        from app.services.runner import _checks_in_scope
+
+        assert _checks_in_scope("gridlines", "personaddr") == ["personaddr"]
+
+    def test_an_account_wide_gridlines_outage_still_covers_all_five(self):
+        from app.services.runner import _checks_in_scope
+
+        assert set(_checks_in_scope("gridlines", "")) == {
+            "prefill", "footprint", "personaddr", "epfomember", "emphistory",
+        }
+
+    def test_the_refused_check_IS_still_held(self):
+        """The other half. Scoping it narrowly must not mean nothing
+        holds it — a check that cannot run has to be refused locally,
+        free, rather than paying to be told again."""
+        from app.services.runner import _hold_scopes
+
+        assert ("gridlines", "personaddr") in _hold_scopes("personaddr")
+        assert ("gridlines", "") in _hold_scopes("personaddr")
+
+    def test_the_scope_still_decides_WHAT_IS_REPORTED(self, session, seeded):
+        """Scoping survives the removal of the hold, for a different
+        job. Nothing is blocked from running any more, but
+        `/api/providers` still has to name the checks a refusal covers
+        so Step 2 and the Step 3 dialog warn on exactly the right rows —
+        and not on four that are answering."""
+        provider_state.record_outage(
+            session, "gridlines", product="personaddr",
+            message="gridlines: HTTP 403 — FORBIDDEN_ACCESS: Credential "
+                    "does not have access to this product.",
+            http_status=403,
+        )
+        session.flush()
+
+        outage = provider_state.open_outages(session)[("gridlines", "personaddr")]
+        assert outage.http_status == 403
+        from app.services.runner import _checks_in_scope
+
+        assert _checks_in_scope("gridlines", "personaddr") == ["personaddr"]
+
+    def test_a_refusal_on_one_product_never_stops_the_other_four(
+        self, session, seeded
+    ):
+        """The case that prompted all of this, asserted end to end."""
+        provider_state.record_outage(
+            session, "gridlines", product="personaddr",
+            message="FORBIDDEN_ACCESS", http_status=403,
+        )
+        session.flush()
+
+        five = ["prefill", "footprint", "personaddr", "epfomember",
+                "emphistory"]
+        runner = CheckRunner(session)
+        try:
+            result = RunResult(vendor_id="OU0100", spend=runner.spend)
+            allowed = runner._hold_blocked_providers(five, result)
+        finally:
+            runner.close()
+
+        # ALL FIVE, the refused one included: it is allowed to try again,
+        # which is the only way anybody ever learns the entitlement was
+        # granted.
+        assert allowed == five
+        assert result.findings == []

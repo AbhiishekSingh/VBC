@@ -87,21 +87,28 @@ function dependentsOf(checkId: string): string[] {
 }
 
 /**
- * A selectable check is one with a source behind it that is answering.
+ * A selectable check is one with a provider wired up at all.
  *
- * `blocked` maps a CHECK ID to the source's own error text. Keyed on the
- * check rather than the provider because providers do not all bill the
- * same way — the server works that out and hands down the list of checks
- * actually affected, so this file holds no copy of that rule.
+ * A SOURCE CURRENTLY REFUSING US NO LONGER MAKES A CHECK UNSELECTABLE.
  *
- * Deliberately a parameter rather than module state: a stale copy of
- * "what is down" is worse than none, because it silently drops checks the
- * analyst chose.
+ * It used to. `blocked` would drop the check out of every preset, every
+ * group toggle and every count, and the tick could not be set. On
+ * 7 Nov 2026 that cost a whole provider: Gridlines refused ONE of its
+ * five products while three others answered 200 in the same second, and
+ * the screen offered none of them.
+ *
+ * `blocked` is still read — the row still carries the source's own
+ * sentence, so an analyst knows before they wait and somebody can go and
+ * pay the invoice. It is information now, not a gate. The call goes out
+ * regardless, because what a source said to somebody else a few minutes
+ * ago is a PREDICTION, and a prediction must never stand in for asking.
+ *
+ * Still a parameter rather than module state: a stale copy of "what is
+ * down" is worse than none.
  */
-const isSelectable = (id: string, blocked?: ReadonlyMap<string, string>): boolean => {
+const isSelectable = (id: string, _blocked?: ReadonlyMap<string, string>): boolean => {
   const def = CHECKS.find((c) => c.id === id)
-  if (!def || def.state === 'not_configured' || def.always) return false
-  return !blocked?.has(id)
+  return Boolean(def) && def!.state !== 'not_configured' && !def!.always
 }
 
 /** Names rather than raw ids — "needs mca, dirs" told nobody anything. */
@@ -214,10 +221,12 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const toggle = async (checkId: string) => {
     const def = CHECKS.find((c) => c.id === checkId)
     if (!def || def.state === 'not_configured' || def.always) return
-    // Switching OFF a blocked check is always allowed — it is the only
-    // way out of a selection made before the source went down. Switching
-    // one ON is not: the call cannot be made.
-    if (!selected.includes(checkId) && blocked.has(checkId)) return
+    // A BLOCKED CHECK CAN BE TICKED ON. It used to be refused here, on
+    // the grounds that the call could not be made — but that is a
+    // prediction from what the source told somebody else earlier, and
+    // the only way anyone ever learns it is wrong is by asking again.
+    // The row still shows the source's own sentence; it just does not
+    // stop the analyst.
 
     let next: string[]
     if (selected.includes(checkId)) {

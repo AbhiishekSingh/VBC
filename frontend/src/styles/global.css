@@ -1767,3 +1767,8 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   .runmore-row { flex-wrap: wrap; }
   .runmore-why { text-align: left; max-width: none; }
 }
+/* A source that refused us last time, on a row that is STILL TICKABLE.
+   Amber, not red: red is the colour this app uses for "stop", and this
+   does not stop anything — it tells the analyst the last call was
+   refused so they can decide whether to spend the round trip. */
+.runmore-warn { color: var(--warn); }

@@ -215,6 +215,70 @@ def _provider_of(check_id: str) -> str | None:
 #: mechanism exists to stop.
 _PER_PRODUCT_PROVIDERS = frozenset({"whoisxml"})
 
+#: Providers whose **403** means "this credential is not entitled to THIS
+#: product", rather than something account-wide.
+#:
+#: Evidence, from one Gridlines run on 7 Nov 2026 — same key, same
+#: second:
+#:
+#:     /profile-api/mobile/address-lookup      403
+#:     /epfo-api/fetch-uan                     200
+#:     /profile-api/mobile/prefill             200
+#:     /profile-api/mobile/digital-footprint   200
+#:
+#: with the body ``FORBIDDEN_ACCESS: Credential does not have access to
+#: this product``. Recorded account-wide, that single refusal held all
+#: five person checks on every later run — the platform causing a wider
+#: outage than the one it exists to prevent, which is exactly the
+#: failure the WhoisXML pool split was built to stop and which was then
+#: not applied here.
+#:
+#: Keyed by STATUS and PROVIDER, never by reading the provider's prose.
+#: A 403 does not mean the same thing everywhere: WhoisXML returns one
+#: for an empty balance, a revoked key AND a blocked IP, all genuinely
+#: account-wide, which is why it is absent from this set and gets its
+#: separate pools a different way.
+#:
+#: 401 and 402 stay account-wide for everyone. An empty wallet really
+#: does affect every product, and discovering that five times over is
+#: the failure the shared outage record exists to prevent.
+_PRODUCT_SCOPED_403 = frozenset({"gridlines"})
+
+
+def _outage_scope(check_id: str, status: int | None) -> tuple[str, str] | None:
+    """Which pool a REFUSAL covers — not the same question as billing.
+
+    ``_billing_scope`` answers "whose wallet does this spend from".
+    This answers "how far does this refusal reach", and the two differ
+    for an entitlement error: Gridlines bills one wallet, but a 403 on
+    one of its products says nothing about the other four.
+    """
+    scope = _billing_scope(check_id)
+    if scope is None:
+        return None
+    provider, product = scope
+    if status == 403 and provider in _PRODUCT_SCOPED_403:
+        return provider, check_id
+    return provider, product
+
+
+def _hold_scopes(check_id: str) -> list[tuple[str, str]]:
+    """Every open outage that should stop this check running.
+
+    BOTH the wallet-wide pool and this check's own product pool, because
+    a refusal is stored under whichever of the two it reached. Checking
+    only the billing scope would leave a product-scoped block unable to
+    hold the very check it was recorded for.
+    """
+    scope = _billing_scope(check_id)
+    if scope is None:
+        return []
+    provider, product = scope
+    scopes = [(provider, product)]
+    if provider in _PRODUCT_SCOPED_403 and product != check_id:
+        scopes.append((provider, check_id))
+    return scopes
+
 
 def _billing_scope(check_id: str) -> tuple[str, str] | None:
     """``(provider, product)`` — which POOL this check spends from.
@@ -243,6 +307,13 @@ def _checks_in_scope(provider: str, product: str) -> list[str]:
     ``_PER_PRODUCT_PROVIDERS``, and the two would drift — which is exactly
     how the scoring engine once ended up 25 points apart from itself.
     """
+    # A product-scoped 403 is stored under the CHECK ID it was refused
+    # for, so its outage covers that one check and nothing else. Without
+    # this branch the API would report an empty `blockedChecks` for it,
+    # Step 2 would grey nothing, and the runner would hold a check the
+    # screen had just offered — the two disagreeing about what can run.
+    if provider in _PRODUCT_SCOPED_403 and product in CHECKS_BY_ID:
+        return [product]
     return [
         c.id for c in CHECKS_BY_ID.values()
         if _billing_scope(c.id) == (provider, product)
@@ -512,8 +583,48 @@ class CheckRunner:
                 continue
             runnable.append(check_id)
 
-        # --- providers already known to be refusing this account ---------
-        runnable = self._hold_blocked_providers(runnable, result)
+        # --- NOTHING IS HELD. EVERY SELECTED CHECK GETS ITS CALL. --------
+        #
+        # There used to be a hold step here. When a provider had
+        # refused anybody recently, every check against it
+        # was refused LOCALLY, free and instantly, with that provider's
+        # own sentence attached. The idea was that one analyst meets the
+        # error and nobody after them waits on a call that cannot
+        # succeed.
+        #
+        # REMOVED, 7 Nov 2026, on the product owner's instruction, and
+        # the live evidence was decisive. Gridlines refused ONE of its
+        # five products — `FORBIDDEN_ACCESS: Credential does not have
+        # access to this product` on address-lookup — while prefill,
+        # digital-footprint and fetch-uan all returned 200 in the same
+        # second. The hold turned that into five dead checks on every
+        # subsequent run, and kept them dead, because nothing was left
+        # to discover that four of them worked.
+        #
+        # Scoping the refusal more narrowly fixed that one case. It does
+        # not fix the shape of the mistake: a cache of "this will fail"
+        # is a prediction, and this platform's entire argument is that a
+        # prediction must never stand in for an examination. "We did not
+        # ask, because last time the answer was no" is exactly the kind
+        # of unexamined-looking-like-clean that everything else here is
+        # built to prevent.
+        #
+        # The cost of being wrong is not symmetrical either. A refused
+        # call is rejected BEFORE billing — a 401, 402 or 403 charges
+        # nothing — so the hold was saving latency, not money, and
+        # paying for it with checks that could not recover on their own.
+        #
+        # Outages are still RECORDED (`_settle_provider_state` below)
+        # and still shown: `/api/providers` reports what is refusing us
+        # and why, in the provider's own words, so an analyst sees it
+        # before they wait and somebody can go and pay the invoice. It
+        # is information now, not a gate.
+        self._audit(
+            vendor.id, "RUN_NO_HOLD",
+            f"{len(runnable)} checks will all be called. Provider refusals "
+            f"are recorded and shown, never used to skip a call.",
+            actor="system",
+        )
 
         # --- STEP 1: resolve identity when no CIN was supplied -----------
         cin = vendor.cin
@@ -803,65 +914,29 @@ class CheckRunner:
     def _hold_blocked_providers(
         self, runnable: list[str], result: RunResult
     ) -> list[str]:
-        """Drop checks whose provider is already refusing this account.
+        """DISABLED. Returns everything it is given.
 
-        This is the whole point of the outage table. The first analyst to
-        hit an empty balance waits for a call that cannot succeed; nobody
-        after them does, because their checks are marked here, before any
-        request goes out.
+        Kept as a named no-op rather than deleted so that the decision
+        is visible where the behaviour used to be, and so the three
+        tests that pin it fail loudly if anybody reinstates holding by
+        accident.
 
-        THE REASON SHOWN IS THE PROVIDER'S OWN SENTENCE, stored when it
-        was first seen. A fixed message of ours would be wrong two times
-        in three: WhoisXML returns an empty balance, a revoked key and a
-        blocked IP under one 403, and each needs a different person.
+        What it did: refused, locally and for free, every check against
+        a provider that had recently refused somebody — with that
+        provider's own sentence attached.
 
-        ONE check per blocked POOL is let through per cool-off window, so
-        a topped-up account recovers by itself. Without that the block
-        would be permanent — nothing calls the provider, so nothing can
-        find out it is working again.
+        Why it is gone, 7 Nov 2026, on the product owner's instruction:
+        a cache of "this will fail" is a PREDICTION, and this platform's
+        whole argument is that a prediction may never stand in for an
+        examination. Live evidence made it concrete — Gridlines refused
+        one of five products while three others returned 200 in the same
+        second, and the hold turned that into five permanently dead
+        checks with nothing left to discover otherwise.
 
-        Blocking is per POOL, not per provider. WhoisXML bills its
-        products separately, and on 6 Nov 2026 one key returned 200 for
-        SSL and Domain Reputation while returning 403 for WHOIS History
-        and Reverse WHOIS. A provider-wide block there would have taken
-        two working checks away over a 403 from a different product —
-        the platform causing an outage of its own.
+        Refusals are still recorded and still shown. They are
+        information for a person, not a gate in front of a call.
         """
-        blocked = provider_state.open_outages(self.session)
-        if not blocked:
-            return runnable
-
-        allowed: list[str] = []
-        probing: set[tuple[str, str]] = set()
-        for check_id in runnable:
-            scope = _billing_scope(check_id)
-            outage = blocked.get(scope) if scope else None
-            if outage is None:
-                allowed.append(check_id)
-                continue
-
-            if scope not in probing and provider_state.due_for_probe(outage):
-                # One call, to find out whether the pool is working again.
-                # Marked before it goes out, so a probe that hangs still
-                # moves the clock.
-                provider_state.mark_probed(self.session, outage)
-                probing.add(scope)
-                allowed.append(check_id)
-                continue
-
-            result.findings.append(
-                Finding(
-                    check_id,
-                    CheckStatus.UNAVAILABLE,
-                    "Source unavailable",
-                    f"This source is not answering for our account, so the "
-                    f"check was not run and nothing about this vendor was "
-                    f"examined — this is NOT a clean result. The source "
-                    f"said: {outage.provider_message}",
-                    error=outage.provider_message,
-                )
-            )
-        return allowed
+        return runnable
 
     def _settle_provider_state(self, vendor: Vendor, result: RunResult) -> None:
         """Open, refresh or close outages from what this run just saw.
@@ -883,7 +958,13 @@ class CheckRunner:
         answered: set[tuple[str, str]] = set()
 
         for finding in result.findings:
-            scope = _billing_scope(finding.check_id)
+            # A REFUSAL is scoped by what it says, not by the wallet it
+            # would have spent from — see `_outage_scope`. A successful
+            # call still clears the wallet pool it bills to.
+            scope = (_outage_scope(finding.check_id,
+                                   finding.account_blocked_status)
+                     if finding.account_blocked
+                     else _billing_scope(finding.check_id))
             if scope is None:
                 continue
             if finding.account_blocked:
