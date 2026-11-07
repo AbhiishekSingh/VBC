@@ -133,8 +133,12 @@ interface Candidate {
   id: string
   name: string
   group: string
-  /** Null when it can be run. Otherwise why not, in words. */
+  /** Null when it can be run. Otherwise why not, in words.
+   *  A source refusing us is NOT one of these — see `warning`. */
   blockedBy: string | null
+  /** The source's own sentence, when it is currently refusing us.
+   *  Shown on the row and nothing more: the check still runs. */
+  warning: string | null
   /** The field to go and fill, when that is what is missing. */
   needsField: string | null
   costPaisa: number
@@ -232,8 +236,19 @@ function RunMoreDialog({
     const ownBlocker = (
       id: string,
     ): { why: string; what: string; field: string | null } | null => {
-      const outage = blocked.get(id)
-      if (outage) return { why: outage, what: outage, field: null }
+      // A SOURCE REFUSING US IS NO LONGER A REASON NOT TO RUN.
+      //
+      // It used to be: a blocked check sat in "Cannot run yet" and
+      // could not be ticked. That is a prediction from what the source
+      // said to somebody else, and on 7 Nov 2026 it cost four working
+      // Gridlines checks over a refusal on a fifth. The analyst is
+      // still told — `warning` below carries the source's own sentence
+      // onto the row — but it does not stop them.
+      //
+      // A MISSING INPUT still stops a check, and the difference is
+      // real: with no input there is no request to make, so the call
+      // genuinely cannot happen. That is a fact about us, not a guess
+      // about them.
       const gaps = inputGaps(vendor, id, assumed)
       if (!gaps.length) return null
       const what = gaps.map((g) => g.paramLabel).join(' and ')
@@ -274,6 +289,7 @@ function RunMoreDialog({
             ? `Needs ${upstream.blocker!.what}, for ${nameOf(upstream.id)}`
             : null,
         needsField: own ? own.field : (upstream?.blocker?.field ?? null),
+        warning: blocked.get(c.id) ?? null,
         costPaisa: (c.costPaisa || 0) * subjectCount(vendor, c.id),
         credits: c.credits || 0,
         people: subjectCount(vendor, c.id),
@@ -426,6 +442,15 @@ function RunMoreDialog({
                       <span className="small muted">
                         {' '}
                         · also runs {c.alsoRuns.map(nameOf).join(', ')}
+                      </span>
+                    )}
+                    {/* THE SOURCE'S OWN SENTENCE, on a row that is still
+                        tickable. The analyst decides whether to spend the
+                        round trip; the screen does not decide for them. */}
+                    {c.warning && (
+                      <span className="runmore-warn small">
+                        {' '}
+                        · last call was refused: {c.warning}
                       </span>
                     )}
                   </span>
