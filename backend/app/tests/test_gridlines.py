@@ -300,18 +300,22 @@ class TestUnknownResponseShape:
 # =====================================================================
 
 class TestCatalog:
-    def test_the_five_checks_exist_and_are_gridlines(self):
+    def test_the_person_checks_exist_and_are_gridlines(self):
+        """FOUR, not five. `personaddr` was removed on 7 Nov 2026 —
+        Gridlines refuses that product for this account, in the Mobile
+        Intelligence Suite as well as here, so it was never a check
+        anybody could run; it only reported Unavailable forever."""
         from app.catalog.checks import CHECKS_BY_ID
 
-        for check_id in ("prefill", "footprint", "personaddr",
-                         "epfomember", "emphistory"):
+        for check_id in ("prefill", "footprint", "epfomember",
+                         "emphistory"):
             assert CHECKS_BY_ID[check_id].provider.value == "gridlines"
 
     def test_every_person_check_offers_a_consent_reference(self):
         from app.catalog.checks import CHECKS_BY_ID
 
-        for check_id in ("prefill", "footprint", "personaddr",
-                         "epfomember", "emphistory"):
+        for check_id in ("prefill", "footprint", "epfomember",
+                         "emphistory"):
             keys = {p.key for p in CHECKS_BY_ID[check_id].params}
             assert "consentRef" in keys, check_id
 
@@ -324,8 +328,8 @@ class TestCatalog:
         """
         from app.catalog.checks import CHECKS_BY_ID
 
-        for check_id in ("prefill", "footprint", "personaddr",
-                         "epfomember", "emphistory"):
+        for check_id in ("prefill", "footprint", "epfomember",
+                         "emphistory"):
             assert not CHECKS_BY_ID[check_id].feeds, check_id
 
     def test_employment_history_chains_from_epfo_membership(self):
@@ -945,8 +949,8 @@ class TestPersonCheckRunsEverySubject:
         five most likely to need exactly this."""
         from scripts.backfill_facts import BUILDERS
 
-        for check_id in ("prefill", "footprint", "personaddr",
-                         "epfomember", "emphistory"):
+        for check_id in ("prefill", "footprint", "epfomember",
+                         "emphistory"):
             assert check_id in BUILDERS, check_id
 
     def test_a_rebuild_is_honest_about_a_subject_that_failed(self):
@@ -1029,13 +1033,13 @@ class TestGridlinesIsVisibleToTheStatusEndpoints:
         body = TestClient(app).get("/health").json()
         assert "gridlines" in body["providers"]
 
-    def test_an_outage_resolves_to_the_five_person_checks(self):
+    def test_an_outage_resolves_to_the_person_checks(self):
         """The point of the row. A refused Gridlines account must name
         the checks it covers, so the screen greys exactly those."""
         from app.services.runner import _checks_in_scope
 
         assert set(_checks_in_scope("gridlines", "")) == {
-            "prefill", "footprint", "personaddr", "epfomember", "emphistory",
+            "prefill", "footprint", "epfomember", "emphistory",
         }
 
     def test_the_row_says_these_are_a_person_not_a_company(self):
@@ -1322,3 +1326,102 @@ class TestTheOneLineSummary:
         data = _Recorder(FOOTPRINT_EMPTY).digital_footprint(
             "9876543210", consent="Y")
         assert _one_line("footprint", data) == "No online presence returned"
+
+
+# =====================================================================
+# 13. THE UAN, FOUND BY SHAPE
+# =====================================================================
+#
+# Live, 7 Nov 2026: `/epfo-api/fetch-uan` returned HTTP 200 and this
+# adapter could not read the number out of it — the sixth guessed field
+# name in a row. Guessing a seventh is the same mistake with a
+# different spelling, so the number is now identified by what it IS.
+#
+# A UAN is exactly twelve digits. Nothing else in an EPFO response is.
+# A key whose name contains "uan" holding a twelve-digit value is
+# therefore unambiguous, whatever the provider decided to call it.
+
+class TestTheUanIsFoundByShape:
+    @pytest.mark.parametrize(
+        "key", ["uan", "uan_number", "uanNumber", "member_uan", "uanNo",
+                "UAN", "uan_details"],
+    )
+    def test_any_uan_ish_key_is_read(self, key):
+        assert gl.find_uan({"data": {"block": {key: "100123456789"}}}) \
+            == "100123456789"
+
+    def test_it_is_found_at_any_depth(self):
+        deep = {"a": {"b": {"c": [{"d": {"member_uan": "100123456789"}}]}}}
+        assert gl.find_uan(deep) == "100123456789"
+
+    def test_a_uan_ish_key_that_is_not_a_uan_is_REFUSED(self):
+        """`uan_status: "ACTIVE"` is not a UAN, and neither is a
+        truncated one. Feeding either to the employment-history call
+        would buy an answer about nobody."""
+        assert gl.find_uan({"uan_status": "ACTIVE"}) is None
+        assert gl.find_uan({"uan": "1234"}) is None
+        assert gl.find_uan({"uan_count": 2}) is None
+
+    def test_a_twelve_digit_number_under_an_unrelated_key_is_ignored(self):
+        """BOTH conditions, not either. A twelve-digit value that is not
+        under a uan-ish key is some other identifier."""
+        assert gl.find_uan({"establishment_id": "100123456789"}) is None
+
+    def test_the_named_lookup_still_wins_when_it_hits(self):
+        """Cheaper and unambiguous. The shape search is the fallback,
+        not the primary."""
+        provider = _Recorder({"data": {"code": "1", "message": "ok",
+                                       "epfo_data": {"uan": "100123456789"}}})
+        assert provider.epfo_member("9876543210", consent="Y")["uan"] \
+            == "100123456789"
+
+    def test_an_unguessed_spelling_no_longer_costs_a_round_trip(self):
+        """The case that actually happened: 200 from the provider, and
+        a ProviderParseGap because the key was not one of three."""
+        provider = _Recorder({"data": {"code": "1", "message": "ok",
+                                       "epfo_data": {"member_uan": "100123456789",
+                                                     "establishment": "ACME"}}})
+        out = provider.epfo_member("9876543210", consent="Y")
+        assert out["uan"] == "100123456789"
+
+
+class TestAnUnreadablePayloadIsKept:
+    """`ProviderParseGap` carries the response so the runner can persist
+    it — "a response we have paid for and cannot read is the one
+    artefact needed to fix the adapter".
+
+    The multi-subject loop stored only the error string, so the first
+    real EPFO response was bought, found unreadable, and thrown away.
+    The stored row had an error and an empty `_raw_keys`, and the only
+    way to see the shape was to pay for the call again.
+    """
+
+    def test_the_flag_names_the_fields_we_could_not_read(self):
+        raw = {"subjects": [{
+            "subject": "9876543210", "ok": False,
+            "error": "ProviderParseGap: could not read 1 field(s)",
+            "unreadable_payload": {
+                "status": 200,
+                "data": {"code": "1", "message": "ok",
+                         "epfo_data": {"member_uan": "100123456789",
+                                       "establishment": "ACME"}}},
+        }], "subject_count": 1}
+        detail = fx.person_subjects("epfomember", raw)["flags"][0]["detail"]
+        assert "establishment, member_uan" in detail
+        assert "without paying again" in detail
+
+    def test_the_envelope_is_walked_so_the_keys_are_the_PAYLOADS(self):
+        """Reporting `["data"]` would tell nobody anything."""
+        from app.providers.factsets import _payload_keys
+
+        assert _payload_keys(
+            {"data": {"code": "1", "message": "m",
+                      "profile_data": {"pan": "X", "dob": "Y"}}}
+        ) == ["dob", "pan"]
+
+    def test_a_failure_with_no_payload_still_reads_cleanly(self):
+        raw = {"subjects": [{"subject": "9876543210", "ok": False,
+                             "error": "HTTP 500"}], "subject_count": 1}
+        detail = fx.person_subjects("prefill", raw)["flags"][0]["detail"]
+        assert "gap, not a clearance" in detail
+        assert "carried these fields" not in detail

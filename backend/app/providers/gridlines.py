@@ -560,7 +560,12 @@ class GridlinesProvider(HttpProvider):
         inner, code, message = descend(data)
 
         parsed = {
-            "uan": deep_find(inner, "uan", "uan_number", "uanNumber"),
+            # By name first, then by SHAPE — see `find_uan`. The named
+            # lookup is kept because it is cheaper and unambiguous when
+            # it hits; the shape search is what stops a seventh guessed
+            # spelling from costing another round trip.
+            "uan": (deep_find(inner, "uan", "uan_number", "uanNumber")
+                    or find_uan(inner)),
             "name": deep_find(inner, "name", "full_name", "member_name",
                               "bank_verified_name"),
             # NOT `status`: the envelope has a `status` of its own —
@@ -594,7 +599,8 @@ class GridlinesProvider(HttpProvider):
             "employments": [r for r in rows if isinstance(r, dict)],
             "name": deep_find(inner, "name", "full_name", "member_name",
                               "bank_verified_name"),
-            "uan": deep_find(inner, "uan", "uan_number", default=uan),
+            "uan": (deep_find(inner, "uan", "uan_number")
+                    or find_uan(inner) or uan),
             "code": code,
             "message": message,
         }
@@ -623,6 +629,43 @@ def shape_keys(payload: Any) -> list[str]:
     if isinstance(payload, list):
         return sorted(blocks_by_type(payload))
     return sorted(payload) if isinstance(payload, dict) else []
+
+
+def find_uan(payload: Any) -> str | None:
+    """A UAN anywhere in the payload, found by SHAPE not by name.
+
+    The EPFO membership call returned 200 and this adapter could not
+    read the number out of it — the sixth field name in a row that was
+    guessed rather than observed. Guessing a seventh is the same
+    mistake with a different spelling.
+
+    So: any key whose name contains "uan", whose value is exactly twelve
+    digits. A UAN is a twelve-digit number and nothing else in an EPFO
+    response is, so the pair of conditions identifies it without anyone
+    having to know whether the provider calls it `uan`, `uan_number`,
+    `member_uan`, `uanNo` or `UAN`.
+
+    Breadth-first, so the shallowest match wins. Returns None rather
+    than a near-miss: a value under a uan-ish key that is NOT twelve
+    digits is something else, and feeding it to the employment-history
+    call would buy an answer about nobody.
+    """
+    queue: list[Any] = [payload]
+    while queue:
+        nxt: list[Any] = []
+        for node in queue:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if "uan" in str(key).lower():
+                        digits = "".join(
+                            c for c in str(value) if c.isdigit())
+                        if len(digits) == 12 and str(value).strip() == digits:
+                            return digits
+                nxt.extend(node.values())
+            elif isinstance(node, list):
+                nxt.extend(node)
+        queue = nxt
+    return None
 
 
 def _without_status(parsed: dict) -> dict:

@@ -611,106 +611,76 @@ class TestRunnerSettlesProviderState:
 # =====================================================================
 
 class TestProductScopedRefusals:
-    """Observed live on 7 Nov 2026, one Gridlines run, one key, one
-    second:
+    """Scoping a refusal to the product it names.
 
-        /profile-api/mobile/address-lookup      403
-        /epfo-api/fetch-uan                     200
-        /profile-api/mobile/prefill             200
-        /profile-api/mobile/digital-footprint   200
+    Observed live on 7 Nov 2026, one Gridlines run, one key, one second:
+    address-lookup 403 while prefill, digital-footprint and fetch-uan
+    all returned 200. Recorded account-wide, that single refusal made
+    every person check unavailable.
 
-    with the body `FORBIDDEN_ACCESS: Credential does not have access to
-    this product`. Recorded account-wide, that single refusal held all
-    five person checks on every later run — the platform causing a
-    wider outage than the one it exists to prevent. Same failure the
-    WhoisXML pool split was built to stop, not applied here until it
-    happened in production.
+    Two things came out of it. The hold was removed entirely (see
+    `TestNothingIsEverHeld`), so no refusal stops a call any more. And
+    the SCOPE still matters for what gets REPORTED: `/api/providers`
+    has to name the checks a refusal covers so the screens warn on the
+    right rows and not on three that are answering.
+
+    The check that caused it, `personaddr`, has since been removed from
+    the catalog — it fails the same way in the Mobile Intelligence
+    Suite, so the account is simply not entitled to that product. The
+    scoping logic stays, because the next provider to sell products
+    separately will hit exactly this.
     """
 
     def test_a_403_is_scoped_to_the_product_that_was_refused(self):
         from app.services.runner import _outage_scope
 
-        assert _outage_scope("personaddr", 403) == ("gridlines", "personaddr")
+        assert _outage_scope("prefill", 403) == ("gridlines", "prefill")
 
-    def test_an_empty_wallet_still_blocks_the_whole_account(self):
-        """A 402 really does affect every product, and discovering that
-        five times over is the failure the shared record exists for."""
+    def test_an_empty_wallet_still_covers_the_whole_account(self):
+        """A 402 really does affect every product of a shared wallet."""
         from app.services.runner import _outage_scope
 
-        assert _outage_scope("personaddr", 402) == ("gridlines", "")
-        assert _outage_scope("prefill", 401) == ("gridlines", "")
+        assert _outage_scope("prefill", 402) == ("gridlines", "")
+        assert _outage_scope("footprint", 401) == ("gridlines", "")
 
     def test_whoisxml_is_untouched_by_this(self):
         """Its 403 covers an empty balance, a revoked key AND a blocked
         IP — all genuinely account-wide — so it is deliberately not in
-        the product-scoped set and keeps its pools the other way."""
+        the product-scoped set and gets its pools the other way."""
         from app.services.runner import _outage_scope
 
         assert _outage_scope("whois", 403) == ("whoisxml", "whois")
         assert _outage_scope("ssl", 403) == ("whoisxml", "ssl")
 
-    def test_the_refused_product_is_the_only_check_covered(self):
+    def test_the_refused_product_is_the_only_check_reported(self):
         from app.services.runner import _checks_in_scope
 
-        assert _checks_in_scope("gridlines", "personaddr") == ["personaddr"]
+        assert _checks_in_scope("gridlines", "prefill") == ["prefill"]
 
-    def test_an_account_wide_gridlines_outage_still_covers_all_five(self):
+    def test_an_account_wide_outage_covers_every_person_check(self):
         from app.services.runner import _checks_in_scope
 
         assert set(_checks_in_scope("gridlines", "")) == {
-            "prefill", "footprint", "personaddr", "epfomember", "emphistory",
+            "prefill", "footprint", "epfomember", "emphistory",
         }
 
-    def test_the_refused_check_IS_still_held(self):
-        """The other half. Scoping it narrowly must not mean nothing
-        holds it — a check that cannot run has to be refused locally,
-        free, rather than paying to be told again."""
-        from app.services.runner import _hold_scopes
-
-        assert ("gridlines", "personaddr") in _hold_scopes("personaddr")
-        assert ("gridlines", "") in _hold_scopes("personaddr")
-
-    def test_the_scope_still_decides_WHAT_IS_REPORTED(self, session, seeded):
-        """Scoping survives the removal of the hold, for a different
-        job. Nothing is blocked from running any more, but
-        `/api/providers` still has to name the checks a refusal covers
-        so Step 2 and the Step 3 dialog warn on exactly the right rows —
-        and not on four that are answering."""
-        provider_state.record_outage(
-            session, "gridlines", product="personaddr",
-            message="gridlines: HTTP 403 — FORBIDDEN_ACCESS: Credential "
-                    "does not have access to this product.",
-            http_status=403,
-        )
-        session.flush()
-
-        outage = provider_state.open_outages(session)[("gridlines", "personaddr")]
-        assert outage.http_status == 403
-        from app.services.runner import _checks_in_scope
-
-        assert _checks_in_scope("gridlines", "personaddr") == ["personaddr"]
-
-    def test_a_refusal_on_one_product_never_stops_the_other_four(
+    def test_a_refusal_on_one_product_never_stops_the_others(
         self, session, seeded
     ):
-        """The case that prompted all of this, asserted end to end."""
+        """End to end, and doubly true now that nothing is held at all."""
         provider_state.record_outage(
-            session, "gridlines", product="personaddr",
+            session, "gridlines", product="prefill",
             message="FORBIDDEN_ACCESS", http_status=403,
         )
         session.flush()
 
-        five = ["prefill", "footprint", "personaddr", "epfomember",
-                "emphistory"]
+        four = ["prefill", "footprint", "epfomember", "emphistory"]
         runner = CheckRunner(session)
         try:
             result = RunResult(vendor_id="OU0100", spend=runner.spend)
-            allowed = runner._hold_blocked_providers(five, result)
+            allowed = runner._hold_blocked_providers(four, result)
         finally:
             runner.close()
 
-        # ALL FIVE, the refused one included: it is allowed to try again,
-        # which is the only way anybody ever learns the entitlement was
-        # granted.
-        assert allowed == five
+        assert allowed == four
         assert result.findings == []

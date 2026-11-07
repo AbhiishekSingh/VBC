@@ -2669,48 +2669,6 @@ export const CHECKS = [
     ]
   },
   {
-    "id": "personaddr",
-    "group": "person",
-    "name": "Contact person — address on record",
-    "endpoint": "POST /profile-api/mobile/address-lookup",
-    "provider": "gridlines",
-    "note": "Addresses recorded against the contact number. Compare with the registered office before drawing any conclusion.",
-    "state": "active",
-    "requires": [],
-    "feeds": [],
-    "costPaisa": 0,
-    "credits": 0,
-    "screenshots": 0,
-    "needsCompanyUnlock": false,
-    "needsDirectorUnlock": false,
-    "always": false,
-    "admin": false,
-    "params": [
-      {
-        "key": "mobile",
-        "label": "Contact mobile",
-        "required": true,
-        "fromVendor": "contact_mobile",
-        "fromResult": null,
-        "type": "text",
-        "options": [],
-        "default": "",
-        "placeholder": "9876543210"
-      },
-      {
-        "key": "consentRef",
-        "label": "Consent reference",
-        "required": false,
-        "fromVendor": null,
-        "fromResult": null,
-        "type": "text",
-        "options": [],
-        "default": "",
-        "placeholder": ""
-      }
-    ]
-  },
-  {
     "id": "epfomember",
     "group": "person",
     "name": "Contact person — EPFO membership",
