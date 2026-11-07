@@ -762,19 +762,28 @@ CHECKS: tuple[CheckDefinition, ...] = (
             _p("email", "Email", placeholder="optional, narrows the match"),
         ),
     ),
-    CheckDefinition(
-        id="personaddr", group=CheckGroup.PERSON,
-        name="Contact person — address on record",
-        endpoint="POST /profile-api/mobile/address-lookup",
-        provider=GL,
-        note="Addresses recorded against the contact number. Compare with "
-             "the registered office before drawing any conclusion.",
-        params=(
-            _p("mobile", "Contact mobile", required=True,
-               from_vendor="contact_mobile", placeholder="9876543210"),
-            _p("consentRef", "Consent reference"),
-        ),
-    ),
+    # REMOVED 7 Nov 2026 — "Contact person — address on record",
+    # POST /profile-api/mobile/address-lookup.
+    #
+    # Gridlines refuses it: `FORBIDDEN_ACCESS: Credential does not have
+    # access to this product`, and it fails the same way in the Mobile
+    # Intelligence Suite against the same key. The account is not
+    # entitled to that product, so this was never a check anybody could
+    # run — only one that reported Unavailable on every run forever.
+    #
+    # Deleted from the CATALOG only. Deliberately still present:
+    #   * `GridlinesProvider.address_lookup` — the endpoint, its body
+    #     and its headers, verified against the live integration;
+    #   * `factsets.person_addresses` and its `backfill_facts` entry —
+    #     rows already exist on the server, and they must stay
+    #     rebuildable and readable rather than becoming unparseable
+    #     history.
+    # So if the entitlement is ever bought, this is one CheckDefinition
+    # away from working, with nothing to re-derive.
+    #
+    # The seeder only upserts, so the `check_definitions` row survives
+    # and existing `vendor_checks` keep their foreign key.
+
     CheckDefinition(
         id="epfomember", group=CheckGroup.PERSON,
         name="Contact person — EPFO membership",
@@ -855,14 +864,17 @@ def expand_selection(selected: list[str]) -> list[str]:
     return out
 
 
-#: 52 = 45 live + 7 hooks, after the five Gridlines person-level checks
-#: landed on 2026-11-06. History, because the count has been misquoted
+#: 51 = 44 live + 7 hooks. History, because the count has been misquoted
 #: in three project docs: 32 originally; 34 after the FileSure additions
 #: (`dresolve`, `frefresh`); 35 when the FinAGG integration replaced the
 #: single `gst` hook with two live checks — `gst` (search) and `gstret`
-#: (returns metadata), the two facts coming from two endpoints; then 47
-#: when the twelve live eCourts checks landed.
-assert len(CHECKS) == 52, f"expected 52 checks, got {len(CHECKS)}"
+#: (returns metadata), the two facts coming from two endpoints; 47 when
+#: the twelve live eCourts checks landed; 52 when the five Gridlines
+#: person-level checks landed on 2026-11-06; and 51 on 2026-11-07 when
+#: `personaddr` was removed — Gridlines refuses that product for this
+#: account, in the Mobile Intelligence Suite as well as here, so it was
+#: never a check anybody could run.
+assert len(CHECKS) == 51, f"expected 51 checks, got {len(CHECKS)}"
 #: 7, down from 8 on 2026-09-14: `court` came back from hook to ACTIVE.
 #: It had been demoted on 2026-09-08 when LegalCheck submit rejected every
 #: body shape tried — the cause turned out to be a single field, a company

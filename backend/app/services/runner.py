@@ -367,11 +367,6 @@ def _one_line(check_id: str, data: dict) -> str:
             return "No online presence returned"
         return (f"{found} of {len(rows) - unchecked} platforms"
                 + (f", {unchecked} unchecked" if unchecked else ""))
-    if check_id == "personaddr":
-        found = data.get("addresses") or []
-        if isinstance(found, dict):
-            found = [found]
-        return f"{len(found)} address(es) on record"
     return f"{len(data.get('employments') or [])} employment record(s)"
 
 
@@ -808,7 +803,6 @@ class CheckRunner:
         price = {
             "prefill": self.settings.gridlines_prefill_paisa,
             "footprint": self.settings.gridlines_footprint_paisa,
-            "personaddr": self.settings.gridlines_address_paisa,
             "epfomember": self.settings.gridlines_epfo_member_paisa,
             "emphistory": self.settings.gridlines_employment_paisa,
         }[check_id]
@@ -839,8 +833,22 @@ class CheckRunner:
                 # ONE subject failing must not lose the other four. The
                 # row records which, and why, and the status below counts
                 # them honestly.
-                rows.append({**who, "ok": False,
-                             "error": f"{type(exc).__name__}: {exc}"})
+                #
+                # AND IT KEEPS THE PAYLOAD. `ProviderParseGap` carries
+                # the response precisely so the runner can persist it —
+                # "a response we have paid for and cannot read is the
+                # one artefact needed to fix the adapter". This loop
+                # stored only the error string, so the first real EPFO
+                # response was bought, found unreadable, and thrown
+                # away: the stored row had an error and an empty
+                # `_raw_keys`, and the only way to see the shape was to
+                # pay for the call again.
+                failed = {**who, "ok": False,
+                          "error": f"{type(exc).__name__}: {exc}"}
+                unread = getattr(exc, "payload", None)
+                if unread is not None:
+                    failed["unreadable_payload"] = unread
+                rows.append(failed)
 
         raw = {"subjects": rows, "subject_count": len(pairs)}
         ok = [r for r in rows if r["ok"]]
@@ -898,8 +906,11 @@ class CheckRunner:
             return gl.digital_footprint(
                 mobile, consent=consent, email=str(get("email", "") or ""),
             )
-        if check_id == "personaddr":
-            return gl.address_lookup(mobile, consent=consent)
+        # `personaddr` is not in the catalog any more — Gridlines
+        # refuses that product for this account — so the runner never
+        # reaches this branch. `address_lookup` is kept on the provider
+        # with its verified endpoint and body, so restoring the check is
+        # one CheckDefinition away if the entitlement is ever bought.
         if check_id == "epfomember":
             return gl.epfo_member(
                 mobile, consent=consent,
@@ -1683,8 +1694,7 @@ class CheckRunner:
         # else. `_person_consent` warns-and-records when no reference was
         # given, so the attestation is a named analyst rather than a
         # constant in the adapter. See app/providers/gridlines.py.
-        if check_id in ("prefill", "footprint", "personaddr",
-                        "epfomember", "emphistory"):
+        if check_id in ("prefill", "footprint", "epfomember", "emphistory"):
             return self._run_person_check(check_id, vendor, get, prior)
 
         if check_id == "ssl":

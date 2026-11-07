@@ -2323,6 +2323,12 @@ def person_footprint(data: dict) -> dict:
 def person_addresses(data: dict) -> dict:
     """Addresses on record against a contact number.
 
+    KEPT THOUGH THE CHECK IS GONE. `personaddr` was removed from the
+    catalog on 7 Nov 2026 — Gridlines refuses that product for this
+    account — but rows already exist on the server, and
+    `backfill_facts` must still be able to rebuild them. History that
+    cannot be re-parsed is history that quietly rots.
+
     Shown, never judged. An address that differs from the registered
     office is the ordinary case for a proprietor, and a flag here would
     read as an adverse finding where there is none.
@@ -2442,15 +2448,52 @@ def _not_examined(check_id: str, failed: list[dict]) -> list[dict]:
     therefore named here, with the provider's own error, rather than
     quietly leaving that person out of a table of four successes.
     """
-    return [
-        F.flag(
-            "warn", f"Not examined: {_subject_label(check_id, row)}",
-            f"This lookup did not return, so nothing is known about this "
-            f"person from this check — it is a gap, not a clearance. "
-            f"{row.get('error') or 'No reason was recorded.'}",
-        )
-        for row in failed
-    ]
+    out = []
+    for row in failed:
+        detail = (f"This lookup did not return, so nothing is known about "
+                  f"this person from this check — it is a gap, not a "
+                  f"clearance. {row.get('error') or 'No reason was recorded.'}")
+        # NAME THE KEYS WE COULD NOT READ. When the provider answered and
+        # this adapter could not parse it, the payload is stored — and
+        # its top-level keys are the entire map to fixing the parser.
+        # Printing them here means the fix starts from the screen rather
+        # than from a database session, and the call is never bought
+        # twice to find out the same thing.
+        unread = row.get("unreadable_payload")
+        keys = _payload_keys(unread)
+        if keys:
+            detail += (" The response carried these fields: "
+                       + ", ".join(keys)
+                       + ". The parser can be corrected and every past "
+                         "result rebuilt without paying again.")
+        out.append(F.flag(
+            "warn", f"Not examined: {_subject_label(check_id, row)}", detail))
+    return out
+
+
+def _payload_keys(payload: Any) -> list[str]:
+    """The top-level field names of a response, however it is wrapped.
+
+    Walks the one envelope this provider is known to use — ``data`` then
+    the single ``*_data`` key — so the names reported are the payload's
+    own and not ``["data"]``, which tells nobody anything.
+    """
+    node = payload
+    for _ in range(3):
+        if not isinstance(node, dict):
+            break
+        inner = node.get("data")
+        if isinstance(inner, dict):
+            node = inner
+            continue
+        nested = [v for k, v in node.items() if k.endswith("_data")]
+        if len(nested) == 1 and isinstance(nested[0], (dict, list)):
+            node = nested[0]
+            continue
+        break
+    if isinstance(node, list):
+        node = next((r for r in node if isinstance(r, dict)), {})
+    return sorted(node) if isinstance(node, dict) else []
 
 
 def _subject_rows(check_id: str, ok: list[dict]) -> tuple[list[dict], list[dict]]:
