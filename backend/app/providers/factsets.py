@@ -2174,29 +2174,85 @@ _PERSON_NOTE = (
 
 
 def person_identity(data: dict) -> dict:
-    """Name, PAN, date of birth and address behind a contact number."""
+    """Who holds this number — name, PAN, date of birth, addresses.
+
+    REWRITTEN against the real response, 7 Nov 2026. The first version
+    read `pan`, `email` and `alternate_phone` as plain strings. The
+    provider wraps every repeatable field as
+    ``[{"serial_number": "1", "value": …}]``, so those lookups returned
+    the whole LIST — and the PAN mask then ran over a stringified dict
+    and printed rubbish where a PAN belonged.
+
+    Addresses are a TABLE, not one flattened line. Each carries a
+    `date_of_reporting`, and when an address was last seen is the part
+    that matters: one reported last week and one reported two years ago
+    are different facts about where somebody lives.
+
+    INCOME IS PARSED AND NOT SHOWN. The response carries an income band
+    for the individual. It says nothing about the vendor company this
+    file is about, and an individual's earnings do not belong in a
+    report a client reads. It stays in `raw_response` under its own
+    access controls, so the decision is reversible without re-paying
+    for anything.
+    """
     rows = [
         {"field": "Name", "value": data.get("name")},
         {"field": "PAN", "value": _mask_pan(data.get("pan"))},
-        {"field": "Date of birth", "value": F.human_date(parse_date(data.get("dob")))
-                                            or data.get("dob")},
+        {"field": "Date of birth",
+         "value": F.human_date(parse_date(data.get("dob"))) or data.get("dob")},
+        {"field": "Age", "value": data.get("age")},
         {"field": "Gender", "value": data.get("gender")},
         {"field": "Email", "value": _mask_email(data.get("email"))},
-        {"field": "Address", "value": _flat(data.get("address"))},
+        {"field": "Other numbers on this identity",
+         "value": ", ".join(_mask_mobile(p) or "" for p in
+                            (data.get("alt_phones") or [])) or None},
     ]
+    extra_pans = [p for p in (data.get("all_pans") or [])
+                  if p != data.get("pan")]
+    if extra_pans:
+        # More than one PAN against one person is worth a human look,
+        # and dropping the second would hide it.
+        rows.append({"field": "Other PANs",
+                     "value": ", ".join(_mask_pan(p) or "" for p in extra_pans)})
+
+    addresses = [a for a in (data.get("addresses") or []) if a]
+    address_rows = []
+    for a in addresses:
+        if not isinstance(a, dict):
+            address_rows.append({"address": str(a), "state": None,
+                                 "pincode": None, "reported": None})
+            continue
+        address_rows.append({
+            "address": _first_value(a, ("detailed_address", "address",
+                                        "full_address", "line1")),
+            "state": _first_value(a, ("state", "state_code")),
+            "pincode": _first_value(a, ("pincode", "pin_code", "zip")),
+            "reported": F.human_date(parse_date(_first_value(
+                a, ("date_of_reporting", "reported_on", "date")))),
+        })
+
     return F.build(
         F.TABLE,
-        stats=[F.stat("Fields returned",
-                      sum(1 for r in rows if r["value"] not in (None, "", [], {})))],
+        stats=[
+            F.stat("Identity returned", "Yes" if data.get("name") else "No"),
+            F.stat("Addresses on record", len(address_rows)),
+            F.stat("Numbers on this identity",
+                   1 + len(data.get("alt_phones") or [])),
+        ],
+        fields=[F.field(r["field"], r["value"],
+                        format="id" if r["field"].endswith("PAN")
+                        or r["field"] == "Other PANs" else "text")
+                for r in rows if r["value"] not in (None, "", [], {})],
         rows=F.table(
-            [F.column("field", "Field"), F.column("value", "Value")],
-            [r for r in rows if r["value"] not in (None, "", [], {})],
-            empty_note="No identity fields were returned for this number.",
+            [F.column("address", "Address"), F.column("state", "State"),
+             F.column("pincode", "PIN"),
+             F.column("reported", "Last reported", format="date")],
+            address_rows,
+            empty_note="No address was returned against this number.",
         ),
         flags=_unknown_shape(data),
         lede=_PERSON_NOTE,
     )
-
 
 #: Gridlines' platform constants, as they arrive. Tidied for a report
 #: that a client reads; anything not listed is title-cased, so an
@@ -2371,31 +2427,71 @@ def person_epfo(data: dict) -> dict:
 
 
 def person_employment(data: dict) -> dict:
-    """Employers and dates against a UAN."""
+    """Employers and dates against a UAN.
+
+    REWRITTEN against the real response, 7 Nov 2026. The first version
+    looked for `employment_history` / `history` and read `employer_name`
+    and `date_of_exit` out of it. What the provider actually returns is
+    a record carrying `establishment_name`, `date_of_joining`,
+    `service_period`, `member_id`, `name` and `guardian_name` — and no
+    exit date at all.
+
+    That last absence matters. The old table had a "To" column, and an
+    empty one was read as "still employed" — a conclusion drawn from a
+    field the provider never sends. `service_period` is what it gives
+    instead, and it is shown as what it is.
+    """
     rows = []
     for e in (data.get("employments") or []):
         if not isinstance(e, dict):
-            rows.append({"employer": str(e), "from": None, "to": None})
+            rows.append({"employer": str(e), "from": None, "period": None})
             continue
         rows.append({
-            "employer": _first_value(e, ("establishment_name", "employer_name",
-                                        "company", "name")),
+            "employer": _first_value(e, ("establishment_name",
+                                         "employer_name", "establishment",
+                                         "employer", "company_name",
+                                         "company")),
             "from": F.human_date(parse_date(_first_value(
-                e, ("date_of_joining", "doj", "from", "start_date")))),
-            "to": F.human_date(parse_date(_first_value(
-                e, ("date_of_exit", "doe", "to", "end_date")))),
+                e, ("date_of_joining", "doj", "joining_date",
+                    "from_date", "from")))),
+            # NOT an exit date. The provider sends a duration, and
+            # printing it in a "To" column would turn "3 yrs 2 mos" into
+            # a date nobody stated.
+            "period": _first_value(e, ("service_period", "period",
+                                       "duration")),
         })
+
+    first = next((e for e in (data.get("employments") or [])
+                  if isinstance(e, dict)), {})
+    fields = [
+        F.field("Name on the EPFO record",
+                data.get("name") or _first_value(first, ("name",)),
+                note="The name EPFO holds against this UAN. Compare it "
+                     "with the person this file is about — it is the "
+                     "source's record, not our conclusion."),
+        F.field("Parent or guardian name",
+                _first_value(first, ("guardian_name", "father_name",
+                                     "fathers_name"))),
+        F.field("Member ID", _first_value(first, ("member_id", "memberId")),
+                format="id"),
+        F.field("UAN", data.get("uan"), format="id"),
+    ]
+
     return F.build(
         F.TABLE,
         stats=[
             F.stat("Employers on record", len(rows)),
-            F.stat("Currently employed",
-                   sum(1 for r in rows if not r["to"])),
+            # NOT "currently employed". There is no exit date in this
+            # response, so there is nothing from which to conclude that
+            # a job is still running.
+            F.stat("Most recent",
+                   next((r["from"] for r in rows if r["from"]), None) or "—"),
         ],
+        fields=[f for f in fields if f["value"] is not None],
         rows=F.table(
             [F.column("employer", "Employer"),
-             F.column("from", "From", format="date"),
-             F.column("to", "To", format="date")],
+             F.column("from", "Joined", format="date"),
+             F.column("period", "Service period")],
             rows,
             empty_note="No employment history was returned for this UAN.",
         ),
@@ -2403,23 +2499,26 @@ def person_employment(data: dict) -> dict:
         lede=_PERSON_NOTE,
     )
 
-
 # =====================================================================
 # ONE CHECK, MANY PEOPLE
 # =====================================================================
 
 #: The single-subject builder for each person check, so the one-number
 #: case renders exactly as it did before this was a list.
+#:
+#: FOUR, not five: `personaddr` left the catalog on 7 Nov 2026 because
+#: Gridlines refuses that product for this account. `person_addresses`
+#: is still defined above so `backfill_facts` can rebuild the rows that
+#: already exist, but nothing routes to it any more.
 _PERSON_ONE = {
     "prefill": person_identity,
     "footprint": person_footprint,
-    "personaddr": person_addresses,
     "epfomember": person_epfo,
     "emphistory": person_employment,
 }
 
-#: What the first column of the per-subject table is. `emphistory` keys on
-#: a UAN; the rest key on a mobile number.
+#: What the first column of the per-subject table is. `emphistory` keys
+#: on a UAN; the rest key on a mobile number.
 _SUBJECT_COLUMN = {"emphistory": "UAN"}
 
 

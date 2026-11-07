@@ -367,7 +367,19 @@ def _one_line(check_id: str, data: dict) -> str:
             return "No online presence returned"
         return (f"{found} of {len(rows) - unchecked} platforms"
                 + (f", {unchecked} unchecked" if unchecked else ""))
-    return f"{len(data.get('employments') or [])} employment record(s)"
+    rows = data.get("employments") or []
+    if not rows:
+        return "No employment history returned"
+    first = rows[0] if isinstance(rows[0], dict) else {}
+    employer = (first.get("establishment_name") or first.get("employer_name")
+                or first.get("establishment") or first.get("employer"))
+    # The EMPLOYER, not a count. "3 employment record(s)" is a number
+    # about our parsing; the name of where somebody works is the finding.
+    if employer and len(rows) == 1:
+        return str(employer)
+    if employer:
+        return f"{employer} + {len(rows) - 1} more"
+    return f"{len(rows)} employment record(s)"
 
 
 def _subjects(raw: str | None, fallback: str | None = None) -> list[str]:

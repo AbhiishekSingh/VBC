@@ -116,3 +116,56 @@ FOOTPRINT_EMPTY = {
     "timestamp": 1794015498229,
     "path": "/profile-api/mobile/digital-footprint",
 }
+
+
+#: The real `/profile-api/mobile/prefill` shape, captured 7 Nov 2026.
+#: Values synthetic — the real one carried a named individual's PAN,
+#: date of birth, email, two home addresses and an income band, and
+#: this repository is public.
+#:
+#: What it settled, and what the first parser got wrong:
+#:   * the payload is `data.personal_data`, and identity sits one level
+#:     further in under `personal_information`;
+#:   * `pan`, `email` and `alternate_phone` are SERIAL-WRAPPED —
+#:     `[{"serial_number": "1", "value": …}]` — so a key lookup returns
+#:     a LIST where a string was expected, and the PAN mask then ran
+#:     over a stringified dict;
+#:   * `address` is a list of records, each with its own
+#:     `date_of_reporting`;
+#:   * the response carries an INCOME BAND for the individual.
+PREFILL_LIVE = {
+    "request_id": "00000000-0000-0000-0000-000000000010",
+    "transaction_id": "00000000-0000-0000-0000-000000000011",
+    "status": 200,
+    "data": {
+        "code": "1015",
+        "message": "Details retrieved successfully.",
+        "personal_data": {
+            "personal_information": {
+                "full_name": "TEST SUBJECT",
+                "gender": "MALE",
+                "age": "41",
+                "date_of_birth": "1985-02-03",
+                "income": "3,00,001 - 4,00,000",
+            },
+            "alternate_phone": [
+                {"serial_number": "2", "value": "9820011223"},
+                {"serial_number": "1", "value": "9876543210"},
+            ],
+            "email": [{"serial_number": "1", "value": "TEST@EXAMPLE.COM"}],
+            "address": [
+                {"detailed_address": "ROOM NO 1 BLD 2 SAMPLE NAGAR",
+                 "state": "MH", "pincode": "401501",
+                 "date_of_reporting": "2026-11-03"},
+                {"detailed_address": "FLAT 9 EXAMPLE SOCIETY",
+                 "state": "MH", "pincode": "400068",
+                 "date_of_reporting": "2024-10-31"},
+            ],
+            "document_data": {
+                "pan": [{"serial_number": "1", "value": "ABCDE1234F"}],
+            },
+        },
+    },
+    "timestamp": 1794016702258,
+    "path": "/profile-api/mobile/prefill",
+}
