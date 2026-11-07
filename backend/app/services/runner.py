@@ -391,42 +391,6 @@ def _subjects(raw: str | None, fallback: str | None = None) -> list[str]:
     )
 
 
-def _uan_from(prior: dict) -> str | None:
-    """The UAN the EPFO membership check returned, if it ran.
-
-    Same guard order as `_dins_from`: `epfomember` may not have been
-    selected, and a missing finding must not raise here.
-    """
-    found = prior.get("epfomember")
-    if found is None or not found.raw:
-        return None
-    for row in (found.raw.get("subjects") or []):
-        uan = (row.get("data") or {}).get("uan")
-        if uan:
-            return str(uan).strip()
-    uan = found.raw.get("uan")
-    return str(uan).strip() if uan else None
-
-
-def _uans_by_mobile(prior: dict) -> dict[str, str]:
-    """Every UAN the EPFO membership check found, keyed by the number.
-
-    Keyed rather than listed because with five directors the employment
-    history has to say WHOSE. A list would put five employment records
-    on screen with no way to tell which belongs to whom, which is worse
-    than not running it.
-    """
-    found = prior.get("epfomember")
-    if found is None or not found.raw:
-        return {}
-    out: dict[str, str] = {}
-    for row in (found.raw.get("subjects") or []):
-        uan = (row.get("data") or {}).get("uan")
-        if uan and row.get("subject"):
-            out[str(row["subject"])] = str(uan).strip()
-    return out
-
-
 def _director_names(prior: dict) -> list[str]:
     """The board, for the LegalCheck submit.
 
@@ -769,21 +733,26 @@ class CheckRunner:
 
         # ---- who are we running against --------------------------------
         if check_id == "emphistory":
-            by_mobile = _uans_by_mobile(prior)
-            typed = [u for u in _subjects(str(get("uan", "") or "")) if u]
-            if typed:
-                pairs = [(None, u) for u in typed]
-            elif by_mobile:
-                pairs = list(by_mobile.items())
-            else:
-                one = _uan_from(prior)
-                pairs = [(None, one)] if one else []
+            # THE UAN IS TYPED. NOTHING IS INHERITED.
+            #
+            # This used to fall back to whatever `epfomember` had
+            # returned, and that made one endpoint's parse failure take
+            # a second, working endpoint down with it: fetch-uan came
+            # back in a shape this adapter could not read, so employment
+            # history never ran at all, though it needed nothing from
+            # it. The provider's own API has no such dependency —
+            # fetch-by-uan wants a UAN and nothing else.
+            #
+            # `uan` is a required input in the catalog now, so a blank
+            # is caught by the gate before a run starts. This stays as
+            # the backstop for any caller that is not the form.
+            pairs = [(None, u) for u in _subjects(str(get("uan", "") or ""))]
             if not pairs:
                 return Finding(
                     check_id, CheckStatus.SKIPPED_MISSING_INPUT, "No UAN",
-                    "Supply one UAN per line, or run the EPFO membership "
-                    "check first so they can be taken from its results. "
-                    "The call was never made.",
+                    "This check needs at least one UAN — twelve digits, "
+                    "one per line for several people. The call was never "
+                    "made and nothing was charged.",
                 )
         else:
             numbers = _subjects(str(get("mobile", "") or ""),

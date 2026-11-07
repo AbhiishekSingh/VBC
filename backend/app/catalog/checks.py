@@ -789,12 +789,25 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — EPFO membership",
         endpoint="POST /epfo-api/fetch-uan",
         provider=GL,
-        note="The UAN behind the contact number. PAN narrows the match.",
+        note="The UAN behind the contact number. The person's own PAN "
+             "narrows the match — optional, and NOT the company's.",
         params=(
             _p("mobile", "Contact mobile", required=True,
                from_vendor="contact_mobile", placeholder="9876543210"),
             _p("consentRef", "Consent reference"),
-            _p("pan", "PAN", from_vendor="pan", placeholder="ABCDE1234F"),
+            # NO `from_vendor="pan"`. It used to prefill the VENDOR'S
+            # PAN — the company's — into a field that narrows a lookup
+            # for a PERSON. Two different entities, and a PAN is the
+            # most specific identifier either of them has, so sending
+            # the wrong one is not a near-miss: it asks EPFO to match a
+            # company's tax number against an individual's membership.
+            # Seen live on 7 Nov 2026, KXAPS7720G arriving by itself in
+            # a box the analyst had not typed in.
+            #
+            # If the contact person's own PAN is known it can be typed.
+            # Nothing fills it automatically, because nothing on the
+            # vendor record holds it.
+            _p("pan", "PAN of the person", placeholder="ABCDE1234F"),
         ),
     ),
     CheckDefinition(
@@ -802,12 +815,18 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — employment history",
         endpoint="POST /epfo-api/employment-history/fetch-by-uan",
         provider=GL,
-        note="Employers and dates against a UAN. Leave the UAN blank to "
-             "take it from the EPFO membership result.",
-        requires=("epfomember",),
+        note="Employers and dates against a UAN. Give the UAN directly — "
+             "this check stands on its own.",
+        # NO `requires`. It used to chain off `epfomember`, so the only
+        # way to run it was to run that check first and hope it yielded
+        # a UAN — which made one endpoint's parse failure take a second,
+        # working endpoint down with it. The provider's own API has no
+        # such dependency: fetch-by-uan wants a UAN and nothing else.
         params=(
-            _p("uan", "UAN", from_result="epfomember",
-               placeholder="blank = taken from the EPFO membership result"),
+            # REQUIRED. There is no fallback to another check's result
+            # any more, so a blank here is a missing input and the run
+            # says so plainly rather than calling with nothing.
+            _p("uan", "UAN", required=True, placeholder="100123456789"),
             _p("consentRef", "Consent reference"),
         ),
     ),
