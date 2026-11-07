@@ -62,7 +62,18 @@ from typing import Any, Iterable, Literal
 #: not checked" are not the same finding about the same person, so this
 #: is a change of meaning and not of presentation. Every footprint row
 #: already paid for rebuilds from its stored payload for nothing.
-PARSER_VERSION = "3"
+#: "4" — 7 Nov 2026. The employment-history parser, same story as the
+#: footprint one a few hours earlier: written without a response in
+#: front of it, and wrong about where the data sits AND what it
+#: contains. The provider returns one record carrying
+#: `establishment_name`, `date_of_joining` and `service_period` — not a
+#: list under `employment_history`, and with NO exit date.
+#:
+#: The old table had a "To" column, and an empty cell in it read as
+#: "still employed". That is a conclusion drawn from a field this
+#: provider never sends, which makes it a change of meaning rather than
+#: of presentation.
+PARSER_VERSION = "4"
 
 Shape = Literal["detail", "summary", "table", "document", "reference", "none"]
 

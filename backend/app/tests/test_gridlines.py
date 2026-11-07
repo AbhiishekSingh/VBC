@@ -516,10 +516,12 @@ class TestOneCheckManyPeople:
                              "data": {"name": "A SHARMA", "dob": "1985-02-03"}}],
                "subject_count": 1}
         blob = fx.person_subjects("prefill", raw)
-        labels = [r["field"] for r in blob["table"]["rows"]]
-        assert "Name" in labels and "subject" not in labels
-        # And it still says whose record it is.
+        labels = [f["label"] for f in blob["fields"]]
+        assert "Name" in labels
+        # And it still says whose record it is, first.
         assert blob["fields"][0]["label"] == "Number"
+        # Not a per-subject table keyed on the number.
+        assert blob["table"]["columns"][0]["key"] != "subject"
 
     def test_five_subjects_render_as_a_table_keyed_on_the_number(self):
         raw = {"subjects": [
@@ -1447,3 +1449,229 @@ class TestAnUnreadablePayloadIsKept:
         detail = fx.person_subjects("prefill", raw)["flags"][0]["detail"]
         assert "gap, not a clearance" in detail
         assert "carried these fields" not in detail
+
+
+# =====================================================================
+# 14. EMPLOYMENT HISTORY, AGAINST THE REAL FIELD NAMES
+# =====================================================================
+#
+# Live, 7 Nov 2026. The check reported a parse gap, and because the
+# payload is now KEPT the screen named what the response carried:
+#
+#     date_of_joining, establishment_name, guardian_name, member_id,
+#     name, service_period
+#
+# No `employment_history`, no `history`, no `employments`, no
+# `records` — the four names this adapter had guessed. And no
+# `date_of_exit` either, which the old table had a column for.
+
+#: The live shape, person removed. One record returned bare, not a list.
+EMPLOYMENT_LIVE = {
+    "status": 200,
+    "data": {
+        "code": "1023",
+        "message": "Fetched employment history.",
+        "employment_data": {
+            "name": "TEST SUBJECT",
+            "guardian_name": "TEST PARENT",
+            "member_id": "MHBAN00123450000012345",
+            "establishment_name": "ACME PACKAGING PRIVATE LIMITED",
+            "date_of_joining": "2019-04-01",
+            "service_period": "3 yrs 2 mos",
+        },
+    },
+}
+
+
+class TestEmploymentIsFoundByShape:
+    def test_a_record_is_recognised_by_what_it_CONTAINS(self):
+        """An employment row names an EMPLOYER or says when somebody
+        JOINED. Nothing else in an EPFO payload does either."""
+        assert gl.looks_like_employment({"establishment_name": "ACME"})
+        assert gl.looks_like_employment({"date_of_joining": "2019-04-01"})
+        assert not gl.looks_like_employment({"name": "A B SINGH"})
+        assert not gl.looks_like_employment({"uan": "100123456789"})
+        assert not gl.looks_like_employment("ACME")
+
+    def test_a_single_bare_record_is_read_as_one_row(self):
+        """The live response. Not a list — one record, returned bare,
+        which every key-based lookup missed."""
+        out = _Recorder(EMPLOYMENT_LIVE).employment_history(
+            "101749428566", consent="Y")
+        assert len(out["employments"]) == 1
+        assert out["employments"][0]["establishment_name"] \
+            == "ACME PACKAGING PRIVATE LIMITED"
+
+    def test_a_list_of_records_is_read_in_order(self):
+        """An employment history read out of order is worse than none."""
+        payload = {"data": {"code": "1", "message": "ok", "employment_data": [
+            {"establishment_name": "FIRST", "date_of_joining": "2015-01-01"},
+            {"establishment_name": "SECOND", "date_of_joining": "2019-04-01"},
+            {"establishment_name": "THIRD", "date_of_joining": "2022-07-15"},
+        ]}}
+        out = _Recorder(payload).employment_history("1", consent="Y")
+        assert [r["establishment_name"] for r in out["employments"]] \
+            == ["FIRST", "SECOND", "THIRD"]
+
+    def test_the_named_lookup_still_wins_when_it_hits(self):
+        payload = {"data": {"code": "1", "message": "ok", "x_data": {
+            "employment_history": [{"establishment_name": "ACME"}]}}}
+        out = _Recorder(payload).employment_history("1", consent="Y")
+        assert len(out["employments"]) == 1
+
+    def test_a_payload_with_no_employment_still_RAISES(self):
+        """The widened net must not become a silent pass."""
+        payload = {"data": {"code": "1", "message": "ok",
+                            "employment_data": {"somethingElse": {"x": 1}}}}
+        with pytest.raises(ProviderParseGap):
+            _Recorder(payload).employment_history("1", consent="Y")
+
+
+class TestEmploymentRenders:
+    def _blob(self):
+        out = _Recorder(EMPLOYMENT_LIVE).employment_history(
+            "101749428566", consent="Y")
+        return fx.person_employment(out)
+
+    def test_the_table_reads_the_real_field_names(self):
+        row = self._blob()["table"]["rows"][0]
+        assert row["employer"] == "ACME PACKAGING PRIVATE LIMITED"
+        assert row["from"] == "01 Apr 2019"
+        assert row["period"] == "3 yrs 2 mos"
+
+    def test_there_is_no_TO_column_to_misread(self):
+        """The old table had one, and an empty cell in it read as
+        "still employed" — a conclusion drawn from a field this
+        provider never sends. `service_period` is what it gives."""
+        labels = [c["label"] for c in self._blob()["table"]["columns"]]
+        assert "To" not in labels
+        assert "Service period" in labels
+
+    def test_the_stats_claim_nothing_about_current_employment(self):
+        """There is no exit date in this response, so there is nothing
+        from which to conclude a job is still running."""
+        labels = [s["label"] for s in self._blob()["stats"]]
+        assert "Currently employed" not in labels
+
+    def test_the_name_EPFO_holds_is_shown_for_comparison(self):
+        fields = {f["label"]: f["value"] for f in self._blob()["fields"]}
+        assert fields["Name on the EPFO record"] == "TEST SUBJECT"
+        assert fields["Parent or guardian name"] == "TEST PARENT"
+        assert fields["Member ID"] == "MHBAN00123450000012345"
+
+    def test_the_headline_names_the_employer_not_a_count(self):
+        """"1 employment record(s)" is a number about our parsing. Where
+        somebody works is the finding."""
+        from app.services.runner import _one_line
+
+        out = _Recorder(EMPLOYMENT_LIVE).employment_history("1", consent="Y")
+        assert _one_line("emphistory", out) == "ACME PACKAGING PRIVATE LIMITED"
+
+
+# =====================================================================
+# 15. PREFILL, AGAINST THE REAL RESPONSE
+# =====================================================================
+#
+# Captured 7 Nov 2026. This check was PASSING and rendering wrongly,
+# which is the more dangerous of the two failures: a parse gap is
+# loud, a wrong value is not.
+
+from app.tests.fixtures_gridlines import PREFILL_LIVE  # noqa: E402
+
+
+class TestSerialWrappedFields:
+    """`pan`, `email` and `alternate_phone` come back as
+    `[{"serial_number": "1", "value": …}]`. A person can have more than
+    one of each and the serial number is which."""
+
+    def test_the_value_is_unwrapped(self):
+        assert gl.first_serial(
+            [{"serial_number": "1", "value": "ABCDE1234F"}]) == "ABCDE1234F"
+
+    def test_every_value_is_kept_in_serial_order(self):
+        """"Which number is the primary" is the question this field
+        answers, so the order is the answer."""
+        assert gl.serial_values([
+            {"serial_number": "3", "value": "C"},
+            {"serial_number": "1", "value": "A"},
+            {"serial_number": "2", "value": "B"},
+        ]) == ["A", "B", "C"]
+
+    def test_a_plain_value_passes_straight_through(self):
+        """Four of five endpoints are still only partly known. An
+        unwrapped field must not be destroyed by the unwrapper."""
+        assert gl.serial_values("ABCDE1234F") == ["ABCDE1234F"]
+        assert gl.first_serial("ABCDE1234F") == "ABCDE1234F"
+        assert gl.serial_values(None) == []
+
+
+class TestPrefillReadsTheRealShape:
+    def _out(self):
+        return _Recorder(PREFILL_LIVE).mobile_prefill(
+            "9876543210", consent="Y")
+
+    def test_the_pan_is_a_STRING_not_the_wrapper_list(self):
+        """It was returning `[{'serial_number': '1', 'value': …}]`, and
+        the PAN mask then ran over a stringified dict and printed
+        rubbish where a PAN belonged. A wrong value is more dangerous
+        than a parse gap, because nothing about it is loud."""
+        assert self._out()["pan"] == "ABCDE1234F"
+
+    def test_identity_is_read_from_one_level_further_in(self):
+        out = self._out()
+        assert out["name"] == "TEST SUBJECT"
+        assert out["dob"] == "1985-02-03"
+        assert out["age"] == "41"
+        assert out["gender"] == "MALE"
+
+    def test_email_and_alternate_numbers_are_unwrapped(self):
+        out = self._out()
+        assert out["email"] == "TEST@EXAMPLE.COM"
+        assert out["alt_phones"] == ["9876543210", "9820011223"]
+
+    def test_addresses_keep_their_structure(self):
+        """Flattened to one line, `date_of_reporting` is lost — and
+        when an address was last seen is the part that matters."""
+        rows = self._out()["addresses"]
+        assert len(rows) == 2
+        assert rows[0]["date_of_reporting"] == "2026-11-03"
+        assert rows[0]["pincode"] == "401501"
+
+
+class TestPrefillRenders:
+    def _blob(self):
+        return fx.person_identity(
+            _Recorder(PREFILL_LIVE).mobile_prefill("9876543210", consent="Y"))
+
+    def test_the_addresses_are_a_table_with_when_they_were_reported(self):
+        table = self._blob()["table"]
+        assert [c["label"] for c in table["columns"]] == [
+            "Address", "State", "PIN", "Last reported"]
+        assert table["rows"][0]["reported"] == "03 Nov 2026"
+        assert table["rows"][1]["reported"] == "31 Oct 2024"
+
+    def test_the_pan_is_masked_and_READABLE(self):
+        fields = {f["label"]: f["value"] for f in self._blob()["fields"]}
+        assert fields["PAN"] == "******234F"
+
+    def test_the_income_band_is_NOT_rendered(self):
+        """The response carries one for the individual. It says nothing
+        about the vendor company this file is about, and an individual's
+        earnings do not belong in a report a client reads. It stays in
+        `raw_response` under its own access controls."""
+        assert "3,00,001" not in str(self._blob())
+
+    def test_the_income_band_IS_still_parsed_and_stored(self):
+        """Not shown is not the same as discarded — the decision stays
+        reversible without re-paying for anything."""
+        assert self._out_income() == "3,00,001 - 4,00,000"
+
+    def _out_income(self):
+        return _Recorder(PREFILL_LIVE).mobile_prefill(
+            "9876543210", consent="Y")["income"]
+
+    def test_nothing_unmasked_reaches_the_blob(self):
+        blob = str(self._blob())
+        assert "ABCDE1234F" not in blob
+        assert "TEST@EXAMPLE.COM" not in blob
+        assert "9876543210" not in blob

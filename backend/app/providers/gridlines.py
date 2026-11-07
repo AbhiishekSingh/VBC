@@ -371,17 +371,50 @@ class GridlinesProvider(HttpProvider):
         # DEEP, not top-level. The one response anybody has seen from
         # this provider nests its real content four levels down; there
         # is no reason to expect this endpoint to be flatter.
+        # WRITTEN AGAINST THE REAL RESPONSE, 7 Nov 2026:
+        #
+        #   data.personal_data
+        #       personal_information  full_name, gender, age,
+        #                             date_of_birth, income
+        #       alternate_phone[]     {serial_number, value}
+        #       email[]               {serial_number, value}
+        #       address[]             {detailed_address, state, pincode,
+        #                              date_of_reporting}
+        #       document_data.pan[]   {serial_number, value}
+        #
+        # The repeatable fields are SERIAL-WRAPPED — see `serial_values`.
+        # Reading them with a plain key lookup returned the whole list
+        # where a string belonged, and the PAN mask then ran over a
+        # stringified dict.
         parsed = {
-            "name": deep_find(inner, "name", "full_name", "fullName",
+            "name": deep_find(inner, "full_name", "name", "fullName",
                               "bank_verified_name"),
-            "pan": deep_find(inner, "pan", "pan_number", "panNumber"),
-            "dob": deep_find(inner, "dob", "date_of_birth", "dateOfBirth"),
+            "pan": first_serial(deep_find(inner, "pan", "pan_number",
+                                          "panNumber")),
+            "all_pans": serial_values(deep_find(inner, "pan", "pan_number")),
+            "dob": deep_find(inner, "date_of_birth", "dob", "dateOfBirth"),
+            "age": deep_find(inner, "age"),
             "gender": deep_find(inner, "gender"),
-            "email": deep_find(inner, "email", "email_id"),
-            "address": deep_find(inner, "address", "full_address",
-                                 "addresses", "address_details"),
-            "alt_phones": deep_rows(inner, "alternate_phone", "phones",
-                                    "alternate_numbers"),
+            "email": first_serial(deep_find(inner, "email", "email_id")),
+            "all_emails": serial_values(deep_find(inner, "email", "email_id")),
+            # Kept as the provider's own rows — `detailed_address`,
+            # `state`, `pincode` and `date_of_reporting` — because WHEN
+            # an address was last reported is the useful part and a
+            # flattened string loses it.
+            "addresses": [a for a in (deep_find(inner, "address", "addresses",
+                                                "address_details") or [])
+                          if isinstance(a, dict)] or
+                         ([deep_find(inner, "full_address")]
+                          if deep_find(inner, "full_address") else []),
+            "alt_phones": serial_values(deep_find(
+                inner, "alternate_phone", "phones", "alternate_numbers")),
+            # PARSED, DELIBERATELY NOT RENDERED. See the note in
+            # `factsets.person_identity`: an individual's income band
+            # says nothing about a vendor company and does not belong in
+            # a client-facing report. It stays in `raw_response` under
+            # its own access controls, reachable if the methodology ever
+            # calls for it.
+            "income": deep_find(inner, "income", "income_range"),
             "code": code,
             "message": message,
         }
@@ -592,11 +625,18 @@ class GridlinesProvider(HttpProvider):
         data = unwrap(payload)
         inner, code, message = descend(data)
 
-        rows = deep_rows(inner, "employment_history", "history",
-                         "employments", "records", "employment_details")
+        # By NAME first, then by SHAPE. The named lookup is cheaper and
+        # unambiguous when it hits; `find_employments` is what stops a
+        # fourth guessed spelling from costing another round trip.
+        rows = [r for r in deep_rows(inner, "employment_history", "history",
+                                     "employments", "records",
+                                     "employment_details")
+                if isinstance(r, dict)]
+        if not rows:
+            rows = find_employments(inner)
 
         parsed = {
-            "employments": [r for r in rows if isinstance(r, dict)],
+            "employments": rows,
             "name": deep_find(inner, "name", "full_name", "member_name",
                               "bank_verified_name"),
             "uan": (deep_find(inner, "uan", "uan_number")
@@ -666,6 +706,107 @@ def find_uan(payload: Any) -> str | None:
                 nxt.extend(node)
         queue = nxt
     return None
+
+
+#: A key naming the employer. `establishment_name` is what the live
+#: response used; the rest are the spellings seen elsewhere in EPFO
+#: data and cost nothing to accept.
+_EMPLOYER_KEYS = ("establishment_name", "employer_name", "establishment",
+                  "employer", "company_name")
+
+#: A key naming when the person joined.
+_JOINED_KEYS = ("date_of_joining", "doj", "joining_date", "from_date")
+
+
+def looks_like_employment(row: Any) -> bool:
+    """Is this dict one employment record?
+
+    An employment row names an EMPLOYER or says when somebody JOINED.
+    Nothing else in an EPFO payload does both, and a record with
+    neither is not one however it is labelled.
+    """
+    if not isinstance(row, dict):
+        return False
+    return (any(k in row for k in _EMPLOYER_KEYS)
+            or any(k in row for k in _JOINED_KEYS))
+
+
+def find_employments(payload: Any) -> list[dict]:
+    """Every employment record in the payload, found by SHAPE.
+
+    THE THIRD FIELD NAME THIS ADAPTER GUESSED WRONG, and the last one
+    it will guess. The live response to `/epfo-api/employment-history/
+    fetch-by-uan` carried `date_of_joining`, `establishment_name`,
+    `guardian_name`, `member_id`, `name` and `service_period` — no
+    `employment_history`, no `history`, no `employments`, no `records`.
+
+    So the rows are identified by what they CONTAIN rather than by what
+    the key around them is called. Both shapes are handled without
+    knowing which the provider used: a list of records, and a single
+    record returned bare.
+
+    Order is preserved — an employment history read out of order is
+    worse than none — and duplicates are dropped, because the same
+    record reached through two keys is still one job.
+    """
+    out: list[dict] = []
+    seen: list[dict] = []
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, dict):
+            if looks_like_employment(node):
+                if node not in seen:
+                    seen.append(node)
+                    out.append(node)
+                continue
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return out
+
+
+def serial_values(value: Any) -> list:
+    """``[{"serial_number": "1", "value": "X"}]`` → ``["X"]``.
+
+    THE WRAPPER THIS PROVIDER PUTS ROUND ITS REPEATABLE FIELDS. The
+    live prefill response wraps `pan`, `email` and `alternate_phone`
+    this way — a person can have more than one of each, and the serial
+    number is which.
+
+    Found on 7 Nov 2026, and it was doing real damage: a key-based
+    lookup returned the whole LIST where a string was expected, so the
+    PAN mask ran over `[{'serial_number': '1', 'value': 'OAYPS…'}]` and
+    the screen showed masked rubbish instead of a PAN.
+
+    Ordered by serial number when one is given, because "which phone
+    number is the primary" is the question this field answers.
+    """
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return [value] if value not in (None, "", [], {}) else []
+
+    def order(row: Any) -> int:
+        try:
+            return int(str((row or {}).get("serial_number")))
+        except (TypeError, ValueError, AttributeError):
+            return 9999
+
+    rows = sorted(value, key=order) if all(
+        isinstance(r, dict) for r in value) else list(value)
+    out = []
+    for row in rows:
+        inner = row.get("value") if isinstance(row, dict) else row
+        if inner not in (None, "", [], {}):
+            out.append(inner)
+    return out
+
+
+def first_serial(value: Any) -> Any:
+    """The first value out of a serial-wrapped field, or None."""
+    found = serial_values(value)
+    return found[0] if found else None
 
 
 def _without_status(parsed: dict) -> dict:
