@@ -332,13 +332,33 @@ class TestCatalog:
                          "emphistory"):
             assert not CHECKS_BY_ID[check_id].feeds, check_id
 
-    def test_employment_history_chains_from_epfo_membership(self):
+    def test_employment_history_stands_on_its_own(self):
+        """It used to declare `requires=("epfomember",)` and take its
+        UAN from that check's result. One endpoint's parse failure then
+        took a second, working endpoint down with it — and the
+        provider's own API has no such dependency: fetch-by-uan wants a
+        UAN and nothing else."""
         from app.catalog.checks import CHECKS_BY_ID
 
-        assert CHECKS_BY_ID["emphistory"].requires == ("epfomember",)
-        uan = next(p for p in CHECKS_BY_ID["emphistory"].params
-                   if p.key == "uan")
-        assert uan.from_result == "epfomember"
+        definition = CHECKS_BY_ID["emphistory"]
+        assert definition.requires == ()
+        uan = next(p for p in definition.params if p.key == "uan")
+        assert uan.required is True
+        assert uan.from_result is None
+
+    def test_the_epfo_pan_field_is_not_prefilled_from_the_vendor(self):
+        """It carried `from_vendor="pan"`, so the COMPANY'S PAN arrived
+        by itself in a field that narrows a lookup for a PERSON. Two
+        different entities, and a PAN is the most specific identifier
+        either has — so the wrong one is not a near-miss, it asks EPFO
+        to match a company's tax number against an individual's
+        membership."""
+        from app.catalog.checks import CHECKS_BY_ID
+
+        pan = next(p for p in CHECKS_BY_ID["epfomember"].params
+                   if p.key == "pan")
+        assert pan.from_vendor is None
+        assert not pan.required
 
     def test_the_mobile_comes_from_the_vendor_record(self):
         from app.catalog.checks import CHECKS_BY_ID
@@ -455,7 +475,7 @@ class TestMobileValidation:
 #      real thing; two calls for it is not.
 
 from app.providers import factsets as fx  # noqa: E402
-from app.services.runner import _subjects, _uans_by_mobile  # noqa: E402
+from app.services.runner import _subjects  # noqa: E402
 
 
 class TestOneCheckManyPeople:
@@ -568,19 +588,21 @@ class TestOneCheckManyPeople:
         assert "9876" in row["subject"]
         assert row["from"] == "01 Apr 2019"
 
-    def test_the_uan_map_is_keyed_by_number_so_the_chain_keeps_identity(self):
-        """`emphistory` chains from `epfomember`. Taking a LIST of UANs
-        off that result would put five employment histories on screen
-        with no way to tell which belongs to whom."""
-        class _F:
-            raw = {"subjects": [
-                {"subject": "9876543210", "ok": True, "data": {"uan": "1001"}},
-                {"subject": "9876543211", "ok": True, "data": {"uan": "1002"}},
-                {"subject": "9876543212", "ok": False, "error": "x"},
-            ]}
-        assert _uans_by_mobile({"epfomember": _F()}) == {
-            "9876543210": "1001", "9876543211": "1002",
-        }
+    def test_employment_history_does_not_chain_off_another_check(self):
+        """It used to take its UAN from `epfomember`'s result when the
+        field was blank, which made one endpoint's parse failure take a
+        second, working endpoint down with it. The provider's API has
+        no such dependency: fetch-by-uan wants a UAN and nothing else.
+
+        The UAN is a required input now, and nothing is inherited.
+        """
+        from app.catalog.checks import CHECKS_BY_ID
+
+        definition = CHECKS_BY_ID["emphistory"]
+        assert definition.requires == ()
+        uan = next(p for p in definition.params if p.key == "uan")
+        assert uan.required is True
+        assert uan.from_result is None
 
     def test_nothing_stored_is_not_an_empty_table(self):
         """"Nothing was parsed" and "nobody has any records" are

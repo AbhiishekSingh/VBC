@@ -2674,7 +2674,7 @@ export const CHECKS = [
     "name": "Contact person — EPFO membership",
     "endpoint": "POST /epfo-api/fetch-uan",
     "provider": "gridlines",
-    "note": "The UAN behind the contact number. PAN narrows the match.",
+    "note": "The UAN behind the contact number. The person's own PAN narrows the match — optional, and NOT the company's.",
     "state": "active",
     "requires": [],
     "feeds": [],
@@ -2710,9 +2710,9 @@ export const CHECKS = [
       },
       {
         "key": "pan",
-        "label": "PAN",
+        "label": "PAN of the person",
         "required": false,
-        "fromVendor": "pan",
+        "fromVendor": null,
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2727,11 +2727,9 @@ export const CHECKS = [
     "name": "Contact person — employment history",
     "endpoint": "POST /epfo-api/employment-history/fetch-by-uan",
     "provider": "gridlines",
-    "note": "Employers and dates against a UAN. Leave the UAN blank to take it from the EPFO membership result.",
+    "note": "Employers and dates against a UAN. Give the UAN directly — this check stands on its own.",
     "state": "active",
-    "requires": [
-      "epfomember"
-    ],
+    "requires": [],
     "feeds": [],
     "costPaisa": 0,
     "credits": 0,
@@ -2744,13 +2742,13 @@ export const CHECKS = [
       {
         "key": "uan",
         "label": "UAN",
-        "required": false,
+        "required": true,
         "fromVendor": null,
-        "fromResult": "epfomember",
+        "fromResult": null,
         "type": "text",
         "options": [],
         "default": "",
-        "placeholder": "blank = taken from the EPFO membership result"
+        "placeholder": "100123456789"
       },
       {
         "key": "consentRef",
