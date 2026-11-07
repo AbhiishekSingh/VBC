@@ -2198,24 +2198,124 @@ def person_identity(data: dict) -> dict:
     )
 
 
+#: Gridlines' platform constants, as they arrive. Tidied for a report
+#: that a client reads; anything not listed is title-cased, so an
+#: unrecognised platform still renders sensibly rather than SHOUTING.
+_PLATFORM_NAMES = {
+    "TIMES_PRIME": "Times Prime", "SHAADI": "Shaadi.com",
+    "AMAZON": "Amazon", "FLIPKART": "Flipkart", "SNAPDEAL": "Snapdeal",
+    "HOUSING": "Housing.com", "FACEBOOK": "Facebook",
+    "INSTAGRAM": "Instagram", "SKYPE": "Skype", "MICROSOFT": "Microsoft",
+    "TWITTER": "X (Twitter)", "WHATSAPP": "WhatsApp",
+    "JEEVANSATHI": "Jeevansathi", "TOI": "Times of India",
+    "INDIANEXPRESS": "Indian Express", "GAANA": "Gaana",
+    "ALTBALAJI": "ALTBalaji", "ZOHO": "Zoho", "DIGILOCKER": "DigiLocker",
+    "POLICYBAZAR": "Policybazaar", "NOBROKER": "NoBroker",
+    "SAMSUNG": "Samsung", "OYOROOMS": "OYO Rooms", "IRCTC": "IRCTC",
+    "SWIGGY": "Swiggy", "PHONEPE": "PhonePe",
+}
+
+
+def _platform_name(code: Any) -> str:
+    text = str(code or "").strip()
+    return _PLATFORM_NAMES.get(text.upper(), text.replace("_", " ").title())
+
+
 def person_footprint(data: dict) -> dict:
-    """Online services this number or email appears against."""
-    found = data.get("platforms") or []
-    if isinstance(found, dict):
-        found = [found]
+    """Where this number appears online, and who it is registered to.
+
+    REWRITTEN against a real response. The first version looked for a
+    list of named services under `platforms`; the provider returns
+    something quite different, and the three things worth a reader's
+    attention are not the platform list at all:
+
+      - the BANK-VERIFIED NAME on the number, which says who the SIM
+        belongs to independently of what the vendor told us;
+      - the DIGITAL AGE — a number first seen last year, behind a
+        company claiming a decade of trading, is worth a human look;
+      - which platforms could NOT be checked, because four silent
+        platforms among twenty-six is not the same as four absences.
+
+    Nothing here is judged. The provider's own phone-risk score is shown
+    as the provider's number and never folded into SCAN — importing
+    somebody else's model under our catalog version is how a score stops
+    meaning what the methodology says it means.
+    """
+    found = [p for p in (data.get("platforms") or []) if isinstance(p, dict)]
+    present = [p for p in found if p.get("present") is True]
+    absent = [p for p in found if p.get("present") is False]
+    unchecked = [p for p in found if p.get("present") is None]
+
     rows = [
-        {"service": _label_of(p), "detail": _flat(p)}
-        for p in found if p not in (None, "", {})
+        {
+            "platform": _platform_name(p.get("platform")),
+            "present": ("Yes" if p.get("present") is True
+                        else "No" if p.get("present") is False
+                        else "Not checked"),
+        }
+        for p in found
     ]
+
+    fields = [
+        # FIRST, because it is the one field here that corroborates
+        # identity rather than describing activity.
+        F.field("Name on the number", data.get("verified_name"),
+                note="As verified against bank records by the source. "
+                     "Compare with the contact person named on the vendor "
+                     "record — this is not our conclusion, it is theirs."),
+        F.field("Digital age", data.get("digital_age")),
+        F.field("Profiles the source counted", data.get("profile_count"),
+                format="count"),
+        F.field("Fintech accounts", data.get("fintech_count"), format="count"),
+        F.field(
+            "Phone risk score",
+            None if data.get("risk_score") is None
+            else f"{float(data['risk_score']):.3f} of 1.00",
+            note="The SOURCE'S score, on their scale, shown as they sent "
+                 "it. It feeds no SCAN parameter and no risk rule.",
+        ),
+    ]
+    other = [str(n.get("name")) for n in (data.get("associated_names") or [])
+             if isinstance(n, dict) and n.get("name")
+             and str(n.get("name")) != str(data.get("verified_name") or "")]
+    if other:
+        fields.append(F.field("Other names seen", ", ".join(sorted(set(other)))))
+
+    flags = list(_unknown_shape(data))
+    if unchecked:
+        # NOT a silent omission, and not folded into "No". A platform the
+        # source could not reach is a gap, and the row says so rather
+        # than letting it read as an absence.
+        flags.append(F.flag(
+            "info", f"{F.plural(len(unchecked), 'platform')} could not be checked",
+            "The source returned an error for "
+            + ", ".join(_platform_name(p.get("platform")) for p in unchecked)
+            + ". Those are gaps, not absences — nothing is known either "
+              "way about an account on them.",
+        ))
+    if data.get("message") and not found:
+        flags.append(F.flag(
+            "info", "The source returned no platform data",
+            f"Its own words: “{data['message']}”. That is an "
+            f"answer, not a failure — but it is not a clearance either.",
+        ))
+
     return F.build(
         F.TABLE,
-        stats=[F.stat("Services found", len(rows))],
+        stats=[
+            F.stat("Accounts found", len(present),
+                   tone="neutral"),
+            F.stat("Platforms checked", len(present) + len(absent)),
+            F.stat("Could not check", len(unchecked),
+                   tone="warn" if unchecked else "neutral"),
+        ],
+        fields=[f for f in fields if f["value"] is not None],
         rows=F.table(
-            [F.column("service", "Service"), F.column("detail", "Detail")],
+            [F.column("platform", "Platform"), F.column("present", "Account")],
             rows,
-            empty_note="No online services were returned for this number.",
+            empty_note="The source returned no platform list for this number.",
         ),
-        flags=_unknown_shape(data),
+        flags=flags,
         lede=_PERSON_NOTE,
     )
 

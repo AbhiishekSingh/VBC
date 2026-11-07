@@ -106,6 +106,76 @@ def first_of(source: Any, *keys: str, default: Any = None) -> Any:
     return default
 
 
+def deep_find(source: Any, *keys: str, default: Any = None) -> Any:
+    """``first_of``, but at ANY DEPTH in the payload.
+
+    THE LESSON FROM THE ONE RESPONSE WE HAVE SEEN.
+
+    The digital-footprint parser failed not because its field names were
+    all wrong, but because it looked for them in the wrong PLACE: the
+    platform list sits four levels down, under
+    ``digital_profile_data[].primary_data.account_details``. A top-level
+    ``first_of`` could never have found it however many spellings it
+    tried.
+
+    The other four endpoints have still not been seen. Their envelope is
+    now known — ``descend`` handles it — but where inside the payload
+    each leaf sits is not. So they search the whole tree rather than one
+    level of it.
+
+    BREADTH-FIRST, deliberately: the shallowest match wins. On the
+    footprint response ``digital_age`` appears at two depths and the
+    shallower copy is the populated one. Depth-first would have returned
+    the errored copy.
+
+    This is a widened net, not a licence to invent. ``ParseGuard`` is
+    unchanged: a payload that clearly carries content and still yields
+    nothing raises, and the check reports ``unavailable`` with the bytes
+    attached rather than telling anybody a person has no record.
+    """
+    queue: list[Any] = [source]
+    while queue:
+        nxt: list[Any] = []
+        for node in queue:
+            if isinstance(node, dict):
+                for key in keys:
+                    value = node.get(key)
+                    if value not in (None, "", [], {}):
+                        return value
+                nxt.extend(node.values())
+            elif isinstance(node, list):
+                nxt.extend(node)
+        queue = nxt
+    return default
+
+
+def deep_rows(source: Any, *keys: str) -> list:
+    """Every list found under any of ``keys``, at any depth, concatenated.
+
+    For the repeating sections — addresses, employment history — where
+    the provider may return one list, several, or one nested inside a
+    block. A single ``deep_find`` would take the first and silently drop
+    the rest, and a dropped employer is exactly the kind of gap this
+    product is not allowed to create.
+    """
+    out: list = []
+    stack: list[Any] = [source]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in keys:
+                    if isinstance(value, list):
+                        out.extend(v for v in value if v not in (None, "", {}))
+                    elif value not in (None, "", {}):
+                        out.append(value)
+                else:
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+    return out
+
+
 def unwrap(payload: Any) -> dict:
     """The data object inside whatever envelope Gridlines uses.
 
@@ -125,6 +195,99 @@ def unwrap(payload: Any) -> dict:
         if isinstance(inner, dict):
             return inner
     return payload if isinstance(payload, dict) else {}
+
+
+# =====================================================================
+# THE ENVELOPE, NOW THAT WE HAVE SEEN ONE
+# =====================================================================
+#
+# A real digital-footprint response, 7 Nov 2026, with the person's
+# details removed:
+#
+#   {"request_id": …, "transaction_id": …, "status": 200,
+#    "data": {"code": "1030",
+#             "message": "Fetched digital footprint data.",
+#             "digital_profile_data": [
+#                 {"data_type": "phone_data", "primary_data": {…},
+#                  "intelligence_data": {…}},
+#                 {"data_type": "intelligence_data", "scores": [...]},
+#                 {"data_type": "status_code"},
+#                 {"data_type": "status"}]},
+#    "timestamp": …, "path": "/profile-api/mobile/digital-footprint"}
+#
+# Two things this settles, and they were both guessed wrong before:
+#
+#  1. `unwrap` reaches `data` correctly, but `data` is NOT the payload —
+#     it is a status envelope of its own, carrying `code`, `message`, and
+#     ONE key ending in `_data` that holds everything. The parser was
+#     searching the status envelope for field names that live two levels
+#     further in, found nothing, and ParseGuard correctly refused to
+#     report "no online presence" for a number that had eight profiles.
+#
+#  2. The payload is a LIST OF BLOCKS discriminated by `data_type`, not
+#     a flat object. Position is not stable — `status_code` and `status`
+#     blocks are interleaved with the real ones — so blocks are read by
+#     their `data_type`, never by index.
+
+
+def descend(data: dict) -> tuple[dict, str, str]:
+    """Past Gridlines' status envelope to the payload itself.
+
+    Returns ``(payload, code, message)``. ``code`` and ``message`` are
+    the provider's own, kept because a response that carries them and no
+    payload is the provider saying "nothing found" — a real answer — and
+    must not be mistaken for a parse gap.
+
+    The ``_data`` suffix is the convention across this API
+    (``digital_profile_data`` here), so this is matched rather than
+    named: naming it would mean one more field name per endpoint that
+    nobody has verified, which is the mistake this module exists to stop
+    making.
+    """
+    if not isinstance(data, dict):
+        return {}, "", ""
+    code = str(data.get("code") or "")
+    message = str(data.get("message") or "")
+    for key, value in data.items():
+        if key.endswith("_data") and isinstance(value, (dict, list)):
+            # Returned AS-IS, list or dict, and deliberately not wrapped.
+            # ParseGuard is handed this as the raw content, and an empty
+            # list has to stay an empty list: wrapped in a dict it looks
+            # like content, and "the source found nothing" starts
+            # reporting as a defect in our parser.
+            return value, code, message
+    return data, code, message
+
+
+def blocks_by_type(payload: Any) -> dict:
+    """The ``data_type``-keyed blocks, when the payload is a list.
+
+    A flat payload comes back as a single unnamed block, so a caller can
+    treat both shapes the same way — four of these five endpoints have
+    not been seen yet and may not use the block convention at all.
+    """
+    if not isinstance(payload, list):
+        return {"": payload if isinstance(payload, dict) else {}}
+    out: dict[str, dict] = {}
+    for row in payload:
+        if isinstance(row, dict):
+            out.setdefault(str(row.get("data_type") or ""), row)
+    return out
+
+
+def present_state(account: dict) -> bool | None:
+    """Whether this number has an account on one platform.
+
+    THREE STATES, NOT TWO. Gridlines returns ``{"platform": "AMAZON",
+    "user_exist": true}``, ``{"platform": "SNAPDEAL", "user_exist":
+    false}`` AND ``{"platform": "SKYPE", "error": true}``. The third is
+    "we could not check", and collapsing it into "no account" is this
+    product's cardinal sin at the level of a single row.
+    """
+    if account.get("error"):
+        return None
+    value = account.get("user_exist")
+    return bool(value) if value is not None else None
 
 
 class GridlinesProvider(HttpProvider):
@@ -203,29 +366,60 @@ class GridlinesProvider(HttpProvider):
                              paisa=self.settings.gridlines_prefill_paisa,
                              label="gridlines.prefill")
         data = unwrap(payload)
+        inner, code, message = descend(data)
 
+        # DEEP, not top-level. The one response anybody has seen from
+        # this provider nests its real content four levels down; there
+        # is no reason to expect this endpoint to be flatter.
         parsed = {
-            "name": first_of(data, "name", "full_name", "fullName"),
-            "pan": first_of(data, "pan", "pan_number", "panNumber"),
-            "dob": first_of(data, "dob", "date_of_birth", "dateOfBirth"),
-            "gender": first_of(data, "gender"),
-            "email": first_of(data, "email", "email_id"),
-            "address": first_of(data, "address", "full_address", "addresses"),
-            "alt_phones": first_of(data, "alternate_phone", "phones",
-                                   "alternate_numbers", default=[]),
+            "name": deep_find(inner, "name", "full_name", "fullName",
+                              "bank_verified_name"),
+            "pan": deep_find(inner, "pan", "pan_number", "panNumber"),
+            "dob": deep_find(inner, "dob", "date_of_birth", "dateOfBirth"),
+            "gender": deep_find(inner, "gender"),
+            "email": deep_find(inner, "email", "email_id"),
+            "address": deep_find(inner, "address", "full_address",
+                                 "addresses", "address_details"),
+            "alt_phones": deep_rows(inner, "alternate_phone", "phones",
+                                    "alternate_numbers"),
+            "code": code,
+            "message": message,
         }
 
         guard = ParseGuard("gridlines.prefill")
-        guard.expect("identity", raw=data, parsed=_any(parsed),
+        guard.expect("identity", raw=inner,
+                     parsed=_any(_without_status(parsed)),
                      hint="the payload carried content but no recognised "
-                          "identity field was extracted — the response shape "
-                          "differs from what this adapter looks for")
+                          "identity field was extracted at any depth — "
+                          "compare against `descend` and `deep_find`")
         guard.raise_if_gaps(payload)
-        return {**parsed, "_raw_keys": sorted(data) if data else []}
+        return {**parsed, "_raw_keys": shape_keys(inner)}
 
     def digital_footprint(self, mobile: str, *, consent: str,
                           email: str = "", name: str = "") -> dict:
-        """Where this number appears online."""
+        """Where this number appears online.
+
+        WRITTEN AGAINST A REAL RESPONSE, unlike the first version. See
+        the envelope note above `descend` for what that response looks
+        like and what the first version got wrong.
+
+        What this endpoint actually returns, for a vendor file:
+
+          - one row per PLATFORM, in three states — has an account, does
+            not, or could not be checked;
+          - a bank-verified name for the number, which is the single
+            most useful field here: it says who the SIM is registered
+            to, independently of what the vendor told us;
+          - a digital age, which is how long this number has had any
+            footprint at all. A number first seen last year behind a
+            company claiming a decade of trading is worth a human look;
+          - category presence scores and an onboarding phone-risk score.
+
+        Nothing here is scored or judged. These five checks feed no SCAN
+        parameter, deliberately, and this one returns a provider's own
+        risk number — passing that into our scoring would be importing
+        somebody else's model under our catalog version.
+        """
         body: dict[str, Any] = {"phone": mobile, "consent": consent}
         if email:
             body["email"] = email
@@ -235,18 +429,77 @@ class GridlinesProvider(HttpProvider):
                              paisa=self.settings.gridlines_footprint_paisa,
                              label="gridlines.footprint")
         data = unwrap(payload)
+        inner, code, message = descend(data)
+        blocks = blocks_by_type(inner)
+
+        phone_block = blocks.get("phone_data") or {}
+        primary = phone_block.get("primary_data") or {}
+        intel = phone_block.get("intelligence_data") or {}
+        scores_block = blocks.get("intelligence_data") or {}
+
+        accounts = [a for a in (primary.get("account_details") or [])
+                    if isinstance(a, dict) and a.get("platform")]
+        platforms = [
+            {"platform": str(a["platform"]), "present": present_state(a)}
+            for a in accounts
+        ]
+
+        scores = {
+            str(s.get("score_type")): (s.get("score_data") or {})
+            for s in (scores_block.get("scores") or [])
+            if isinstance(s, dict) and s.get("score_type")
+        }
+        # `{}` is a score that was NOT computed — `phone_email_linking_score`
+        # came back empty on the first real response. Rendering that as 0
+        # would be a number we invented.
+        risk = (scores.get("onboarding_phone_risk_score") or {}).get("score_value")
 
         parsed = {
-            "platforms": first_of(data, "platforms", "accounts", "services",
-                                  "digital_footprint", default=[]),
-            "email": first_of(data, "email", "email_id"),
-            "name": first_of(data, "name", "full_name"),
+            "platforms": platforms,
+            "profile_count": primary.get("social_profile_count"),
+            # Prefer the populated block: `digital_age` appears twice and
+            # the second copy came back `{"error": true}`.
+            "digital_age": _age(intel.get("digital_age"))
+                           or _age(scores_block.get("digital_age")),
+            "verified_name": intel.get("bank_verified_name"),
+            "associated_names": [
+                n for n in (intel.get("associated_names") or [])
+                if isinstance(n, dict) and n.get("name")
+            ],
+            "scores": scores,
+            "risk_score": risk,
+            "fintech_count": scores_block.get("fintech_count"),
+            # Kept so the screen can show what the provider SAID when it
+            # returned no payload — "nothing found" is an answer, and a
+            # blank panel is not the way to report it.
+            "code": code,
+            "message": message,
+            # Still read across spellings, because four of these five
+            # endpoints have not been seen yet and may not nest the same
+            # way. Costs nothing when the block above already matched.
+            "email": first_of(primary, "email", "email_id"),
         }
+
         guard = ParseGuard("gridlines.footprint")
-        guard.expect("footprint", raw=data, parsed=_any(parsed),
-                     hint="no recognised footprint field; see module docstring")
+        # RAW IS THE PAYLOAD BLOCK, NOT THE STATUS ENVELOPE.
+        #
+        # `code` and `message` are present on every response including
+        # the empty ones, so guarding against `data` would call a
+        # legitimate "no record found" a parse gap — reporting a defect
+        # in us where the provider gave a clear answer.
+        #
+        # And for the SAME reason they are excluded from "did we parse
+        # anything": they are always set, so counting them would make
+        # `_any` permanently truthy and the guard could never fire
+        # again. A test caught that within a minute of this rewrite.
+        guard.expect("footprint", raw=inner,
+                     parsed=_any({k: v for k, v in parsed.items()
+                                  if k not in ("code", "message")}),
+                     hint="account_details / scores — the payload carried "
+                          "blocks but none of them parsed; compare against "
+                          "`descend` and `blocks_by_type`")
         guard.raise_if_gaps(payload)
-        return {**parsed, "_raw_keys": sorted(data) if data else []}
+        return {**parsed, "_raw_keys": sorted(blocks)}
 
     def address_lookup(self, mobile: str, *, consent: str) -> dict:
         """Addresses on record against this number."""
@@ -255,17 +508,26 @@ class GridlinesProvider(HttpProvider):
                              paisa=self.settings.gridlines_address_paisa,
                              label="gridlines.address")
         data = unwrap(payload)
+        inner, code, message = descend(data)
 
+        # `deep_rows`, not `deep_find`: the provider may return several
+        # address lists in several blocks, and taking the first would
+        # silently drop the rest.
         parsed = {
-            "addresses": first_of(data, "addresses", "address_list",
-                                  "address", default=[]),
-            "name": first_of(data, "name", "full_name"),
+            "addresses": deep_rows(inner, "addresses", "address_list",
+                                   "address", "address_details"),
+            "name": deep_find(inner, "name", "full_name",
+                              "bank_verified_name"),
+            "code": code,
+            "message": message,
         }
         guard = ParseGuard("gridlines.address")
-        guard.expect("address", raw=data, parsed=_any(parsed),
-                     hint="no recognised address field; see module docstring")
+        guard.expect("address", raw=inner,
+                     parsed=_any(_without_status(parsed)),
+                     hint="no recognised address field at any depth; "
+                          "compare against `descend` and `deep_rows`")
         guard.raise_if_gaps(payload)
-        return {**parsed, "_raw_keys": sorted(data) if data else []}
+        return {**parsed, "_raw_keys": shape_keys(inner)}
 
     def epfo_member(self, mobile: str, *, consent: str,
                     pan: str | None = None) -> dict:
@@ -295,18 +557,26 @@ class GridlinesProvider(HttpProvider):
                              paisa=self.settings.gridlines_epfo_member_paisa,
                              label="gridlines.epfo_member")
         data = unwrap(payload)
+        inner, code, message = descend(data)
 
         parsed = {
-            "uan": first_of(data, "uan", "uan_number", "uanNumber"),
-            "name": first_of(data, "name", "full_name", "member_name"),
-            "status": first_of(data, "status", "uan_status"),
+            "uan": deep_find(inner, "uan", "uan_number", "uanNumber"),
+            "name": deep_find(inner, "name", "full_name", "member_name",
+                              "bank_verified_name"),
+            # NOT `status`: the envelope has a `status` of its own —
+            # `"status": 200` sits at the top of every response — and a
+            # deep search for it would report the HTTP code as the
+            # member's EPFO status.
+            "status": deep_find(inner, "uan_status", "member_status"),
+            "code": code,
+            "message": message,
         }
         guard = ParseGuard("gridlines.epfo_member")
-        guard.expect("UAN", raw=data, parsed=parsed["uan"],
+        guard.expect("UAN", raw=inner, parsed=parsed["uan"],
                      hint="uan / uan_number — the field the employment "
                           "history check chains from")
         guard.raise_if_gaps(payload)
-        return {**parsed, "_raw_keys": sorted(data) if data else []}
+        return {**parsed, "_raw_keys": shape_keys(inner)}
 
     def employment_history(self, uan: str, *, consent: str) -> dict:
         """Employment history for a UAN."""
@@ -315,24 +585,71 @@ class GridlinesProvider(HttpProvider):
                              paisa=self.settings.gridlines_employment_paisa,
                              label="gridlines.employment")
         data = unwrap(payload)
+        inner, code, message = descend(data)
 
-        rows = first_of(data, "employment_history", "history", "employments",
-                        "records", default=[])
-        if isinstance(rows, dict):
-            rows = [rows]
+        rows = deep_rows(inner, "employment_history", "history",
+                         "employments", "records", "employment_details")
 
         parsed = {
-            "employments": rows if isinstance(rows, list) else [],
-            "name": first_of(data, "name", "full_name", "member_name"),
-            "uan": first_of(data, "uan", "uan_number", default=uan),
+            "employments": [r for r in rows if isinstance(r, dict)],
+            "name": deep_find(inner, "name", "full_name", "member_name",
+                              "bank_verified_name"),
+            "uan": deep_find(inner, "uan", "uan_number", default=uan),
+            "code": code,
+            "message": message,
         }
         guard = ParseGuard("gridlines.employment")
-        guard.expect("employment history", raw=data,
+        guard.expect("employment history", raw=inner,
                      parsed=parsed["employments"],
                      hint="employment_history / history — the list of "
-                          "employers and dates")
+                          "employers and dates, at any depth")
         guard.raise_if_gaps(payload)
-        return {**parsed, "_raw_keys": sorted(data) if data else []}
+        return {**parsed, "_raw_keys": shape_keys(inner)}
+
+
+def shape_keys(payload: Any) -> list[str]:
+    """What the payload actually contained, for mapping it later.
+
+    This is the field that makes a wrong parser cheap to fix: when a
+    check comes back unreadable, `_raw_keys` is what says where to look
+    next, and `scripts/backfill_facts` then rebuilds every affected row
+    from storage for nothing.
+
+    So it reports the payload's OWN keys — block names for a list,
+    ordinary keys for a dict — and never the `[""]` that a
+    `blocks_by_type` of a flat payload would produce, which says
+    nothing to anybody.
+    """
+    if isinstance(payload, list):
+        return sorted(blocks_by_type(payload))
+    return sorted(payload) if isinstance(payload, dict) else []
+
+
+def _without_status(parsed: dict) -> dict:
+    """The parsed fields minus the envelope's own `code` and `message`.
+
+    They are set on EVERY response, empty ones included, so counting
+    them as "something was parsed" would make `_any` permanently truthy
+    and ParseGuard could never fire again. Found by a test one minute
+    after the first version of this was written.
+    """
+    return {k: v for k, v in parsed.items() if k not in ("code", "message")}
+
+
+def _age(value: Any) -> str | None:
+    """``{"age": "1+", "year": 2025}`` → ``"1+ years (first seen 2025)"``.
+
+    ``{"error": true}`` returns None rather than an empty string: the
+    second copy of this field came back exactly that way, and a blank
+    where a number should be reads as "no footprint" rather than "not
+    established".
+    """
+    if not isinstance(value, dict) or value.get("error"):
+        return None
+    age, year = value.get("age"), value.get("year")
+    if age and year:
+        return f"{age} years (first seen {year})"
+    return str(age) if age else (f"first seen {year}" if year else None)
 
 
 def _any(parsed: dict) -> Any:

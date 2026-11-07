@@ -285,7 +285,17 @@ def _one_line(check_id: str, data: dict) -> str:
     if check_id == "epfomember":
         return f"UAN {data['uan']}" if data.get("uan") else "No UAN returned"
     if check_id == "footprint":
-        return f"{len(data.get('platforms') or [])} service(s) found"
+        # ACCOUNTS, not platforms checked. The list holds every platform
+        # the source looked at, including the ones with no account and
+        # the ones it could not reach, so its length would report
+        # "18 accounts found" for a number that has eight.
+        rows = [p for p in (data.get("platforms") or []) if isinstance(p, dict)]
+        found = sum(1 for p in rows if p.get("present") is True)
+        unchecked = sum(1 for p in rows if p.get("present") is None)
+        if not rows:
+            return "No online presence returned"
+        return (f"{found} of {len(rows) - unchecked} platforms"
+                + (f", {unchecked} unchecked" if unchecked else ""))
     if check_id == "personaddr":
         found = data.get("addresses") or []
         if isinstance(found, dict):

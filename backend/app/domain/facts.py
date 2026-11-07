@@ -50,7 +50,19 @@ from typing import Any, Iterable, Literal
 #: the version stops telling anyone anything. Rebuild historical rows
 #: with `python -m scripts.backfill_facts`; it reads stored payloads and
 #: costs nothing.
-PARSER_VERSION = "2"
+#:
+#: "3" — 7 Nov 2026. The digital-footprint parser was written without
+#: ever having seen a response from this provider, and every field it
+#: looked for was wrong. `data` turned out to be a status envelope, not
+#: the payload; the platform list nests two levels further in; and a
+#: platform has THREE states, the third being "the source could not
+#: check", which the first version had no way to express at all.
+#:
+#: A blob saying "0 services found" and a blob saying "8 accounts, 5
+#: not checked" are not the same finding about the same person, so this
+#: is a change of meaning and not of presentation. Every footprint row
+#: already paid for rebuilds from its stored payload for nothing.
+PARSER_VERSION = "3"
 
 Shape = Literal["detail", "summary", "table", "document", "reference", "none"]
 

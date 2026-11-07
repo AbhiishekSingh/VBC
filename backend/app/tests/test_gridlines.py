@@ -40,6 +40,23 @@ class _FakeResponse:
         self.payload = payload
 
 
+#: A payload each call can parse, so a test about the REQUEST fails on
+#: the request and never on the response. `digital_footprint` needs the
+#: real nested envelope; the other four are still flat guesses, which is
+#: exactly what the next captured response will correct.
+_PARSEABLE = {
+    "mobile_prefill": {"data": {"name": "X"}},
+    "address_lookup": {"data": {"addresses": ["12 MG Rd"]}},
+    "epfo_member": {"data": {"uan": "100123456789"}},
+    "digital_footprint": {
+        "data": {"code": "1030", "message": "ok", "digital_profile_data": [
+            {"data_type": "phone_data",
+             "primary_data": {"social_profile_count": 1,
+                              "account_details": [
+                                  {"platform": "AMAZON", "user_exist": True}]}}]}},
+}
+
+
 class _Recorder(gl.GridlinesProvider):
     """Captures the request instead of sending it."""
 
@@ -135,7 +152,7 @@ class TestRequestShape:
         Not a tidy-up opportunity — it is what the live integration does,
         and normalising it here would break the call.
         """
-        provider = _Recorder({"data": {"uan": "1", "name": "X"}})
+        provider = _Recorder(_PARSEABLE[call])
         getattr(provider, call)(consent="Y", **kwargs)
         assert provider.sent["url"].endswith(path)
         assert provider.sent["json"][key] == "9876543210"
@@ -207,7 +224,7 @@ class TestRequestShape:
             "epfo_member": {"mobile_number": "9876543210", "consent": "Y"},
         }
         for call, body in expected.items():
-            provider = _Recorder({"data": {"uan": "1", "name": "X"}})
+            provider = _Recorder(_PARSEABLE[call])
             getattr(provider, call)("9876543210", consent="Y")
             assert provider.sent["json"] == body, call
 
@@ -1032,3 +1049,276 @@ class TestGridlinesIsVisibleToTheStatusEndpoints:
         pass for a person who came back clean."""
         note = self._rows(gridlines_api_key="")["gridlines"]["note"]
         assert "not the same as a person having no record" in note.lower()
+
+
+# =====================================================================
+# 11. THE FIRST REAL RESPONSE
+# =====================================================================
+#
+# Everything above section 10 was written without ever having seen one.
+# On 7 Nov 2026 the live endpoint was called with the production key
+# straight from the server, no VBC code in the path, and it returned
+# HTTP 200 with a full body. The parser had been looking for `platforms`
+# / `accounts` / `services` at the top of `data`; the real payload nests
+# the platform list two levels further in, under a key none of those
+# guesses matched.
+#
+# ParseGuard caught it exactly as designed — the check went UNAVAILABLE
+# with the payload attached rather than reporting "no online presence"
+# for a number with eight profiles. These tests pin the shape so the
+# next guess has to be checked against it.
+
+from app.tests.fixtures_gridlines import (  # noqa: E402
+    FOOTPRINT_EMPTY,
+    FOOTPRINT_LIVE,
+)
+
+
+class TestTheRealFootprintShape:
+    def test_the_old_parser_would_have_found_nothing(self):
+        """The defect, pinned. `data` is a STATUS envelope — `code` and
+        `message` — and the payload is a key further in. Searching the
+        envelope for the payload's field names finds nothing at all."""
+        data = gl.unwrap(FOOTPRINT_LIVE)
+        assert sorted(data) == ["code", "digital_profile_data", "message"]
+        for guess in ("platforms", "accounts", "services", "digital_footprint"):
+            assert guess not in data
+
+    def test_descend_reaches_the_payload_and_keeps_the_status(self):
+        inner, code, message = gl.descend(gl.unwrap(FOOTPRINT_LIVE))
+        assert code == "1030"
+        assert "Fetched digital footprint" in message
+        assert isinstance(inner, list) and len(inner) == 4
+
+    def test_blocks_are_read_by_name_never_by_index(self):
+        """`status_code` and `status` blocks are interleaved with the
+        real ones, so position is not stable."""
+        inner, _, _ = gl.descend(gl.unwrap(FOOTPRINT_LIVE))
+        blocks = gl.blocks_by_type(inner)
+        assert set(blocks) == {"phone_data", "intelligence_data",
+                               "status_code", "status"}
+
+    @pytest.mark.parametrize(
+        "account,expected",
+        [
+            ({"platform": "AMAZON", "user_exist": True}, True),
+            ({"platform": "SNAPDEAL", "user_exist": False}, False),
+            # THE ONE THAT MATTERS. An error is "we could not check",
+            # and collapsing it into "no account" is this product's
+            # cardinal sin at the level of a single row.
+            ({"platform": "SKYPE", "error": True}, None),
+            ({"platform": "UNKNOWN"}, None),
+        ],
+    )
+    def test_a_platform_has_three_states_not_two(self, account, expected):
+        assert gl.present_state(account) is expected
+
+    def test_the_live_payload_parses(self):
+        provider = _Recorder(FOOTPRINT_LIVE)
+        out = provider.digital_footprint("9876543210", consent="Y")
+
+        assert out["verified_name"] == "TEST SUBJECT"
+        assert out["profile_count"] == 8
+        assert out["risk_score"] == 0.173
+        assert out["fintech_count"] == 0
+        assert len(out["platforms"]) == 18
+
+    def test_the_populated_digital_age_wins_over_the_errored_copy(self):
+        """It appears twice on the real response and the second copy is
+        `{"error": true}`. Taking that one yields a blank where a figure
+        belongs, which reads as "no footprint" rather than "not
+        established"."""
+        out = _Recorder(FOOTPRINT_LIVE).digital_footprint("9876543210", consent="Y")
+        assert out["digital_age"] == "1+ years (first seen 2025)"
+
+    def test_an_uncomputed_score_is_not_rendered_as_zero(self):
+        """`phone_email_linking_score` came back `{}`. Zero is a number
+        we would have invented."""
+        out = _Recorder(FOOTPRINT_LIVE).digital_footprint("9876543210", consent="Y")
+        assert out["scores"]["phone_email_linking_score"] == {}
+
+    def test_an_empty_payload_is_an_ANSWER_not_a_parse_gap(self):
+        """`code` and `message` ride on every response including the
+        empty ones. Guarding against the envelope would call a clear
+        'no record found' a defect in us."""
+        out = _Recorder(FOOTPRINT_EMPTY).digital_footprint("9876543210", consent="Y")
+        assert out["platforms"] == []
+        assert out["message"] == "No digital footprint found."
+
+    def test_a_shape_we_still_cannot_read_RAISES(self):
+        """The guard must survive the rewrite. A payload with blocks we
+        parse nothing from is still a defect in us, not a person with no
+        online presence."""
+        mystery = {"data": {"code": "1030", "message": "ok",
+                            "digital_profile_data": [
+                                {"data_type": "phone_data",
+                                 "someNewBlock": {"x": 1}}]}}
+        with pytest.raises(ProviderParseGap):
+            _Recorder(mystery).digital_footprint("9876543210", consent="Y")
+
+
+class TestTheRealFootprintRenders:
+    def _blob(self, payload=FOOTPRINT_LIVE):
+        out = _Recorder(payload).digital_footprint("9876543210", consent="Y")
+        return fx.person_footprint(out)
+
+    def test_the_counts_separate_absent_from_unchecked(self):
+        """Four silent platforms among eighteen is not the same as four
+        absences, and the tiles must not add them together."""
+        stats = {s["label"]: s["value"] for s in self._blob()["stats"]}
+        # Eighteen platforms: 8 with an account, 5 without, 5 the
+        # source could not reach.
+        assert stats["Accounts found"] == "8"
+        assert stats["Platforms checked"] == "13"
+        assert stats["Could not check"] == "5"
+
+    def test_an_unchecked_platform_is_flagged_by_name(self):
+        flags = [f for f in self._blob()["flags"]
+                 if "could not be checked" in f["label"]]
+        assert len(flags) == 1
+        assert "Times Prime" in flags[0]["detail"]
+        assert "gaps, not absences" in flags[0]["detail"]
+
+    def test_the_table_never_prints_an_error_as_No(self):
+        rows = {r["platform"]: r["present"] for r in self._blob()["table"]["rows"]}
+        assert rows["Amazon"] == "Yes"
+        assert rows["Snapdeal"] == "No"
+        assert rows["Skype"] == "Not checked"
+
+    def test_the_name_on_the_number_leads(self):
+        """The one field here that corroborates identity rather than
+        describing activity."""
+        fields = self._blob()["fields"]
+        assert fields[0]["label"] == "Name on the number"
+        assert fields[0]["value"] == "TEST SUBJECT"
+
+    def test_the_providers_risk_score_is_labelled_as_theirs(self):
+        field = next(f for f in self._blob()["fields"]
+                     if f["label"] == "Phone risk score")
+        assert field["value"] == "0.173 of 1.00"
+        assert "feeds no SCAN parameter" in field["note"]
+
+    def test_the_risk_score_feeds_nothing(self):
+        """Importing another vendor's model into our score would make
+        SCAN stop meaning what the methodology says it means."""
+        from app.catalog.checks import CHECKS_BY_ID
+
+        assert not CHECKS_BY_ID["footprint"].feeds
+
+    def test_an_empty_answer_says_what_the_source_said(self):
+        blob = self._blob(FOOTPRINT_EMPTY)
+        flag = next(f for f in blob["flags"] if "no platform data" in f["label"])
+        assert "No digital footprint found." in flag["detail"]
+        assert "not a clearance" in flag["detail"]
+
+    def test_no_raw_platform_constants_reach_the_screen(self):
+        """`TIMES_PRIME` and `OYOROOMS` are the provider's constants. A
+        client reads this."""
+        text = str(self._blob())
+        assert "TIMES_PRIME" not in text and "NOBROKER" not in text
+        assert "Times Prime" in text and "NoBroker" in text
+
+
+# =====================================================================
+# 12. THE OTHER FOUR — READ AT DEPTH, BECAUSE THE ONE WE SAW WAS DEEP
+# =====================================================================
+#
+# These four endpoints have still not been seen. What the footprint
+# response settled is that the ENVELOPE is consistent and the content is
+# NESTED: the platform list sits four levels down, under
+# `digital_profile_data[].primary_data.account_details`. A top-level
+# lookup could not have found it with any number of spellings.
+#
+# So the four unseen ones search the whole payload tree. That is a
+# widened net and not a licence to invent — ParseGuard is unchanged, and
+# a payload that carries content and yields nothing still raises.
+
+class TestDeepSearchHandlesNesting:
+    def _nested(self, inner: dict) -> dict:
+        """The real envelope, with an arbitrary payload inside it."""
+        return {"request_id": "r", "status": 200,
+                "data": {"code": "1030", "message": "ok",
+                         "profile_data": [{"data_type": "phone_data",
+                                           "primary_data": inner}]}}
+
+    def test_a_field_four_levels_down_is_found(self):
+        provider = _Recorder(self._nested(
+            {"identity": {"details": {"pan": "ABCDE1234F"}}}))
+        out = provider.mobile_prefill("9876543210", consent="Y")
+        assert out["pan"] == "ABCDE1234F"
+
+    def test_the_shallowest_match_wins(self):
+        """Breadth-first, and it matters: on the real footprint response
+        `digital_age` appears at two depths and the shallow copy is the
+        populated one. Depth-first returns the errored copy."""
+        source = {"name": "SHALLOW", "a": {"b": {"name": "DEEP"}}}
+        assert gl.deep_find(source, "name") == "SHALLOW"
+
+    def test_every_list_is_collected_not_just_the_first(self):
+        """A provider may return several address blocks. Taking the
+        first would silently drop the rest, and a dropped employer or
+        address is exactly the gap this product may not create."""
+        source = {"one": {"addresses": ["A", "B"]},
+                  "two": {"addresses": ["C"]}}
+        assert sorted(gl.deep_rows(source, "addresses")) == ["A", "B", "C"]
+
+    def test_the_epfo_status_is_not_the_HTTP_status(self):
+        """`"status": 200` sits at the top of every Gridlines response.
+        A deep search for "status" would report the HTTP code as the
+        member's EPFO status — a number that looks like data."""
+        provider = _Recorder({"status": 200,
+                              "data": {"code": "1", "message": "ok",
+                                       "epfo_data": {"uan": "100123456789"}}})
+        out = provider.epfo_member("9876543210", consent="Y")
+        assert out["uan"] == "100123456789"
+        assert out["status"] != 200
+
+    def test_a_payload_that_still_cannot_be_read_RAISES(self):
+        """The widened net must not become a silent pass. Content in,
+        nothing out, is still a defect in us."""
+        provider = _Recorder(self._nested({"somethingEntirelyNew": {"x": 1}}))
+        with pytest.raises(ProviderParseGap):
+            provider.mobile_prefill("9876543210", consent="Y")
+
+    def test_an_empty_payload_is_still_an_answer(self):
+        provider = _Recorder({"data": {"code": "1031",
+                                       "message": "No record found.",
+                                       "profile_data": []}})
+        out = provider.mobile_prefill("9876543210", consent="Y")
+        assert out["pan"] is None
+        assert out["message"] == "No record found."
+
+    def test_raw_keys_name_the_payloads_own_keys(self):
+        """The field that makes a wrong parser cheap to fix. `[""]` —
+        which a blocks-by-type of a flat payload produces — says nothing
+        to anybody."""
+        provider = _Recorder({"data": {"code": "1", "message": "ok",
+                                       "epfo_data": {"uan": "100123456789",
+                                                     "odd_field": 1}}})
+        out = provider.epfo_member("9876543210", consent="Y")
+        assert out["_raw_keys"] == ["odd_field", "uan"]
+
+
+class TestTheOneLineSummary:
+    """The line an analyst reads without opening anything. It is the
+    only part of a finding that appears on the report summary, so a
+    number that is wrong here is wrong in front of a client."""
+
+    def test_footprint_counts_ACCOUNTS_not_platforms_checked(self):
+        """The platform list holds every platform the source looked at,
+        including the ones with no account and the ones it could not
+        reach. Its length reports "18 accounts" for a number with 8."""
+        from app.services.runner import _one_line
+
+        data = _Recorder(FOOTPRINT_LIVE).digital_footprint(
+            "9876543210", consent="Y")
+        line = _one_line("footprint", data)
+        assert line == "8 of 13 platforms, 5 unchecked"
+        assert "18" not in line
+
+    def test_an_empty_footprint_does_not_read_as_a_clean_one(self):
+        from app.services.runner import _one_line
+
+        data = _Recorder(FOOTPRINT_EMPTY).digital_footprint(
+            "9876543210", consent="Y")
+        assert _one_line("footprint", data) == "No online presence returned"
