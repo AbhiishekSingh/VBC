@@ -26,7 +26,7 @@ import {
   rupees,
 } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
-import { subjectCount } from '@/lib/pricing'
+import { subjectCount, subjectsOnFile } from '@/lib/pricing'
 import { publicDetail } from '@/lib/publicText'
 import type { PageProps } from '@/App'
 import type { CheckStatus, Vendor } from '@/types/domain'
@@ -146,6 +146,10 @@ interface Candidate {
   people: number
   /** Prerequisites not yet on file — run and charged with it. */
   alsoRuns: string[]
+  /** This check already has a result. Re-running REPLACES it. */
+  answered: boolean
+  /** People on file from the last run, for a person check. */
+  onFile: number
 }
 
 function RunMoreDialog({
@@ -255,8 +259,28 @@ function RunMoreDialog({
       return { why: `Needs ${what}`, what, field: gaps[0].paramKey }
     }
 
+    /*
+      ALREADY-RUN CHECKS ARE OFFERED, NOT HIDDEN.
+
+      They were excluded here, and listed at the bottom as names only.
+      That broke the way this product is actually used:
+
+          MCA gives you the director list
+          -> the person checks give you each director's number
+          -> those numbers drive employment history and digital
+             footprint for the WHOLE BOARD
+
+      Every step after the first is a re-run of a check that has already
+      answered, with different numbers in the field. Hiding those rows
+      made the loop impossible without going back to Step 2 and running
+      everything again.
+
+      Re-running costs money and REPLACES the previous result — one row
+      per vendor per check — so the row says both, and nothing is
+      pre-ticked.
+    */
     return CHECKS.filter(
-      (c) => c.state !== 'not_configured' && !c.always && !answered.has(c.id),
+      (c) => c.state !== 'not_configured' && !c.always,
     ).map((c) => {
       const alsoRuns = withPrerequisites(c.id).filter(
         (id) => id !== c.id && !answered.has(id),
@@ -290,6 +314,8 @@ function RunMoreDialog({
             : null,
         needsField: own ? own.field : (upstream?.blocker?.field ?? null),
         warning: blocked.get(c.id) ?? null,
+        answered: answered.has(c.id),
+        onFile: subjectsOnFile(vendor, c.id),
         costPaisa: (c.costPaisa || 0) * subjectCount(vendor, c.id),
         credits: c.credits || 0,
         people: subjectCount(vendor, c.id),
@@ -368,9 +394,15 @@ function RunMoreDialog({
     }
   }
 
-  const runnable = candidates.filter((c) => !c.blockedBy)
+  // NOT YET RUN FIRST, within each group. A re-run is the deliberate
+  // case and costs money twice; something never asked is the ordinary
+  // one. Order is otherwise the catalog's, which is the screen order
+  // everywhere else.
+  const runnable = candidates
+    .filter((c) => !c.blockedBy)
+    .sort((a, b) => Number(a.answered) - Number(b.answered))
   const held = candidates.filter((c) => c.blockedBy)
-  const done = CHECKS.filter((c) => answered.has(c.id))
+  const done = candidates.filter((c) => c.answered)
 
   return (
     <Modal
@@ -379,9 +411,12 @@ function RunMoreDialog({
       wide
       title="Run more checks"
       sub={
-        `${done.length} check${done.length === 1 ? ' has' : 's have'} already ` +
-        `answered for this vendor. Adding one runs only what you tick — ` +
-        `nothing on file is called or charged again.`
+        `Only what you tick is called. ` +
+        (done.length
+          ? `${done.length} already answered and can be run again with ` +
+            `different inputs — those are charged again and replace what ` +
+            `is on file.`
+          : `Nothing on file is called or charged again.`)
       }
       footer={
         <>
@@ -453,6 +488,31 @@ function RunMoreDialog({
                         · last call was refused: {c.warning}
                       </span>
                     )}
+                    {/* ALREADY ANSWERED. Offered, never pre-ticked, and
+                        honest about both consequences: it is charged
+                        again, and it REPLACES what is on file rather
+                        than adding to it. An analyst running the board
+                        one director at a time would otherwise lose the
+                        first three. */}
+                    {/* ALREADY ANSWERED. A SHORT marker, because the
+                        consequence — charged again, replaces what is on
+                        file — is stated once in the header and repeating
+                        it on sixteen rows buried the check names it was
+                        meant to qualify.
+
+                        The people count is the part that is NOT in the
+                        header and cannot be: "already run for 3 people"
+                        against six numbers now in the field is exactly
+                        the question an analyst working through a board
+                        of directors is asking. */}
+                    {c.answered && (
+                      <span className="runmore-again small">
+                        {' '}
+                        · already run
+                        {c.onFile > 0 && ` · ${c.onFile} ` +
+                          (c.onFile === 1 ? 'person' : 'people') + ' on file'}
+                      </span>
+                    )}
                   </span>
                   <span className="runmore-cost small nums muted">
                     {c.costPaisa ? rupees(c.costPaisa) : 'free'}
@@ -498,20 +558,6 @@ function RunMoreDialog({
           </div>
         )}
 
-        {/* Already answered. Listed rather than omitted: an analyst who
-            cannot find a check in the list above needs to be told it is
-            done, not left looking. */}
-        {done.length > 0 && (
-          <details className="runmore-done">
-            <summary className="small muted">
-              Already run ({done.length}) — re-running one of these is a Step 2
-              decision, because it is paid for again
-            </summary>
-            <p className="small muted runmore-done-list">
-              {done.map((c) => c.name).join(' · ')}
-            </p>
-          </details>
-        )}
       </div>
     </Modal>
   )

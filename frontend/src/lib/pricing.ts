@@ -45,3 +45,23 @@ export function checkCostPaisa(vendor: Vendor, checkId: string): number {
   if (!def?.costPaisa) return 0
   return def.costPaisa * subjectCount(vendor, checkId)
 }
+
+/**
+ * How many people a check ALREADY has results for.
+ *
+ * The person checks store one row per vendor with every subject inside
+ * it — `{"subjects": [...]}` — so this reads the stored payload rather
+ * than the input box. Put beside `subjectCount`, which reads the box,
+ * it answers the question an analyst actually has when they come back
+ * to re-run one: "I have three directors on file and six numbers typed
+ * — what happens if I press this?"
+ *
+ * 0 when the check has not run, or stored something older than the
+ * per-subject shape.
+ */
+export function subjectsOnFile(vendor: Vendor, checkId: string): number {
+  const raw = vendor.checks?.[checkId]?.rawResponse as
+    | { subjects?: unknown[] }
+    | undefined
+  return Array.isArray(raw?.subjects) ? raw!.subjects!.length : 0
+}
