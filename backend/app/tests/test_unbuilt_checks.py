@@ -424,16 +424,19 @@ class TestDirectorContact:
         dispatch(runner, "dcontact", prior=self._prior_dirs(25))
         assert provider.calls.count("director_contact") == 3
 
-    def test_the_email_is_masked_in_the_facts(self):
-        """A working personal address is the most re-usable thing in the
-        dossier. The unredacted value stays in raw_response."""
+    def test_the_email_reaches_the_facts_in_full(self):
+        """This asserted `a***@acme.in`, on the reasoning that `facts` is
+        read by a client-facing screen. It is not — Findings.tsx renders
+        it, and Findings prints the stored payload in a panel directly
+        below, where the whole address was visible anyway. Masking a
+        value the same page already shows is a control in appearance
+        only."""
         runner, _ = make_runner(
             FakeSession(None),
             director_contact={"email": "amit.sharma@acme.in", "mobile": "98****3210"})
         finding = dispatch(runner, "dcontact", {"dcontact": {"din": "00001"}})
         rows = finding.facts["table"]["rows"]
-        assert rows[0]["email"] == "a***@acme.in"
-        # ...and the real one is still on file.
+        assert rows[0]["email"] == "amit.sharma@acme.in"
         assert finding.raw["contacts"][0]["email"] == "amit.sharma@acme.in"
 
     def test_the_masked_mobile_is_passed_through_as_the_source_sent_it(self):

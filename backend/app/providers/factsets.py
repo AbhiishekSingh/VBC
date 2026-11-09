@@ -903,28 +903,29 @@ def director_candidates(
     )
 
 
-def _mask_email(value: Any) -> str | None:
-    """``amit.sharma@acme.in`` → ``a***@acme.in``.
+def _email(value: Any) -> str | None:
+    """An email address, in full.
 
-    MCA returns the mobile already masked; the email it returns whole. This
-    blob is the tier a client-facing screen reads, and a working personal
-    address is the single most re-usable piece of data in the dossier. The
-    unredacted value stays in ``raw_response`` behind its own grants, which
-    is the split the DPDP note asks for.
+    Masked to ``a***@acme.in`` until now, for the same reason as the PAN
+    and with the same flaw: the unredacted value sits in the payload
+    panel on this very screen. See ``_pan``.
     """
     text = str(value or "").strip()
-    if "@" not in text:
-        return text or None
-    local, _, host = text.partition("@")
-    return f"{local[:1]}***@{host}" if local else f"***@{host}"
+    return text or None
 
 
 def director_contacts(contacts: list[dict]) -> dict:
-    """Contact details as filed with MCA.
+    """Contact details as filed with MCA, exactly as MCA holds them.
 
-    Deliberately redacted HERE rather than at retention time: a parser that
-    never writes the identifier cannot leak it, and the column a screen
-    reads then needs no special grant at all.
+    This used to redact the email in the parser, on the reasoning that a
+    value never written cannot leak. The reasoning was sound and the
+    premise was not: the payload carrying the same address is rendered on
+    the same screen, so nothing was withheld from anyone who could read
+    this table. Redaction belongs in a retention rule over
+    ``raw_response``, where it would actually remove something.
+
+    The MOBILE arrives masked from MCA and is passed through untouched —
+    that is the source's redaction, not ours.
     """
     reachable = sum(1 for c in contacts if c.get("email") or c.get("mobile"))
     return F.build(
@@ -943,10 +944,10 @@ def director_contacts(contacts: list[dict]) -> dict:
             [
                 {
                     "din": c.get("din"),
-                    "email": _mask_email(c.get("email")),
-                    # Already masked by the source. Passed through as-is
-                    # rather than re-masked, so what is shown is what MCA
-                    # holds.
+                    "email": _email(c.get("email")),
+                    # MCA masks this one AT SOURCE. Passed through
+                    # untouched, so what is shown is what MCA holds —
+                    # nothing here adds a mask of its own.
                     "mobile": c.get("mobile") or c.get("mobileNumber"),
                 }
                 for c in contacts
@@ -954,9 +955,9 @@ def director_contacts(contacts: list[dict]) -> dict:
             empty_note="MCA holds no contact details for these directors — "
                        "common where filings were made through a practitioner.",
         ),
-        note="Addresses are shown part-masked. The values exactly as MCA "
-             "returned them are in the stored response, which is held under "
-             "narrower access than this summary.",
+        note="Exactly as MCA holds them. Where a value looks truncated it was "
+             "returned that way — MCA masks the mobile at source — and the "
+             "stored response says so.",
     )
 
 
@@ -2126,50 +2127,51 @@ def _unknown_shape(data: dict) -> list[dict]:
     )]
 
 
-def _mask_pan(value: Any) -> str | None:
-    """``ABCDE1234F`` → ``******234F``.
+def _pan(value: Any) -> str | None:
+    """A PAN, in full.
 
-    ``facts`` is the tier a client-facing screen reads and this module's
-    own rule is that a PAN never reaches it — ``test_no_pan_reaches_the_facts``
-    pins that for the director rows. The last four are kept because the
-    one thing an analyst does with this field is check it against the PAN
-    already on the vendor record; the whole value stays in
-    ``raw_response`` behind its own grants.
+    THIS USED TO MASK, and the masking is gone deliberately.
+
+    It wrote ``******717N`` on the grounds that ``facts`` is read by a
+    client-facing screen. That has not been true since the report was
+    rewritten: ``CheckFacts`` is rendered by ``Findings.tsx`` and by
+    nothing else, and Findings is the internal evidence screen — the one
+    that shows the provider's exact payload in a panel directly below
+    this table. So the whole value was always two clicks away on the same
+    screen, and the stars only cost the analyst the one thing they do
+    with this field, which is read it.
+
+    Masking a value the same page already displays in full is not a
+    control; it is a thing that looks like one, and those are worse than
+    nothing because they are trusted. If this data ever does need
+    withholding, it has to be withheld from the PAYLOAD too, and that is
+    a retention decision made in one place rather than a cosmetic one
+    made in a parser.
     """
     text = str(value or "").strip().upper()
-    if not text:
-        return None
-    if len(text) <= 4:
-        return "*" * len(text)
-    return "*" * (len(text) - 4) + text[-4:]
+    return text or None
 
 
-def _mask_mobile(value: Any) -> str | None:
-    """``9876543210`` → ``9876****10``.
+def _mobile(value: Any) -> str | None:
+    """A phone number, in full. See ``_pan`` for why nothing is hidden.
 
-    Partial rather than full, and the reason is specific to this screen:
-    the number is the ROW KEY of a five-director table. Masked whole, the
-    five rows become indistinguishable and the table stops saying whose
-    record is whose — which is the entire reason these checks were put on
-    one row. Enough is hidden that what is printed is not a dialable
-    number; the exact value is in ``raw_response`` and in the check's
-    recorded input.
+    This one had a second job: the number is the ROW KEY of a table with
+    one row per director, so a masked form had to stay distinguishable
+    between people. Unmasked it simply is distinguishable, and it is also
+    the value an analyst copies to run the next check against.
     """
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if not digits:
-        text = str(value or "").strip()
-        return text or None
-    if len(digits) <= 6:
-        return digits[:2] + "*" * (len(digits) - 2)
-    return f"{digits[:4]}{'*' * (len(digits) - 6)}{digits[-2:]}"
+    if digits:
+        return digits
+    text = str(value or "").strip()
+    return text or None
 
 
 #: Said once, next to any blob that carries a person's records.
 _PERSON_NOTE = (
     "Personal data about a named individual — the holder of this number — "
-    "not a company record. PAN and contact details are part-masked here; "
-    "the response exactly as the provider sent it is stored with this "
-    "result."
+    "not a company record. Shown in full, exactly as the provider "
+    "returned it; the response itself is stored with this result."
 )
 
 
@@ -2188,24 +2190,37 @@ def person_identity(data: dict) -> dict:
     that matters: one reported last week and one reported two years ago
     are different facts about where somebody lives.
 
-    INCOME IS PARSED AND NOT SHOWN. The response carries an income band
-    for the individual. It says nothing about the vendor company this
-    file is about, and an individual's earnings do not belong in a
-    report a client reads. It stays in `raw_response` under its own
-    access controls, so the decision is reversible without re-paying
-    for anything.
+    EVERYTHING THE RESPONSE CARRIES IS SHOWN, in full.
+
+    This blob used to mask the PAN, the email and the alternate numbers,
+    and to drop the income band entirely, on the reasoning that `facts`
+    is read by a client-facing screen. It is not: `CheckFacts` reaches
+    `Findings.tsx` and nowhere else, and Findings prints the provider's
+    exact payload in a panel below this table. Everything being hidden
+    here was visible two clicks away on the same page, so the hiding
+    bought nothing and cost the analyst the values they came to read.
+
+    The income band is shown for the same reason, and labelled as the
+    band it is. It is an individual's earnings and it says nothing about
+    the vendor company — but what belongs in the CLIENT'S REPORT is
+    decided by the report, which builds from the check's status and
+    value and does not read this blob at all.
     """
     rows = [
         {"field": "Name", "value": data.get("name")},
-        {"field": "PAN", "value": _mask_pan(data.get("pan"))},
+        {"field": "PAN", "value": _pan(data.get("pan"))},
         {"field": "Date of birth",
          "value": F.human_date(parse_date(data.get("dob"))) or data.get("dob")},
         {"field": "Age", "value": data.get("age")},
         {"field": "Gender", "value": data.get("gender")},
-        {"field": "Email", "value": _mask_email(data.get("email"))},
+        {"field": "Email", "value": _email(data.get("email"))},
         {"field": "Other numbers on this identity",
-         "value": ", ".join(_mask_mobile(p) or "" for p in
+         "value": ", ".join(_mobile(p) or "" for p in
                             (data.get("alt_phones") or [])) or None},
+        # The provider's own band, verbatim, named as a band so nobody
+        # reads it as a figure the vendor reported.
+        {"field": "Income band (reported by the source)",
+         "value": str(data.get("income") or "") or None},
     ]
     extra_pans = [p for p in (data.get("all_pans") or [])
                   if p != data.get("pan")]
@@ -2213,7 +2228,7 @@ def person_identity(data: dict) -> dict:
         # More than one PAN against one person is worth a human look,
         # and dropping the second would hide it.
         rows.append({"field": "Other PANs",
-                     "value": ", ".join(_mask_pan(p) or "" for p in extra_pans)})
+                     "value": ", ".join(_pan(p) or "" for p in extra_pans)})
 
     addresses = [a for a in (data.get("addresses") or []) if a]
     address_rows = []
@@ -2534,9 +2549,9 @@ def _subject_label(check_id: str, row: dict) -> str:
     uan = row.get("uan")
     if check_id == "emphistory":
         if uan and subject and str(uan) != str(subject):
-            return f"{uan} ({_mask_mobile(subject)})"
+            return f"{uan} ({_mobile(subject)})"
         return str(uan or subject or "—")
-    return str(_mask_mobile(subject) or "—")
+    return str(_mobile(subject) or "—")
 
 
 def _not_examined(check_id: str, failed: list[dict]) -> list[dict]:
@@ -2614,7 +2629,7 @@ def _subject_rows(check_id: str, ok: list[dict]) -> tuple[list[dict], list[dict]
         rows = [{
             "subject": _subject_label(check_id, r),
             "name": (r.get("data") or {}).get("name"),
-            "pan": _mask_pan((r.get("data") or {}).get("pan")),
+            "pan": _pan((r.get("data") or {}).get("pan")),
             "dob": (F.human_date(parse_date((r.get("data") or {}).get("dob")))
                     or (r.get("data") or {}).get("dob")),
             "address": _flat((r.get("data") or {}).get("address")),

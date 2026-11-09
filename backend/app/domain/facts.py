@@ -23,10 +23,21 @@ Two rules this module exists to enforce:
    Indian number formatting, one in each language, is exactly the drift
    ``parity.test.ts`` exists to catch for the catalog.
 
-PII: nothing written into a fact blob may carry a PAN, an unmasked contact
-detail, or a base64 blob. ``raw_response`` holds those under its own access
-controls; ``facts`` is the tier a client-facing screen reads, so it is the
-tier that must be safe to read.
+PII: a fact blob MAY carry a PAN and a contact detail, in full. It used not
+to, and the rule said so here, on the premise that ``facts`` is the tier a
+client-facing screen reads.
+
+That premise is false and the rule went with it. ``CheckFacts`` is rendered
+by ``Findings.tsx`` and by nothing else — the internal evidence screen,
+which prints ``raw_response`` in a panel directly below the fact blob. A
+parser that masked a value the same page displayed in full was a control in
+appearance only, and those are worse than none because they get trusted.
+
+What remains true: ``facts`` is DERIVED and disposable, ``raw_response`` is
+the evidence, and neither belongs in front of a client — the report builds
+from a check's status and value and reads no blob at all. If this data ever
+needs withholding, it is withheld from the payload too, as a retention rule
+in one place, not cosmetically in a parser. See ``db/README.md``.
 """
 
 from __future__ import annotations
@@ -73,7 +84,21 @@ from typing import Any, Iterable, Literal
 #: "still employed". That is a conclusion drawn from a field this
 #: provider never sends, which makes it a change of meaning rather than
 #: of presentation.
-PARSER_VERSION = "4"
+#: "5" — 9 Nov 2026. The person-level parsers stopped masking. PAN,
+#: email and mobile were written as `******717N`, `a***@gmail.com` and
+#: `9359****89` on the grounds that `facts` is the tier a client-facing
+#: screen reads. It is not, and has not been since the report was
+#: rewritten: `CheckFacts` is rendered by Findings.tsx alone, which
+#: shows the provider's exact payload in a panel directly below the
+#: table. The stars hid a value the same page was already displaying in
+#: full — a control in appearance only, and those are worse than none
+#: because they get trusted.
+#:
+#: A changed value is a change of meaning by definition: `******717N`
+#: and the PAN itself are not the same string. Every row rebuilds, and
+#: `scripts/backfill_facts` does it from the stored payloads with no
+#: network and no credits.
+PARSER_VERSION = "5"
 
 Shape = Literal["detail", "summary", "table", "document", "reference", "none"]
 

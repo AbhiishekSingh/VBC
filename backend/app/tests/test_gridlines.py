@@ -628,37 +628,53 @@ class TestOneCheckManyPeople:
 # 7. What is NOT in a fact blob
 # =====================================================================
 
-class TestPersonFactsAreSafeToRender:
-    """`facts` is the tier a client-facing screen reads. The rule in
-    `app/domain/facts.py` is that a PAN or an unmasked contact never
-    reaches it, and `test_no_pan_reaches_the_facts` already pins that for
-    the director rows. These five checks return a PAN, an email and a
-    mobile number, so the same rule has to hold here."""
+class TestPersonFactsAreRenderedInFull:
+    """`facts` is NOT the tier a client-facing screen reads.
 
-    def test_the_pan_is_part_masked(self):
+    It was assumed to be, and these tests used to pin a PAN to
+    `******234F`, an email to `a***@acme.in` and a mobile to
+    `9876****10`. `CheckFacts` is rendered by `Findings.tsx` and by
+    nothing else: the internal evidence screen, which shows the
+    provider's exact payload in a panel directly below this table. The
+    masked form hid a value the same page was already displaying in
+    full, which is a control in appearance only.
+
+    So the rule these now pin is the opposite one, and it is the
+    stronger of the two: what the analyst reads is what the provider
+    sent. If this data ever needs withholding it has to be withheld from
+    the payload as well, in a retention rule, not cosmetically in a
+    parser.
+    """
+
+    def test_the_pan_is_shown_in_full(self):
         blob = fx.person_identity({"name": "A", "pan": "ABCDE1234F"})
         text = str(blob)
-        assert "ABCDE1234F" not in text
-        # The last four stay, because the one thing an analyst does with
-        # this field is match it against the PAN on the vendor record.
-        assert "234F" in text
+        assert "ABCDE1234F" in text
+        assert "******1234F" not in text and "*" not in text.replace("**", "")
 
-    def test_the_email_is_part_masked(self):
+    def test_the_email_is_shown_in_full(self):
         blob = fx.person_identity({"email": "amit.sharma@acme.in"})
-        assert "amit.sharma@acme.in" not in str(blob)
-        assert "a***@acme.in" in str(blob)
+        assert "amit.sharma@acme.in" in str(blob)
+        assert "a***@acme.in" not in str(blob)
 
-    def test_the_number_is_part_masked_but_still_identifies_the_row(self):
-        """Full masking would make five directors five identical rows and
-        destroy the reason these are on one check."""
+    def test_the_number_is_shown_in_full_and_identifies_the_row(self):
+        """Still one distinguishable row per person — now because the
+        number is simply printed, rather than because the mask was
+        carefully designed to leave enough of it behind."""
         raw = {"subjects": [
             {"subject": "9876543210", "ok": True, "data": {"name": "A"}},
             {"subject": "9876543211", "ok": True, "data": {"name": "B"}},
         ], "subject_count": 2}
         rows = fx.person_subjects("prefill", raw)["table"]["rows"]
         shown = [r["subject"] for r in rows]
-        assert "9876543210" not in shown and "9876543211" not in shown
-        assert len(set(shown)) == 2
+        assert shown == ["9876543210", "9876543211"]
+
+    def test_the_lede_no_longer_claims_anything_is_masked(self):
+        """It said "PAN and contact details are part-masked here". A
+        standing sentence that describes a behaviour the code no longer
+        has is worse than no sentence: it is read as an assurance."""
+        blob = fx.person_identity({"name": "A", "pan": "ABCDE1234F"})
+        assert "masked" not in blob["lede"].lower()
 
     def test_every_person_blob_says_it_is_personal_data(self):
         """As a `lede`, not a `note` — ABOVE the data, not under it.
@@ -1650,28 +1666,29 @@ class TestPrefillRenders:
         assert table["rows"][0]["reported"] == "03 Nov 2026"
         assert table["rows"][1]["reported"] == "31 Oct 2024"
 
-    def test_the_pan_is_masked_and_READABLE(self):
+    def test_the_pan_is_shown_in_full(self):
         fields = {f["label"]: f["value"] for f in self._blob()["fields"]}
-        assert fields["PAN"] == "******234F"
+        assert fields["PAN"] == "ABCDE1234F"
 
-    def test_the_income_band_is_NOT_rendered(self):
-        """The response carries one for the individual. It says nothing
-        about the vendor company this file is about, and an individual's
-        earnings do not belong in a report a client reads. It stays in
-        `raw_response` under its own access controls."""
-        assert "3,00,001" not in str(self._blob())
+    def test_the_income_band_is_rendered_and_labelled_as_a_band(self):
+        """It was parsed and withheld. Nothing on this screen is
+        withheld any more — the payload panel below the table was
+        showing it regardless."""
+        fields = {f["label"]: f["value"] for f in self._blob()["fields"]}
+        assert fields["Income band (reported by the source)"] == \
+            "3,00,001 - 4,00,000"
 
     def test_the_income_band_IS_still_parsed_and_stored(self):
-        """Not shown is not the same as discarded — the decision stays
-        reversible without re-paying for anything."""
         assert self._out_income() == "3,00,001 - 4,00,000"
 
     def _out_income(self):
         return _Recorder(PREFILL_LIVE).mobile_prefill(
             "9876543210", consent="Y")["income"]
 
-    def test_nothing_unmasked_reaches_the_blob(self):
+    def test_every_value_reaches_the_blob_unmasked(self):
+        """The inverse of what this asserted. See
+        TestPersonFactsAreRenderedInFull for why it turned round."""
         blob = str(self._blob())
-        assert "ABCDE1234F" not in blob
-        assert "TEST@EXAMPLE.COM" not in blob
-        assert "9876543210" not in blob
+        assert "ABCDE1234F" in blob
+        assert "TEST@EXAMPLE.COM" in blob
+        assert "9876543210" in blob

@@ -112,9 +112,16 @@ records why.
 
 ## PII: needs a decision before go-live
 
-`vendor_checks.raw_response` holds real API payloads, and FileSure director
-profiles carry **PAN numbers and masked contact details**. This is personal
-data under the DPDP Act.
+`vendor_checks.raw_response` holds real API payloads, and the person-level
+checks return a named individual's **PAN, date of birth, email, home
+addresses and income band**. This is personal data under the DPDP Act.
+
+Since 9 Nov 2026 `vendor_checks.facts` carries the same values, in full.
+It previously masked them, which made it look like the safe column of the
+two; it is not, and both now need the same decision. The masking was
+dropped because `facts` is read by the internal evidence screen alone,
+which displays the payload beside it — so the mask withheld nothing from
+anyone who could already see the row.
 
 It cannot simply be dropped — it *is* the evidence, and removing it defeats
 the reconstruction guarantee above. So the controls have to be:
@@ -125,7 +132,9 @@ the reconstruction guarantee above. So the controls have to be:
 - **Retention**: agree how long payloads are kept after a decision, and
   whether they are redacted (PAN masked, contacts stripped) rather than
   deleted once the retention window closes. Redaction preserves the score's
-  reconstructability while shedding the identifiers.
+  reconstructability while shedding the identifiers. It must cover
+  `facts` and `raw_response` together: redacting one while the other holds
+  the same values is the mistake the parser-level masking already made.
 
 **This is an open question for the client**, alongside §18.1 and §18.2. It is
 flagged here rather than silently decided.
