@@ -183,6 +183,81 @@ function simulate(vendor: Vendor, checkId: string): CheckResult {
   return { ...base, status: 'pass', value: 'Retrieved', detail: 'Check completed against the provider.' }
 }
 
+/* ---- many results per check -----------------------------------------
+ *
+ * A check used to hold exactly one result and a re-run overwrote it. It now
+ * holds as many as were run, and exactly ONE of them is primary: the one
+ * SCAN, the risk score and the report read.
+ *
+ * `runs` is the full list, newest first. `checks` is the primary per check,
+ * so everything that computes a number keeps reading the shape it always
+ * read and cannot accidentally pick up the newest result instead of the
+ * chosen one.
+ *
+ * The mock mirrors the server's rules exactly, because the mock is what the
+ * screens are built against: the first result for a check becomes primary
+ * unasked, a later run never steals the flag, marking one clears its
+ * siblings, and deleting the primary promotes the newest remaining rather
+ * than leaving the check unscored.
+ */
+
+let nextRunId = 9000
+
+/** Rebuild `checks` from `runs`: the primary per check, newest as fallback. */
+function rebuildChecks(vendor: Vendor): void {
+  const runs = vendor.runs ?? []
+  const checks: Record<string, CheckResult> = {}
+  for (const run of runs) if (run.isPrimary) checks[run.checkId] = run
+  // A check whose rows predate the primary flag still has to render.
+  for (const run of runs) if (!checks[run.checkId]) checks[run.checkId] = run
+  vendor.checks = checks
+}
+
+/** What was asked, for ONE result, snapshotted at the moment it ran. */
+function inputsFor(vendor: Vendor, checkId: string): Record<string, string> {
+  const def = checkDef(checkId)
+  if (!def) return {}
+  const out: Record<string, string> = {}
+  for (const param of def.params) {
+    const value = inputValue(vendor, checkId, param.key)
+    if (value) out[param.key] = value
+  }
+  return out
+}
+
+/** Append one result. Never replaces, never steals an existing primary. */
+function appendRun(vendor: Vendor, result: CheckResult): CheckResult {
+  vendor.runs = vendor.runs ?? []
+  const hadPrimary = vendor.runs.some((r) => r.checkId === result.checkId && r.isPrimary)
+  const row: CheckResult = {
+    ...result,
+    id: nextRunId++,
+    isPrimary: !hadPrimary,
+    inputs: inputsFor(vendor, result.checkId),
+    fetchedAt: result.fetchedAt ?? new Date().toISOString(),
+  }
+  vendor.runs = [row, ...vendor.runs]
+  rebuildChecks(vendor)
+  return row
+}
+
+/*
+  The fixtures were written when a check held one result, so they carry
+  `checks` and no `runs`. Promote each seeded result to a primary row, so
+  the findings history is populated from the first paint rather than
+  appearing empty until something is re-run.
+*/
+for (const vendor of vendors) {
+  if (vendor.runs?.length) continue
+  vendor.runs = Object.values(vendor.checks ?? {}).map((result) => ({
+    ...result,
+    id: nextRunId++,
+    isPrimary: true,
+    inputs: result.inputs ?? inputsFor(vendor, result.checkId),
+  }))
+  rebuildChecks(vendor)
+}
+
 // ---------------------------------------------------------------------
 // Mock clients. Vendors carry clientId; anything without one lands in
 // the same holding client the migration creates.
@@ -355,54 +430,58 @@ export const mockApi: VbcApi = {
 
   async runChecks(id, only) {
     const v = find(id)
-    const missing = new Set(missingInputs(v).map((m) => m.checkId))
+    const runsBefore = (v.runs ?? []).length
     let costPaisa = 0
     let credits = 0
     const skipped: string[] = []
 
     /*
-      A DELTA RUN KEEPS THE RESULTS ALREADY ON FILE.
+      NOTHING ON FILE IS EVER REPLACED.
 
-      The full run clears `v.checks` first, which is right: a fresh run
-      over a changed selection must not leave a stale answer beside a live
-      one. A delta run doing the same would wipe the twelve results the
-      analyst is looking at in order to add one — the exact opposite of
-      what the control promises.
+      A result used to be written at `v.checks[checkId]`, so a second run
+      of a check overwrote the first — which is exactly wrong for the
+      person-level checks, where the same check is run once per director
+      and each answer is about a different human being.
 
-      And the checks already answered are not re-called, because this
-      mirrors the server: re-running is what costs money.
+      Every run now APPENDS. A full run does not clear, a delta run does
+      not clear, and `only` names precisely what to call: the dialog sends
+      the ticked ids, including ones that already answered, because
+      re-running a check against a different number is the whole point.
     */
-    const answered = new Set(
-      Object.values(v.checks)
-        .filter((c) => ['pass', 'warn', 'fail'].includes(c.status))
-        .map((c) => c.checkId),
-    )
-    const wanted = only
-      ? v.selected.filter((c) => only.includes(c) || !answered.has(c))
-      : v.selected
+    const wanted = only ? only.filter((c) => checkDef(c)) : v.selected
 
-    if (!only) v.checks = {}
     for (const checkId of wanted) {
       const def = checkDef(checkId)
       if (!def) continue
 
-      // A blank required input skips ONE check and is logged. It never
-      // blocks the run, and it never disappears from the findings page.
-      if (missing.has(checkId)) {
-        v.checks[checkId] = {
+      /*
+        A blank required input skips ONE check and is logged. It never
+        blocks the run, and it never disappears from the findings page.
+
+        Asked per check against the checks being run rather than read out
+        of `missingInputs`, because a check launched from the Step 3 dialog
+        is not in the selection yet and `missingInputs` would not have
+        looked at it at all.
+      */
+      if (inputGaps(v, checkId, [...v.selected, ...wanted]).length) {
+        appendRun(v, {
           checkId,
           status: 'skipped_missing_input',
           value: 'Not run',
           detail: 'A required input was left blank, so this check could not be called.',
-        }
+        })
         skipped.push(def.name)
         continue
       }
 
-      v.checks[checkId] = simulate(v, checkId)
+      appendRun(v, simulate(v, checkId))
       costPaisa += def.costPaisa
       credits += def.credits
     }
+
+    // A delta run adds to the selection: a check run from Step 3 has to
+    // appear on Step 3, and the findings page lists the selection.
+    if (only) v.selected = [...new Set([...v.selected, ...wanted])]
 
     if (wanted.some((c) => checkDef(c)?.needsCompanyUnlock) && !v.unlocked) {
       v.unlocked = true
@@ -414,7 +493,19 @@ export const mockApi: VbcApi = {
     // analyst runs two more checks is still at `report`; sending them
     // back to `manual` would walk them through screens they finished.
     if (!only) v.stage = 'manual'
-    const settled = Object.values(v.checks)
+
+    /*
+      WHAT THIS RUN CALLED, not what the vendor holds.
+
+      `ran` was `Object.values(v.checks).length` — every check settled for
+      this vendor, ever. The toast on Step 3 therefore said "16 more checks
+      settled" after a run of one, which is an invented number about money:
+      the analyst reads it as sixteen calls they have just paid for.
+
+      Results now accumulate, so counting what was appended is both
+      correct and simple.
+    */
+    const settled = (v.runs ?? []).slice(0, (v.runs ?? []).length - runsBefore)
     log(
       id,
       'CHECKS_COMPLETE',
@@ -427,6 +518,70 @@ export const mockApi: VbcApi = {
     )
 
     return latency({ vendor: clone(v), ran: settled.length, skippedMissingInput: skipped, costPaisa, credits }, 700)
+  },
+
+  /**
+   * Choose which result of a check the score and the report read.
+   *
+   * Moves a client-facing number, so it is audited. Marking one clears its
+   * siblings in the same breath: the "exactly one primary per check" rule
+   * is enforced by a partial unique index on the server, and a mock that
+   * allowed two would let a screen be built that the database refuses.
+   */
+  async markPrimary(vendorId, runId) {
+    const v = find(vendorId)
+    const row = (v.runs ?? []).find((r) => r.id === runId)
+    if (!row) throw new Error(`No run ${runId} on vendor ${vendorId}`)
+    if (!row.isPrimary) {
+      for (const sibling of v.runs ?? []) {
+        if (sibling.checkId === row.checkId) sibling.isPrimary = false
+      }
+      row.isPrimary = true
+      rebuildChecks(v)
+      log(
+        vendorId,
+        'RUN_MARKED_PRIMARY',
+        `${checkDef(row.checkId)?.name ?? row.checkId} · ${row.value || row.status}` +
+          ' is now the result the score and the report read',
+      )
+    }
+    return latency(clone(v))
+  },
+
+  /**
+   * Remove one result of a check.
+   *
+   * Deleting the primary PROMOTES the newest remaining rather than leaving
+   * the check unscored — a check that silently stops counting because a
+   * row was tidied away is the failure this whole feature exists to avoid.
+   * What was deleted survives in the audit log, because the row does not.
+   */
+  async deleteRun(vendorId, runId) {
+    const v = find(vendorId)
+    const row = (v.runs ?? []).find((r) => r.id === runId)
+    if (!row) throw new Error(`No run ${runId} on vendor ${vendorId}`)
+
+    v.runs = (v.runs ?? []).filter((r) => r.id !== runId)
+    const name = checkDef(row.checkId)?.name ?? row.checkId
+    let promoted = ''
+    if (row.isPrimary) {
+      const replacement = v.runs.find((r) => r.checkId === row.checkId)
+      if (replacement) {
+        replacement.isPrimary = true
+        promoted = ` · ${replacement.value || replacement.status} promoted`
+      }
+    }
+    rebuildChecks(v)
+    log(
+      vendorId,
+      'RUN_DELETED',
+      `${name} · ${row.value || row.status}` +
+        (row.inputs && Object.keys(row.inputs).length
+          ? ` (${Object.entries(row.inputs).map(([k, val]) => `${k}=${val}`).join(', ')})`
+          : '') +
+        ` deleted${promoted}`,
+    )
+    return latency(clone(v))
   },
 
   async addManualEntry(id, entry) {
@@ -518,6 +673,7 @@ export const mockApi: VbcApi = {
   async listProviderStatus() {
     return latency([
       { provider: 'filesure', configured: true, blocked: false, blockedChecks: {} },
+      { provider: 'gridlines', configured: true, blocked: false, blockedChecks: {} },
       { provider: 'whoisxml', configured: true, blocked: false, blockedChecks: {} },
       { provider: 'ecourts', configured: true, blocked: false, blockedChecks: {} },
       { provider: 'finagg', configured: true, blocked: false, blockedChecks: {} },

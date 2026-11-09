@@ -323,16 +323,37 @@ class TestApiBoundary:
         assert out.model_dump()["facts"] == blob
 
     def test_the_serialiser_actually_passes_it(self):
-        """The schema having the field is not enough — `_serialise` has to
-        populate it. It defaults to None, so forgetting is silent."""
-        import inspect as _inspect
+        """The schema having the field is not enough — the serialiser has
+        to populate it. It defaults to None, so forgetting is silent.
+
+        Asserted on BEHAVIOUR rather than on the source text. The first
+        version matched the literal `facts=row.facts` inside
+        `_serialise`, and broke the day that construction moved into a
+        helper — a passing test that had stopped checking anything, and
+        a failing one that was not reporting a real defect. What matters
+        is that a row carrying facts produces a payload carrying them.
+        """
         from app.api import routes
 
-        source = _inspect.getsource(routes._serialise)
-        assert "facts=row.facts" in source, (
-            "_serialise builds CheckResultOut without facts; the parser's "
-            "output would be written to the database and never sent"
+        blob = fx.master(normalise_master(ZEPTO))
+        row = type("Row", (), {
+            "id": 7, "check_id": "master", "status": "pass", "value": "v",
+            "detail": "d", "facts": blob, "raw_response": {"a": 1},
+            "cost_paisa": 500, "fetched_at": None, "is_primary": True,
+            "inputs": {"cin": "U1"},
+        })()
+        out = routes._run_out(row)
+        assert out.facts == blob, (
+            "the serialiser builds CheckResultOut without facts; the "
+            "parser's output would be written to the database and never "
+            "sent"
         )
+        # The companions that travel with it, for the same reason: each
+        # defaults to something harmless, so forgetting any of them is
+        # silent too.
+        assert out.rawResponse == {"a": 1}
+        assert out.isPrimary is True
+        assert out.inputs == {"cin": "U1"}
 
     def test_a_row_with_no_facts_still_serialises(self):
         """Old rows, unavailable checks, and every check whose parser is not

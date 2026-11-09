@@ -1740,24 +1740,54 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .runmore-name { flex: 1 1 auto; min-width: 0; }
 .runmore-cost { flex: none; }
 
-/* HELD, not hidden. A check that cannot run says so and says why; the two
-   reasons — a blank input, which is the analyst's to fix, and a source
-   refusing our account, which is not — reach the screen as different
-   sentences rather than one grey row. */
-.runmore-row.is-held { cursor: default; color: var(--ink-3); }
-.runmore-row.is-held:hover { background: none; }
-/* LEFT-ALIGNED in a column of its own. Right-aligned, a reason that wrapped
-   onto two lines came out ragged-left under a pool of whitespace, and
-   fourteen of them down the side of the list were unreadable as a set. */
-.runmore-why { flex: 0 0 24ch; text-align: left; }
+/* WHAT IS MISSING, said on the row that can fix it. There is no longer a
+   "cannot run yet" bucket: a check with a blank required input is offered
+   like any other, with its own input box underneath, because the one thing
+   this dialog exists to avoid is sending the analyst back to Step 2. */
+.runmore-why { color: var(--adverse); }
 
-.runmore-held-h {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-3);
+/* THE ROW AND ITS FIELDS ARE ONE THING. The wrapper carries the tick
+   state, so a ticked check and the boxes it is about to be run against
+   read as a single block rather than a row and some orphaned inputs. */
+.runmore-row-wrap {
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
 }
-/* Its own casing, because the heading holds a button and SHOUTING at it
-   makes the row read as an alert rather than a section. */
-.runmore-held-h .btn { text-transform: none; letter-spacing: 0; }
+.runmore-row-wrap.is-picked {
+  border-color: var(--line-2);
+  background: var(--surface-2);
+}
+/* The LABEL is the tick target, not the whole row: the row also holds an
+   Inputs button, and a button inside a label toggles the checkbox on its
+   way past. */
+.runmore-tick {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  flex: 1 1 auto; min-width: 0; cursor: pointer;
+}
+.runmore-fields-btn { flex: none; text-transform: none; letter-spacing: 0; }
+
+/* THE SAME FIELDS STEP 2 SHOWS, inset under their check. Two columns on a
+   wide dialog, because a check asking for a CIN and an identifier type in
+   one column down the left of a 900px modal wastes the width the modal
+   was widened for. */
+.runmore-inputs {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  padding: var(--space-3) var(--space-3) var(--space-4) var(--space-6);
+  border-top: 1px dashed var(--line-2);
+  margin-top: var(--space-2);
+}
+
+/* The filter, above a list that is now the whole catalogue. */
+.runmore-search {
+  display: flex; align-items: center; gap: var(--space-3);
+  position: sticky; top: calc(var(--space-4) * -1); z-index: var(--z-sticky);
+  margin: 0 calc(var(--space-4) * -1);
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  background: var(--surface);
+}
+.runmore-search .input { flex: 1 1 auto; }
+.runmore-search .nums { flex: none; white-space: nowrap; }
 
 /* A check that has already answered, offered again. Muted, not amber:
    re-running is a legitimate step in the loop this dialog exists for —
@@ -1769,10 +1799,77 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 
 @media (max-width: 640px) {
   .runmore-row { flex-wrap: wrap; }
-  .runmore-why { text-align: left; max-width: none; }
+  .runmore-inputs { grid-template-columns: 1fr; padding-left: var(--space-3); }
 }
 /* A source that refused us last time, on a row that is STILL TICKABLE.
    Amber, not red: red is the colour this app uses for "stop", and this
    does not stop anything — it tells the analyst the last call was
    refused so they can decide whether to spend the round trip. */
 .runmore-warn { color: var(--warn); }
+
+/* ---------------------------------------------------------------------
+   MANY RESULTS FOR ONE CHECK
+   ---------------------------------------------------------------------
+
+   A check used to hold one result. It now holds as many as were run — the
+   person-level checks are run once per director — and exactly one of them
+   is the one the score and the report read.
+
+   So the list has two jobs, and the styling here is almost entirely in
+   service of the second: tell them apart, and make it unmistakable WHICH
+   ONE COUNTS. A reader who guesses that from position will guess wrong,
+   because the one that counts is whichever a person chose.
+   --------------------------------------------------------------------- */
+
+.run-item + .run-item {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line-2);
+}
+
+.run-head {
+  display: flex; align-items: center; gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+.run-ord { flex: none; }
+.run-sum { flex: 1 1 auto; min-width: 0; }
+.run-value { font-weight: var(--weight-semi); }
+.run-head .btn { flex: none; text-transform: none; letter-spacing: 0; }
+
+/* THE ONE THAT COUNTS, marked on the result itself. Not a tone — a
+   statement. Amber or green here would be read as something about the
+   finding, and this says nothing about the finding; it says this is the
+   row the number came from. */
+.run-tag {
+  flex: none;
+  font-size: var(--text-xs); font-weight: var(--weight-semi);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--accent-wash); color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* A LEFT RULE on the result that counts, so it is findable in a list of
+   six without reading any of them. */
+.run-item.is-primary {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
+  margin-left: calc(var(--space-3) * -1);
+}
+
+/* DELETE ASKS FIRST, in place. A browser confirm() would say "are you
+   sure" and nothing about the consequence, and the consequence is the
+   part worth knowing: deleting the result that counts promotes the next
+   one rather than leaving the check unscored. */
+.run-confirm {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  flex: 1 1 auto;
+  color: var(--adverse);
+}
+
+/* The count on a CLOSED row, under the check name. A check holding six
+   results, five of them about other directors, must not read as one
+   finding to somebody who never opens it. */
+.acc-runs { color: var(--ink-3); }

@@ -448,12 +448,61 @@ class VendorCheck(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: MANY RESULTS PER CHECK, ONE THAT COUNTS.
+    #:
+    #: A check used to hold exactly one result and a re-run overwrote it.
+    #: That lost the thing the work is actually made of: an analyst runs
+    #: the person checks once per director, and the second run erased the
+    #: first.
+    #:
+    #: So results accumulate, and exactly one per (vendor, check) is
+    #: PRIMARY — the one SCAN, the risk score and the report read. The
+    #: partial unique index below is what guarantees "exactly one": a
+    #: second primary is rejected by the database rather than by whoever
+    #: remembers to check.
+    #:
+    #: The first result for a check becomes primary without being asked.
+    #: Leaving it unset would leave the check unscored while plainly
+    #: having an answer, which is the silent kind of wrong this product
+    #: exists to avoid.
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False,
+        comment=(
+            "The one result of this check that SCAN, the risk score and "
+            "the report read. Exactly one per vendor+check."
+        ),
+    )
+
+    #: What was asked, for THIS result.
+    #:
+    #: Inputs live in `vendor_check_inputs`, one row per
+    #: (vendor, check, key) — so they hold whatever was typed LAST. With
+    #: several results per check that made the evidence lie: four runs
+    #: against four directors, and all four showing the fourth
+    #: director's number under "What was asked".
+    #:
+    #: Snapshotted here at run time. A result and the values it was
+    #: produced from must not be able to drift apart.
+    inputs: Mapped[dict | None] = mapped_column(
+        JsonB, nullable=True,
+        comment=(
+            "The input values THIS result was produced from, snapshotted "
+            "at run time so evidence stays self-describing."
+        ),
+    )
+
     fetched_at: Mapped[datetime] = created_at()
 
     vendor: Mapped[Vendor] = relationship(back_populates="checks")
 
     __table_args__ = (
-        UniqueConstraint("vendor_id", "check_id", name="uq_vendor_check"),
+        # `uq_vendor_check` — one result per vendor per check — was dropped
+        # in migration 0010. What replaces it is narrower: one PRIMARY
+        # result per vendor per check, with any number of others beside it.
+        Index(
+            "uq_vendor_check_primary", "vendor_id", "check_id", unique=True,
+            postgresql_where=text("is_primary"),
+        ),
         CheckConstraint(
             "status IN ('pass','warn','fail','skip','unavailable',"
             "'not_configured','skipped_missing_input')",

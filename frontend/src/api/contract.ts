@@ -110,6 +110,16 @@ export interface VbcApi {
    */
   runChecks(id: string, only?: string[]): Promise<RunChecksResult>
 
+  /** Choose which result of a check the score and the report read.
+   *  MOVES A CLIENT-FACING NUMBER, so the server writes it to the audit
+   *  log with a name and a timestamp. */
+  markPrimary(vendorId: string, runId: number): Promise<Vendor>
+
+  /** Remove one result of a check. Deleting the primary promotes the
+   *  newest remaining rather than leaving the check unscored; what was
+   *  deleted survives in the audit log because the row does not. */
+  deleteRun(vendorId: string, runId: number): Promise<Vendor>
+
   addManualEntry(id: string, entry: Omit<ManualEntry, 'id'>): Promise<Vendor>
   removeManualEntry(id: string, entryId: string): Promise<Vendor>
 

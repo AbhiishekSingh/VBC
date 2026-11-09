@@ -77,17 +77,43 @@ def _audit(session: Session, vendor_id: str | None, actor: str, action: str, det
     session.add(AuditLog(vendor_id=vendor_id, actor=actor, action=action, detail=detail))
 
 
+def _run_out(row: VendorCheck) -> s.CheckResultOut:
+    return s.CheckResultOut(
+        id=row.id, checkId=row.check_id, status=row.status, value=row.value,
+        detail=row.detail, facts=row.facts, rawResponse=row.raw_response,
+        costPaisa=row.cost_paisa, fetchedAt=row.fetched_at,
+        isPrimary=row.is_primary, inputs=row.inputs or {},
+    )
+
+
 def _serialise(session: Session, vendor: Vendor) -> s.VendorOut:
-    checks = {
-        row.check_id: s.CheckResultOut(
-            checkId=row.check_id, status=row.status, value=row.value,
-            detail=row.detail, facts=row.facts, rawResponse=row.raw_response,
-            costPaisa=row.cost_paisa, fetchedAt=row.fetched_at,
-        )
-        for row in session.scalars(
-            select(VendorCheck).where(VendorCheck.vendor_id == vendor.id)
-        )
-    }
+    """The vendor, its PRIMARY result per check, and every run beside it.
+
+    `checks` stays a map keyed by check id holding the result that
+    COUNTS — the one SCAN, the risk score and the report read. Keeping
+    that shape is deliberate: the scoring engine takes exactly this map,
+    and widening it would have meant teaching the score about run
+    history, which is a different concern that would then live in two
+    places.
+
+    `runs` is every result, newest first. The findings screen reads it;
+    nothing that computes a number does.
+    """
+    rows = session.scalars(
+        select(VendorCheck)
+        .where(VendorCheck.vendor_id == vendor.id)
+        .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
+    ).all()
+
+    checks = {r.check_id: _run_out(r) for r in rows if r.is_primary}
+    # A check with results but no primary should be impossible — the
+    # first run takes it, and deleting one promotes another. If it ever
+    # happens, falling back to the newest keeps the vendor readable and
+    # the score computable rather than silently dropping the check; the
+    # repair belongs in whatever let it happen.
+    for row in reversed(rows):
+        checks.setdefault(row.check_id, _run_out(row))
+    runs = [_run_out(r) for r in rows]
 
     ratings = {
         row.param_id: row.value
@@ -144,6 +170,7 @@ def _serialise(session: Session, vendor: Vendor) -> s.VendorOut:
         unlocked=vendor.unlocked,
         submitted=vendor.submitted_at.strftime("%Y-%m-%d %H:%M"),
         selected=list(vendor.selected or []), inputs=inputs, checks=checks,
+        runs=runs,
         scan=scan, manual=manual, surveillance=surveillance,
         surveillanceDone=vendor.surveillance_done,
     )
@@ -447,6 +474,116 @@ def run_checks(vendor_id: str, body: s.RunIn | None = None,
         ambiguousCandidates=result.ambiguous_candidates,
         notes=result.notes,
     )
+
+
+@router.post("/vendors/{vendor_id}/runs/{run_id}/primary",
+             response_model=s.VendorOut)
+def mark_primary(vendor_id: str, run_id: int,
+                 session: Session = Depends(get_session),
+                 actor: User = Depends(current_user)):
+    """Choose which result of a check is the one that counts.
+
+    THIS MOVES THE SCORE. SCAN, the risk score and the report all read
+    the primary result, so marking a different one changes a number a
+    client sees — and on a vendor already scored, it changes it after
+    the fact.
+
+    That is the behaviour that was asked for, and it is the reason this
+    is written to the audit log with a name and a timestamp, the same
+    way a decision override is. "Why did this vendor's GST finding
+    change between Tuesday and Friday" has to have an answer.
+
+    Re-scoring is NOT done here. `vendor_scores` is append-only and a
+    score is a deliberate act; silently appending one because somebody
+    tidied up their evidence would be the same silent movement this
+    refuses to make. The screen says the score is now behind.
+    """
+    vendor = _vendor_or_404(session, vendor_id)
+    row = session.get(VendorCheck, run_id)
+    if row is None or row.vendor_id != vendor.id:
+        raise HTTPException(status_code=404, detail="No such result.")
+    if row.is_primary:
+        return _serialise(session, vendor)
+
+    siblings = session.scalars(
+        select(VendorCheck).where(
+            VendorCheck.vendor_id == vendor.id,
+            VendorCheck.check_id == row.check_id,
+        )
+    ).all()
+    # Cleared BEFORE the new one is set, and flushed between: the unique
+    # index allows one primary per check, so setting first would be
+    # rejected by the database.
+    previous = next((r for r in siblings if r.is_primary), None)
+    for sibling in siblings:
+        sibling.is_primary = False
+    session.flush()
+    row.is_primary = True
+
+    _audit(
+        session, vendor.id, actor.email, "CHECK_PRIMARY_CHANGED",
+        f"{row.check_id}: the result that counts is now the run from "
+        f"{row.fetched_at:%d %b %Y %H:%M} ({row.status} · {row.value})"
+        + (f", was the run from {previous.fetched_at:%d %b %Y %H:%M} "
+           f"({previous.status} · {previous.value})" if previous else "")
+        + ". SCAN, the risk score and the report read this result.",
+    )
+    session.commit()
+    return _serialise(session, vendor)
+
+
+@router.delete("/vendors/{vendor_id}/runs/{run_id}", response_model=s.VendorOut)
+def delete_run(vendor_id: str, run_id: int,
+               session: Session = Depends(get_session),
+               actor: User = Depends(current_user)):
+    """Remove one result of a check.
+
+    Deleting EVIDENCE, so three things hold:
+
+      * the audit log keeps what was deleted — check, status, value,
+        when it was obtained and what it cost — because the row is
+        going and the log is append-only;
+      * deleting the primary PROMOTES the newest of what remains,
+        rather than leaving a check that plainly has results and is
+        silently unscored;
+      * the last result of a check can be deleted, and then the check
+        reads as never run, which is true.
+    """
+    vendor = _vendor_or_404(session, vendor_id)
+    row = session.get(VendorCheck, run_id)
+    if row is None or row.vendor_id != vendor.id:
+        raise HTTPException(status_code=404, detail="No such result.")
+
+    was_primary, check_id = row.is_primary, row.check_id
+    _audit(
+        session, vendor.id, actor.email, "CHECK_RESULT_DELETED",
+        f"{check_id}: deleted the run from {row.fetched_at:%d %b %Y %H:%M} "
+        f"({row.status} · {row.value}), cost "
+        f"₹{(row.cost_paisa or 0) / 100:.2f}"
+        + (" — it was the result that counted." if was_primary else "."),
+    )
+    session.delete(row)
+    session.flush()
+
+    if was_primary:
+        replacement = session.scalar(
+            select(VendorCheck)
+            .where(VendorCheck.vendor_id == vendor.id,
+                   VendorCheck.check_id == check_id)
+            .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
+            .limit(1)
+        )
+        if replacement is not None:
+            replacement.is_primary = True
+            _audit(
+                session, vendor.id, actor.email, "CHECK_PRIMARY_SET",
+                f"{check_id}: the result that counted was deleted, so the "
+                f"run from {replacement.fetched_at:%d %b %Y %H:%M} "
+                f"({replacement.status} · {replacement.value}) is now the "
+                f"one the score reads.",
+            )
+    session.commit()
+    return _serialise(session, vendor)
 
 
 def _write_auto_ratings(session: Session, vendor: Vendor, result) -> None:

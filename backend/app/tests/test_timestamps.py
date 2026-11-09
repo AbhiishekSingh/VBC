@@ -73,29 +73,51 @@ def test_two_findings_get_distinct_timestamps():
     assert second.fetched_at > first.fetched_at
 
 
-def test_rerunning_a_check_moves_its_timestamp(session, seeded):
-    """The regression test for the original defect.
+def test_rerunning_a_check_adds_a_result_and_keeps_the_first(session, seeded):
+    """The original defect was a row reading FAIL under the time of a
+    PASS, because `fetched_at` had no onupdate.
 
-    Before the fix this asserted equal timestamps across two runs whose
-    results differed — a row reading FAIL under the time of a PASS.
+    Since 9 Nov 2026 a re-run does not touch the earlier row at all — it
+    adds one. So the assertion is stronger than "the timestamp moved":
+    the first result keeps its own value AND its own date, which is what
+    makes it evidence of when that response was obtained, and the second
+    is a separate result with its own.
     """
     vendor = _vendor(session, "TS0001")
     runner = CheckRunner(session)
 
     runner._persist(vendor, _Result([Finding("whois", CheckStatus.PASS, "first run", "")]))
     session.commit()
-    row = session.scalar(select(VendorCheck).where(VendorCheck.vendor_id == "TS0001"))
-    first_at, first_attempts = row.fetched_at, row.attempts
+    first = session.scalar(select(VendorCheck).where(VendorCheck.vendor_id == "TS0001"))
+    first_at, first_id = first.fetched_at, first.id
+    assert first.is_primary is True, "the first result must be the one that counts"
 
     time.sleep(0.05)
     runner._persist(vendor, _Result([Finding("whois", CheckStatus.FAIL, "second run", "")]))
     session.commit()
     session.expire_all()
 
-    row = session.scalar(select(VendorCheck).where(VendorCheck.vendor_id == "TS0001"))
-    assert row.value == "second run"
-    assert row.fetched_at > first_at, "a re-run must not keep the first run's timestamp"
-    assert row.attempts == first_attempts + 1, "every write is an attempt"
+    rows = session.scalars(
+        select(VendorCheck)
+        .where(VendorCheck.vendor_id == "TS0001")
+        .order_by(VendorCheck.fetched_at)
+    ).all()
+    assert len(rows) == 2, "a re-run adds a result, it does not replace one"
+
+    kept, added = rows
+    assert kept.id == first_id
+    assert kept.value == "first run"
+    assert kept.fetched_at == first_at, "the earlier result keeps its own date"
+
+    assert added.value == "second run"
+    assert added.fetched_at > first_at
+    assert added.attempts == 2, "every run is an attempt"
+
+    # AND THE SCORE DOES NOT MOVE ON ITS OWN. Promoting the newest would
+    # change a number without anybody choosing to, which is the whole
+    # thing this platform argues against.
+    assert added.is_primary is False
+    assert kept.is_primary is True
 
 
 def test_every_outcome_is_persisted_including_the_non_outcomes(session, seeded):
