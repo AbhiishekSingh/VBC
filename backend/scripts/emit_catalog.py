@@ -67,6 +67,17 @@ HEADER = """/* eslint-disable */
 """
 
 
+def _camel(name: str | None) -> str | None:
+    """`contact_mobile` -> `contactMobile`. The backend reads these off a
+    SQLAlchemy model whose attributes are snake_case; the browser reads
+    them off a TypeScript object whose fields are camelCase. One
+    definition, converted at the boundary that needs it."""
+    if not name:
+        return name
+    head, *rest = name.split("_")
+    return head + "".join(w.capitalize() for w in rest)
+
+
 def emit(name: str, value: object, type_annotation: str = "") -> str:
     payload = json.dumps(value, indent=2, ensure_ascii=False)
     suffix = f": {type_annotation}" if type_annotation else ""
@@ -187,7 +198,18 @@ def build() -> str:
                             "key": p.key,
                             "label": p.label,
                             "required": p.required,
-                            "fromVendor": p.from_vendor,
+                            # CAMEL CASE, because the browser indexes the Vendor object with
+                            # it and the TypeScript type is camelCase.
+                            #
+                            # Emitted raw, `contact_mobile` and `legal_name`
+                            # resolved to `undefined` — so every person check
+                            # read "Needs Contact mobile" and the litigation
+                            # check read "Needs Legal name to search" however
+                            # full the vendor record was. Silent, because an
+                            # undefined lookup is a blank, and a blank is
+                            # indistinguishable from "the analyst left it
+                            # empty".
+                            "fromVendor": _camel(p.from_vendor),
                             "fromResult": p.from_result,
                             "type": p.type,
                             "options": list(p.options),

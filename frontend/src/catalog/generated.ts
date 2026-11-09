@@ -666,10 +666,10 @@ export const SURVEILLANCE_THRESHOLD_PCT = 60.0 as const;
 
 export const CHECK_GROUPS = [
   {
-    "id": "mca",
-    "name": "Company Registry — MCA",
-    "source": "FileSure",
-    "mark": "M",
+    "id": "person",
+    "name": "Contact Person — personal records",
+    "source": "Gridlines · consent required",
+    "mark": "P",
     "configured": true
   },
   {
@@ -687,6 +687,27 @@ export const CHECK_GROUPS = [
     "configured": true
   },
   {
+    "id": "mca",
+    "name": "Company Registry — MCA",
+    "source": "FileSure",
+    "mark": "M",
+    "configured": true
+  },
+  {
+    "id": "tax",
+    "name": "Identity & Tax",
+    "source": "FinAGG GSP · GST",
+    "mark": "G",
+    "configured": true
+  },
+  {
+    "id": "rep",
+    "name": "Litigation & Reputation",
+    "source": "eCourtsIndia · LegalCheck",
+    "mark": "L",
+    "configured": true
+  },
+  {
     "id": "internal",
     "name": "Internal Checks",
     "source": "our database · free",
@@ -701,32 +722,11 @@ export const CHECK_GROUPS = [
     "configured": true
   },
   {
-    "id": "tax",
-    "name": "Identity & Tax",
-    "source": "FinAGG GSP · GST",
-    "mark": "G",
-    "configured": true
-  },
-  {
     "id": "sanctions",
     "name": "Sanctions & Watchlists",
     "source": "not configured",
     "mark": "—",
     "configured": false
-  },
-  {
-    "id": "rep",
-    "name": "Litigation & Reputation",
-    "source": "eCourtsIndia · LegalCheck",
-    "mark": "L",
-    "configured": true
-  },
-  {
-    "id": "person",
-    "name": "Contact Person — personal records",
-    "source": "Gridlines · consent required",
-    "mark": "P",
-    "configured": true
   }
 ] as const;
 
@@ -1939,7 +1939,7 @@ export const CHECKS = [
         "key": "parties",
         "label": "Party name",
         "required": true,
-        "fromVendor": "legal_name",
+        "fromVendor": "legalName",
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2086,7 +2086,7 @@ export const CHECKS = [
         "key": "litigant",
         "label": "Party name",
         "required": true,
-        "fromVendor": "legal_name",
+        "fromVendor": "legalName",
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2490,7 +2490,7 @@ export const CHECKS = [
         "key": "subjectName",
         "label": "Legal name to search",
         "required": true,
-        "fromVendor": "legal_name",
+        "fromVendor": "legalName",
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2573,7 +2573,7 @@ export const CHECKS = [
         "key": "mobile",
         "label": "Contact mobile",
         "required": true,
-        "fromVendor": "contact_mobile",
+        "fromVendor": "contactMobile",
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2637,7 +2637,7 @@ export const CHECKS = [
         "key": "mobile",
         "label": "Contact mobile",
         "required": true,
-        "fromVendor": "contact_mobile",
+        "fromVendor": "contactMobile",
         "fromResult": null,
         "type": "text",
         "options": [],
@@ -2690,7 +2690,7 @@ export const CHECKS = [
         "key": "mobile",
         "label": "Contact mobile",
         "required": true,
-        "fromVendor": "contact_mobile",
+        "fromVendor": "contactMobile",
         "fromResult": null,
         "type": "text",
         "options": [],

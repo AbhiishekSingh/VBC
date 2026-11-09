@@ -49,16 +49,25 @@ class CheckGroup:
     PERSON = "person"
 
 
+#: ORDER IS THE SCREEN ORDER, everywhere: Step 2, the findings page and
+#: the "run more checks" dialog all read this tuple top to bottom.
+#:
+#: Re-ordered 9 Nov 2026 on the product owner's instruction — person
+#: records first, then the website checks, then MCA, then the rest. It
+#: follows the order the work is actually done in: a director list comes
+#: out of MCA, their numbers come out of the person checks, and those
+#: numbers then drive more person checks. The group an analyst returns
+#: to most often should not be at the bottom of a list of nine.
 CHECK_GROUPS: tuple[dict, ...] = (
-    {"id": CheckGroup.MCA, "name": "Company Registry — MCA", "source": "FileSure", "mark": "M", "configured": True},
+    {"id": CheckGroup.PERSON, "name": "Contact Person — personal records", "source": "Gridlines · consent required", "mark": "P", "configured": True},
     {"id": CheckGroup.DOMAIN, "name": "Website & Domain Ownership", "source": "WhoisXML", "mark": "D", "configured": True},
     {"id": CheckGroup.WEB, "name": "Web Presence History", "source": "archive.org · free", "mark": "W", "configured": True},
+    {"id": CheckGroup.MCA, "name": "Company Registry — MCA", "source": "FileSure", "mark": "M", "configured": True},
+    {"id": CheckGroup.TAX, "name": "Identity & Tax", "source": "FinAGG GSP · GST", "mark": "G", "configured": True},
+    {"id": CheckGroup.REP, "name": "Litigation & Reputation", "source": "eCourtsIndia · LegalCheck", "mark": "L", "configured": True},
     {"id": CheckGroup.INTERNAL, "name": "Internal Checks", "source": "our database · free", "mark": "I", "configured": True},
     {"id": CheckGroup.ADMIN, "name": "Account & Data Freshness", "source": "FileSure · admin", "mark": "A", "configured": True},
-    {"id": CheckGroup.TAX, "name": "Identity & Tax", "source": "FinAGG GSP · GST", "mark": "G", "configured": True},
     {"id": CheckGroup.SANCTIONS, "name": "Sanctions & Watchlists", "source": "not configured", "mark": "—", "configured": False},
-    {"id": CheckGroup.REP, "name": "Litigation & Reputation", "source": "eCourtsIndia · LegalCheck", "mark": "L", "configured": True},
-    {"id": CheckGroup.PERSON, "name": "Contact Person — personal records", "source": "Gridlines · consent required", "mark": "P", "configured": True},
 )
 
 
