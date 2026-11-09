@@ -418,19 +418,26 @@ class VendorCheck(Base):
     #: The renderable projection of ``raw_response`` — see
     #: ``app.domain.facts``. DERIVED and disposable: it can be dropped and
     #: rebuilt from the payload above at any time, which is what makes
-    #: fixing a parse defect free. It carries no PAN, no unmasked contact
-    #: detail and no base64 blob, so it is the column a client-facing screen
-    #: reads while ``raw_response`` stays behind narrower grants.
+    #: fixing a parse defect free.
+    #:
+    #: It CARRIES PERSONAL DATA, in full, since 9 Nov 2026. It used to be
+    #: described here as safe for a client-facing screen because the parsers
+    #: masked identifiers; they no longer do, because no client-facing
+    #: screen reads this column — Findings.tsx renders it, beside the
+    #: payload itself. Treat it as personal data under the same retention
+    #: decision as ``raw_response``, not as a safe projection of it.
     #
-    # The ``comment=`` strings must stay byte-identical to migration 0003's,
-    # or ``alembic revision --autogenerate`` emits a spurious modify_comment
+    # The ``comment=`` strings must stay byte-identical to the migration
+    # that last set them (0005 for facts, now 0011), or
+    # ``alembic revision --autogenerate`` emits a spurious modify_comment
     # migration on the next run.
     facts: Mapped[dict | None] = mapped_column(
         JsonB, nullable=True,
         comment=(
             "Renderable projection of raw_response. Derived, disposable, "
             "rebuildable by re-running the parser over the payload. Carries "
-            "no PAN, no unmasked contact detail and no document body."
+            "personal data in full, including PAN and contact details: it is "
+            "read by the internal evidence screen, never by a client."
         ),
     )
     #: Which parser produced ``facts``. Lets a re-parse be told apart from
@@ -510,6 +517,16 @@ class VendorCheck(Base):
         ),
         CheckConstraint("cost_paisa >= 0", name="cost_non_negative"),
         Index("ix_vendor_checks_vendor", "vendor_id"),
+        # Every result of ONE check for ONE vendor, newest first — the
+        # read the findings screen now makes for each row it draws, since
+        # a check holds several. Declared here as well as in migration
+        # 0010 because an index the database has and the model does not
+        # is one `alembic revision --autogenerate` away from being
+        # dropped by a changeset about something else entirely.
+        Index(
+            "ix_vendor_checks_vendor_check",
+            "vendor_id", "check_id", "fetched_at",
+        ),
         # Finds every row whose facts need rebuilding after a parser fix.
         # Partial: rows with no facts at all are the "never parsed" case,
         # answered by `facts IS NULL`, and should not pay for this index.
