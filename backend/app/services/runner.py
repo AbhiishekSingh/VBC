@@ -2619,94 +2619,117 @@ class CheckRunner:
         return not (set(new) - {"request", "checkId", "_note"})
 
     def _persist(self, vendor: Vendor, result: RunResult) -> None:
-        """Write every outcome, including the non-outcomes."""
+        """Write every outcome, including the non-outcomes.
+
+        RESULTS ACCUMULATE. A check used to hold exactly one, and a
+        re-run overwrote it — which lost the thing the work is made of:
+        the person checks are run once per director, and the second run
+        erased the first.
+
+        Each run is now its own row. Exactly one per (vendor, check) is
+        PRIMARY, and that is the one SCAN, the risk score and the report
+        read.
+
+        A NEW RUN DOES NOT STEAL PRIMARY. Only the first result for a
+        check takes it automatically; after that an analyst marks the
+        one that counts. Promoting the newest would move the score
+        silently every time somebody tried a different input, and the
+        whole argument of this platform is that a number must not move
+        without somebody choosing it.
+
+        The cost of that choice is a result that is newer than the
+        primary and not counted, so `/vendors/{id}` reports exactly that
+        and the findings screen says it out loud. Loud is the point.
+
+        THE EVIDENCE-PRESERVATION BRANCH IS GONE, and nothing is lost
+        with it. It existed because a failed re-run would overwrite a
+        real payload with nothing — observed live, a `casedetail` re-run
+        that hit INSUFFICIENT_CREDITS blanking the response behind an
+        already computed score. Appending makes that impossible rather
+        than merely guarded against: the earlier row still holds its own
+        payload because nothing writes to it. A failed run is recorded
+        as what it is, a failed run, in a row of its own.
+        """
+        inputs = self._inputs(vendor)
         for finding in result.findings:
-            existing = self.session.scalar(
-                select(VendorCheck).where(
+            had_primary = self.session.scalar(
+                select(VendorCheck.id).where(
+                    VendorCheck.vendor_id == vendor.id,
+                    VendorCheck.check_id == finding.check_id,
+                    VendorCheck.is_primary.is_(True),
+                )
+            )
+            previous = len(self.session.scalars(
+                select(VendorCheck.id).where(
                     VendorCheck.vendor_id == vendor.id,
                     VendorCheck.check_id == finding.check_id,
                 )
+            ).all())
+
+            row = VendorCheck(
+                vendor_id=vendor.id,
+                check_id=finding.check_id,
+                status=finding.status.value,
+                value=finding.value,
+                detail=finding.detail,
+                raw_response=finding.raw,
+                facts=finding.facts,
+                parser_version=(finding.facts or {}).get("parserVersion"),
+                cost_paisa=finding.cost_paisa,
+                credits=finding.credits,
+                error=finding.error,
+                fetched_at=finding.fetched_at,
+                # How many times this check has been run for this vendor,
+                # counting this one. Previously stuck at 1 forever, which
+                # hid how often a flaky source had been retried.
+                attempts=previous + 1,
+                is_primary=had_primary is None,
+                # WHAT WAS ASKED, FOR THIS RESULT. `vendor_check_inputs`
+                # holds one value per key, so it reflects whatever was
+                # typed LAST — four runs against four directors would all
+                # show the fourth director's number. Snapshotted here so a
+                # result and the values it came from cannot drift apart.
+                inputs=self._inputs_for(finding.check_id, inputs, vendor),
             )
-            row = existing or VendorCheck(vendor_id=vendor.id, check_id=finding.check_id)
-
-            # Read BEFORE the write below. `row` IS `existing` when the row
-            # already exists — the same object, not a copy — so assigning
-            # `row.fetched_at` also moves `existing.fetched_at`, and the
-            # preservation branch would then report today's date as the date
-            # of yesterday's evidence.
-            previously_fetched = existing.fetched_at if existing else None
-            preserve = self._would_erase_evidence(existing, finding)
-
-            # fetched_at has server_default=now() but no onupdate, so a
-            # re-run kept the FIRST run's timestamp. Written explicitly.
-            #
-            # It records when the ROW was last run, not when its payload was
-            # obtained — those diverge only when evidence is preserved, and
-            # the flag written below carries the payload's own date.
-            row.fetched_at = finding.fetched_at
-            # Every write is an attempt. Previously stuck at 1 forever, which
-            # hid how many times a flaky source had been re-run.
-            row.attempts = (existing.attempts + 1) if existing else 1
-
-            row.status = finding.status.value
-            row.value = finding.value
-            row.detail = finding.detail
-
-            # --- the evidence -------------------------------------------
-            #
-            # `vendor_checks` is NOT one of the append-only tables — the
-            # immutability triggers cover audit_log, vendor_scores,
-            # catalog_versions and decisions, and the app role holds UPDATE
-            # here deliberately. So this assignment really does destroy what
-            # was in the column.
-            #
-            # That was fine while every re-run produced a payload. It is not
-            # fine when a re-run FAILS: a ProviderError finding carries
-            # `raw=None`, and writing it replaced a real MCA response with
-            # nothing. Observed live — a `casedetail` re-run that hit
-            # INSUFFICIENT_CREDITS blanked the payload behind an already
-            # computed score.
-            #
-            # `vendor_scores` IS immutable and its docstring claims the
-            # version columns "pin the evidence". They pin the catalog and
-            # the policy; nothing pinned the payload. An unchangeable score
-            # over erasable evidence is worse than either alone, because it
-            # looks defensible and is not.
-            #
-            # So: a failed run may take the status. It may not take the
-            # evidence.
-            if preserve:
-                stale_since = previously_fetched
-                logger.warning(
-                    "%s/%s: %s returned no payload — keeping the one from %s "
-                    "rather than erasing it",
-                    vendor.id, finding.check_id, finding.status.value, stale_since,
-                )
-                # Both columns stay as they were. Facts are a projection of
-                # that payload, so replacing them with this run's (empty)
-                # facts would leave a panel that no longer matches the
-                # evidence beneath it.
-                row.facts = factsets.mark_superseded(existing.facts, stale_since)
-                self._audit(
-                    vendor.id, "EVIDENCE_PRESERVED",
-                    f"{finding.check_id}: re-run returned no payload "
-                    f"({finding.status.value}); kept the response stored "
-                    f"{stale_since:%d %b %Y %H:%M}.",
-                )
-            else:
-                # The real payload — this is what makes a historical score
-                # defensible. Never a template in production.
-                row.raw_response = finding.raw
-                # Derived, and deliberately replaced whenever the payload
-                # is: facts are a projection of it, so the newest parser
-                # always wins.
-                row.facts = finding.facts
-            row.parser_version = (row.facts or {}).get("parserVersion")
-            row.cost_paisa = finding.cost_paisa
-            row.credits = finding.credits
-            row.error = finding.error
             self.session.add(row)
+
+            if had_primary is None and previous:
+                # Every result for this check was deleted and a new one
+                # arrived. Worth a line: a check silently becoming
+                # countable again is the kind of thing somebody asks
+                # about three months later.
+                self._audit(
+                    vendor.id, "CHECK_PRIMARY_SET",
+                    f"{finding.check_id}: no result was marked as counting, "
+                    f"so this run became the one the score reads.",
+                )
         self.session.flush()
+
+    def _inputs_for(self, check_id: str, inputs: dict, vendor: Vendor) -> dict:
+        """The values this check actually ran with.
+
+        Includes the vendor-record fallbacks, because a blank box whose
+        value came off the vendor is still what was sent — and "What was
+        asked" showing nothing for a call that plainly had an argument is
+        how an analyst stops trusting the panel.
+        """
+        definition = CHECKS_BY_ID.get(check_id)
+        if definition is None:
+            return {}
+        stored = inputs.get(check_id, {})
+        out: dict[str, str] = {}
+        for param in definition.params:
+            # Same order of precedence as `_missing_inputs` and the
+            # dispatch getter: what was typed, then the vendor record.
+            # Three copies of this rule would be two too many, but the
+            # other two read it to decide whether a call can be made and
+            # this one to record what it was made WITH.
+            value = stored.get(param.key, "")
+            if not str(value).strip() and param.from_vendor:
+                value = getattr(vendor, param.from_vendor, "") or ""
+            if str(value).strip():
+                out[param.key] = str(value).strip()
+        return out
 
     def _audit(self, vendor_id: str, action: str, detail: str, actor: str = "system") -> None:
         self.session.add(

@@ -16,6 +16,7 @@ import { api } from '@/api'
 import { CHECKS, CHECK_GROUPS } from '@/catalog/generated'
 import { inputGaps, inputValue } from '@/api/mock'
 import Facts from '@/components/Facts'
+import ParamField from '@/components/ParamField'
 import {
   Card,
   EmptyState,
@@ -29,7 +30,7 @@ import { useToast } from '@/hooks/useToast'
 import { subjectCount, subjectsOnFile } from '@/lib/pricing'
 import { publicDetail } from '@/lib/publicText'
 import type { PageProps } from '@/App'
-import type { CheckStatus, Vendor } from '@/types/domain'
+import type { CheckResult, CheckStatus, Vendor } from '@/types/domain'
 
 /** A check plus everything it transitively needs. */
 function withPrerequisites(checkId: string, acc: string[] = []): string[] {
@@ -90,6 +91,56 @@ function inputsFor(checkId: string, vendor: Vendor, seen = new Set<string>()): I
   return [...own, ...inherited]
 }
 
+/**
+ * What was asked FOR ONE RESULT.
+ *
+ * `inputsFor` reads the vendor record, which holds one value per key — so
+ * it shows whatever was typed LAST. Four runs of the same check against
+ * four directors would all claim the fourth director's number, which is
+ * the single most misleading thing this screen could do: every row would
+ * name the same person and three of the four answers would be about
+ * somebody else.
+ *
+ * So a result's own snapshot wins where it has one. A row written before
+ * the snapshot existed falls back to the vendor record, which is the best
+ * available answer and no worse than what was shown before.
+ *
+ * Inherited rows still come from the record: a prerequisite's inputs
+ * belong to the prerequisite's own result, and that result is on this
+ * screen too.
+ */
+function askedFor(
+  checkId: string,
+  vendor: Vendor,
+  run: { inputs?: Record<string, string> },
+): InputRow[] {
+  const inherited = inputsFor(checkId, vendor).filter((row) => row.from)
+  const def = CHECKS.find((c) => c.id === checkId)
+  if (!def) return inherited
+
+  const snap = run.inputs
+  const own = def.params.map((param) => ({
+    label: param.label,
+    value: snap
+      ? (snap[param.key] ?? '')
+      : inputValue(vendor, checkId, param.key),
+    required: param.required,
+  }))
+  return [...own, ...inherited]
+}
+
+/** The value that distinguishes one run of a check from another. */
+function runSubject(checkId: string, run: { inputs?: Record<string, string> }): string {
+  const def = CHECKS.find((c) => c.id === checkId)
+  if (!def || !run.inputs) return ''
+  for (const param of def.params) {
+    const value = run.inputs[param.key]
+    // A select with one sane default ("cin") distinguishes nothing.
+    if (value && param.type !== 'select') return value
+  }
+  return ''
+}
+
 /* =====================================================================
    RUN MORE CHECKS
    =====================================================================
@@ -133,23 +184,24 @@ interface Candidate {
   id: string
   name: string
   group: string
-  /** Null when it can be run. Otherwise why not, in words.
-   *  A source refusing us is NOT one of these — see `warning`. */
-  blockedBy: string | null
+  /** Required inputs still blank, in words — "Mobile number and UAN". */
+  needs: string | null
   /** The source's own sentence, when it is currently refusing us.
    *  Shown on the row and nothing more: the check still runs. */
   warning: string | null
-  /** The field to go and fill, when that is what is missing. */
-  needsField: string | null
   costPaisa: number
   credits: number
   people: number
   /** Prerequisites not yet on file — run and charged with it. */
   alsoRuns: string[]
-  /** This check already has a result. Re-running REPLACES it. */
+  /** This check already has at least one result on file. */
   answered: boolean
-  /** People on file from the last run, for a person check. */
+  /** How many results are on file, across every run of it. */
+  onFileRuns: number
+  /** People on file from the runs so far, for a person check. */
   onFile: number
+  /** The fields this check asks for, rendered inline. */
+  params: (typeof CHECKS)[number]['params']
 }
 
 function RunMoreDialog({
@@ -163,9 +215,10 @@ function RunMoreDialog({
   open: boolean
   onClose: () => void
 }) {
-  const navigate = useNavigate()
   const toast = useToast()
   const [picked, setPicked] = useState<string[]>([])
+  const [opened, setOpened] = useState<string[]>([])
+  const [query, setQuery] = useState('')
   const [running, setRunning] = useState(false)
 
   /*
@@ -209,125 +262,71 @@ function RunMoreDialog({
   const answered = useMemo(
     () =>
       new Set(
-        Object.values(vendor.checks)
+        (vendor.runs ?? Object.values(vendor.checks))
           .filter((r) => ANSWERED.includes(r.status))
           .map((r) => r.checkId),
       ),
-    [vendor.checks],
+    [vendor.runs, vendor.checks],
   )
 
   /*
-    Everything the analyst could add, with the reason it cannot be added
-    where there is one.
+    EVERY CHECK, WITH ITS OWN INPUT BOXES. NOTHING WITHHELD.
 
-    `not_configured` checks are left out entirely, which is Step 2's
-    stance and for Step 2's reason: a dead row between the analyst and a
-    check that works is a cost on every visit. Coverage is accounted for
-    in the client-facing report, which is what has to stand on its own.
+    What this list used to do, and why none of it survived:
+
+      - it hid checks that had already answered, then listed them at the
+        bottom as names only. That broke the way the product is actually
+        used. MCA gives you the director list; the person checks give you
+        each director's number; those numbers drive employment history and
+        digital footprint for the WHOLE BOARD. Every step after the first
+        is a re-run of a check that has already answered with a different
+        number in the field, and a hidden row made the loop impossible.
+
+      - it put a check with a blank required input in a "Cannot run yet"
+        bucket, unselectable, with a button back to Step 2. The dialog
+        exists so that nobody has to go back to Step 2. A row that can
+        only tell you to leave is worse than no row.
+
+    So every check Step 2 offers is offered here, in Step 2's group order,
+    each carrying the same input fields Step 2 carries — the same
+    component, so the fallback rule, the multi-value splitter and the
+    format warnings cannot drift between the two screens. Fill the field
+    on the row, tick it, run it.
+
+    `not_configured` checks are still left out, which is Step 2's stance
+    and for Step 2's reason: a dead row between the analyst and a check
+    that works is a cost on every visit. Coverage is accounted for in the
+    client-facing report, which is what has to stand on its own.
   */
   const candidates = useMemo<Candidate[]>(() => {
     const assumed = Array.from(new Set([...vendor.selected, ...picked]))
+    const runs = vendor.runs ?? Object.values(vendor.checks)
 
-    /**
-     * Why this one check cannot run, ignoring what it depends on.
-     *
-     * `what` is the bare thing that is wrong — "CNR", or the source's own
-     * sentence — kept apart from the finished phrasing so it can be
-     * composed into a second one further down without being re-worded.
-     * Lower-casing a finished sentence turned "CNR" into "cnr", which
-     * reads as a field name we failed to translate.
-     */
-    const ownBlocker = (
-      id: string,
-    ): { why: string; what: string; field: string | null } | null => {
-      // A SOURCE REFUSING US IS NO LONGER A REASON NOT TO RUN.
-      //
-      // It used to be: a blocked check sat in "Cannot run yet" and
-      // could not be ticked. That is a prediction from what the source
-      // said to somebody else, and on 7 Nov 2026 it cost four working
-      // Gridlines checks over a refusal on a fifth. The analyst is
-      // still told — `warning` below carries the source's own sentence
-      // onto the row — but it does not stop them.
-      //
-      // A MISSING INPUT still stops a check, and the difference is
-      // real: with no input there is no request to make, so the call
-      // genuinely cannot happen. That is a fact about us, not a guess
-      // about them.
-      const gaps = inputGaps(vendor, id, assumed)
-      if (!gaps.length) return null
-      const what = gaps.map((g) => g.paramLabel).join(' and ')
-      return { why: `Needs ${what}`, what, field: gaps[0].paramKey }
-    }
-
-    /*
-      ALREADY-RUN CHECKS ARE OFFERED, NOT HIDDEN.
-
-      They were excluded here, and listed at the bottom as names only.
-      That broke the way this product is actually used:
-
-          MCA gives you the director list
-          -> the person checks give you each director's number
-          -> those numbers drive employment history and digital
-             footprint for the WHOLE BOARD
-
-      Every step after the first is a re-run of a check that has already
-      answered, with different numbers in the field. Hiding those rows
-      made the loop impossible without going back to Step 2 and running
-      everything again.
-
-      Re-running costs money and REPLACES the previous result — one row
-      per vendor per check — so the row says both, and nothing is
-      pre-ticked.
-    */
-    return CHECKS.filter(
-      (c) => c.state !== 'not_configured' && !c.always,
-    ).map((c) => {
+    return CHECKS.filter((c) => c.state !== 'not_configured' && !c.always).map((c) => {
       const alsoRuns = withPrerequisites(c.id).filter(
         (id) => id !== c.id && !answered.has(id),
       )
-      const own = ownBlocker(c.id)
-
-      /*
-        A CHECK IS ONLY AS RUNNABLE AS WHAT IT DEPENDS ON.
-
-        Employment history chains off EPFO membership, which needs a
-        contact number. Judged on its own the first looks ready, so it
-        was offered as tickable while the thing it reads from sat in
-        "cannot run yet" three rows below — a ticked box that could only
-        produce a skipped check and a confused analyst.
-
-        A prerequisite ALREADY ON FILE is not consulted: the server drops
-        it rather than re-running it, so whatever is blocking it now is
-        irrelevant to this run.
-      */
-      const upstream = alsoRuns.map((id) => ({ id, blocker: ownBlocker(id) }))
-        .find((u) => u.blocker)
+      const gaps = inputGaps(vendor, c.id, assumed)
 
       return {
         id: c.id,
         name: c.name,
         group: c.group,
-        blockedBy: own
-          ? own.why
-          : upstream
-            ? `Needs ${upstream.blocker!.what}, for ${nameOf(upstream.id)}`
-            : null,
-        needsField: own ? own.field : (upstream?.blocker?.field ?? null),
+        needs: gaps.length ? gaps.map((g) => g.paramLabel).join(' and ') : null,
         warning: blocked.get(c.id) ?? null,
         answered: answered.has(c.id),
+        onFileRuns: runs.filter((r) => r.checkId === c.id).length,
         onFile: subjectsOnFile(vendor, c.id),
         costPaisa: (c.costPaisa || 0) * subjectCount(vendor, c.id),
         credits: c.credits || 0,
         people: subjectCount(vendor, c.id),
         alsoRuns,
+        params: c.params,
       }
     })
   }, [vendor, answered, blocked, picked])
 
-  const byId = useMemo(
-    () => new Map(candidates.map((c) => [c.id, c])),
-    [candidates],
-  )
+  const byId = useMemo(() => new Map(candidates.map((c) => [c.id, c])), [candidates])
 
   /*
     THE PRICE OF WHAT IS TICKED, INCLUDING WHAT IT DRAGS IN.
@@ -355,8 +354,30 @@ function RunMoreDialog({
     return { ids: Array.from(ids), paisa, credits }
   }, [picked, byId, vendor])
 
+  /*
+    TICKED, AND STILL MISSING SOMETHING IT CANNOT RUN WITHOUT.
+
+    With no input there is no request to make, so the server skips the
+    check and logs it. That is honest behaviour but a pointless click, and
+    the box to fix it is on the row — so the run waits until it is filled
+    and the footer says which ones.
+
+    Only what is TICKED counts. A blank field three groups down is not a
+    reason to stop a run of something else, which is exactly what the old
+    "Cannot run yet" bucket amounted to.
+  */
+  const blockedTicks = quote.ids
+    .map((id) => byId.get(id))
+    .filter((c): c is Candidate => Boolean(c?.needs))
+
   const toggle = (id: string) =>
-    setPicked((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]))
+    setPicked((prev) => {
+      const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
+      // Ticking opens the fields. The commonest reason to tick a check is
+      // to run it against a value you are about to type.
+      if (!prev.includes(id)) setOpened((o) => (o.includes(id) ? o : [...o, id]))
+      return next
+    })
 
   /**
    * Add to the selection, then run ONLY the delta.
@@ -368,9 +389,14 @@ function RunMoreDialog({
    * be selected. Running without selecting first would silently do
    * nothing, which is the worst available outcome for a button that is
    * about to spend money.
+   *
+   * The INPUTS need no call of their own: every field writes itself as it
+   * is typed, through the same endpoint Step 2 uses. A "save then run"
+   * button would be a second way for the value on the screen and the
+   * value in the request to disagree.
    */
   const confirm = async () => {
-    if (!quote.ids.length) return
+    if (!quote.ids.length || blockedTicks.length) return
     setRunning(true)
     try {
       const next = Array.from(new Set([...vendor.selected, ...quote.ids]))
@@ -394,46 +420,61 @@ function RunMoreDialog({
     }
   }
 
-  // NOT YET RUN FIRST, within each group. A re-run is the deliberate
-  // case and costs money twice; something never asked is the ordinary
-  // one. Order is otherwise the catalog's, which is the screen order
-  // everywhere else.
-  const runnable = candidates
-    .filter((c) => !c.blockedBy)
-    .sort((a, b) => Number(a.answered) - Number(b.answered))
-  const held = candidates.filter((c) => c.blockedBy)
-  const done = candidates.filter((c) => c.answered)
+  /*
+    A SEARCH BOX, because this list is now the whole catalogue.
+
+    Forty-odd rows was a reason to hide things, and hiding things is what
+    broke it. A filter narrows the list without deciding anything on the
+    analyst's behalf, and a ticked row is never filtered away — losing
+    sight of something you have agreed to pay for is not a trade worth
+    making for a shorter list.
+  */
+  const term = query.trim().toLowerCase()
+  const matches = (c: Candidate) =>
+    !term ||
+    picked.includes(c.id) ||
+    c.name.toLowerCase().includes(term) ||
+    c.id.toLowerCase().includes(term) ||
+    (CHECK_GROUPS.find((g) => g.id === c.group)?.name ?? '').toLowerCase().includes(term)
+
+  const shown = candidates.filter(matches)
+  const rerunCount = candidates.filter((c) => c.answered).length
 
   return (
     <Modal
       open={open}
       onClose={running ? () => undefined : onClose}
       wide
-      title="Run more checks"
+      title="Run checks"
       sub={
-        `Only what you tick is called. ` +
-        (done.length
-          ? `${done.length} already answered and can be run again with ` +
-            `different inputs — those are charged again and replace what ` +
-            `is on file.`
-          : `Nothing on file is called or charged again.`)
+        'Every check, with its inputs — nothing here needs a trip back to ' +
+        'Step 2. Only what you tick is called, and a result already on file ' +
+        'is kept: a re-run is added beside it, not over it.'
       }
       footer={
         <>
           <span className="small muted nums">
-            {picked.length === 0
-              ? 'Nothing selected'
-              : `${picked.length} check${picked.length === 1 ? '' : 's'}` +
-                (quote.ids.length > picked.length
-                  ? ` + ${quote.ids.length - picked.length} prerequisite`
-                  : '') +
-                ` · ${rupees(quote.paisa)}` +
-                (quote.credits ? ` · ${quote.credits} credits` : '')}
+            {blockedTicks.length > 0 ? (
+              <span className="runmore-why">
+                {blockedTicks.length === 1
+                  ? `${blockedTicks[0].name} needs ${blockedTicks[0].needs}`
+                  : `${blockedTicks.length} ticked checks still need an input`}
+              </span>
+            ) : picked.length === 0 ? (
+              'Nothing ticked'
+            ) : (
+              `${picked.length} check${picked.length === 1 ? '' : 's'}` +
+              (quote.ids.length > picked.length
+                ? ` + ${quote.ids.length - picked.length} prerequisite`
+                : '') +
+              ` · ${rupees(quote.paisa)}` +
+              (quote.credits ? ` · ${quote.credits} credits` : '')
+            )}
           </span>
           <button
             type="button"
             className="btn primary"
-            disabled={running || picked.length === 0}
+            disabled={running || picked.length === 0 || blockedTicks.length > 0}
             onClick={confirm}
           >
             {running && <span className="spinner" aria-hidden="true" />}
@@ -445,119 +486,156 @@ function RunMoreDialog({
       }
     >
       <div className="stack">
-        {runnable.length === 0 && held.length === 0 && (
-          <p className="small muted">
-            Every check with a source behind it has already answered for this
-            vendor. There is nothing left to add.
-          </p>
+        <div className="runmore-search">
+          <input
+            className="input"
+            type="search"
+            value={query}
+            placeholder="Filter by check or group — e.g. director, GST, footprint"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <span className="small muted nums">
+            {shown.length} of {candidates.length}
+            {rerunCount > 0 && ` · ${rerunCount} already have a result`}
+          </span>
+        </div>
+
+        {shown.length === 0 && (
+          <p className="small muted">No check matches that filter.</p>
         )}
 
         {CHECK_GROUPS.map((group) => {
-          const rows = runnable.filter((c) => c.group === group.id)
+          const rows = shown.filter((c) => c.group === group.id)
           if (!rows.length) return null
           return (
             <div key={group.id} className="runmore-group">
               <div className="runmore-group-h small">{group.name}</div>
-              {rows.map((c) => (
-                <label className="runmore-row" key={c.id}>
-                  <input
-                    type="checkbox"
-                    checked={picked.includes(c.id)}
-                    onChange={() => toggle(c.id)}
-                  />
-                  <span className="runmore-name">
-                    {c.name}
-                    {/* Said on the ROW, not only in the total: five
-                        directors on one check is five paid calls, and the
-                        row is where the analyst is deciding. */}
-                    {c.people > 1 && (
-                      <span className="small muted"> · {c.people} people</span>
-                    )}
-                    {c.alsoRuns.length > 0 && (
-                      <span className="small muted">
-                        {' '}
-                        · also runs {c.alsoRuns.map(nameOf).join(', ')}
+              {rows.map((c) => {
+                const isPicked = picked.includes(c.id)
+                const fieldsOpen = isPicked || opened.includes(c.id)
+                return (
+                  <div
+                    className={`runmore-row-wrap${isPicked ? ' is-picked' : ''}`}
+                    key={c.id}
+                  >
+                    <div className="runmore-row">
+                      <label className="runmore-tick">
+                        <input
+                          type="checkbox"
+                          checked={isPicked}
+                          onChange={() => toggle(c.id)}
+                        />
+                        <span className="runmore-name">
+                          {c.name}
+                          {/* Said on the ROW, not only in the total: five
+                              directors on one check is five paid calls, and
+                              the row is where the analyst is deciding. */}
+                          {c.people > 1 && (
+                            <span className="small muted"> · {c.people} people</span>
+                          )}
+                          {c.alsoRuns.length > 0 && (
+                            <span className="small muted">
+                              {' '}
+                              · also runs {c.alsoRuns.map(nameOf).join(', ')}
+                            </span>
+                          )}
+                          {/* THE SOURCE'S OWN SENTENCE, on a row that is
+                              still tickable. The analyst decides whether to
+                              spend the round trip; the screen does not
+                              decide for them. */}
+                          {c.warning && (
+                            <span className="runmore-warn small">
+                              {' '}
+                              · last call was refused: {c.warning}
+                            </span>
+                          )}
+                          {/* A RESULT ON FILE IS A FACT, NOT A WARNING.
+                              Running it again adds a result beside the
+                              ones already there and the analyst chooses
+                              which one counts, so there is nothing here to
+                              caution against — only the count, which is
+                              the thing somebody working through a board of
+                              directors is actually asking about. */}
+                          {c.answered && (
+                            <span className="runmore-again small">
+                              {' '}
+                              · {c.onFileRuns} on file
+                              {c.onFile > 0 &&
+                                ` · ${c.onFile} ` +
+                                  (c.onFile === 1 ? 'person' : 'people')}
+                            </span>
+                          )}
+                          {/* WHAT IS MISSING, next to the box that fills
+                              it. Not a reason the row cannot be used. */}
+                          {c.needs && (
+                            <span className="runmore-why small"> · needs {c.needs}</span>
+                          )}
+                        </span>
+                      </label>
+                      <span className="runmore-cost small nums muted">
+                        {c.costPaisa ? rupees(c.costPaisa) : 'free'}
+                        {c.credits ? ` · ${c.credits} cr` : ''}
                       </span>
-                    )}
-                    {/* THE SOURCE'S OWN SENTENCE, on a row that is still
-                        tickable. The analyst decides whether to spend the
-                        round trip; the screen does not decide for them. */}
-                    {c.warning && (
-                      <span className="runmore-warn small">
-                        {' '}
-                        · last call was refused: {c.warning}
-                      </span>
-                    )}
-                    {/* ALREADY ANSWERED. Offered, never pre-ticked, and
-                        honest about both consequences: it is charged
-                        again, and it REPLACES what is on file rather
-                        than adding to it. An analyst running the board
-                        one director at a time would otherwise lose the
-                        first three. */}
-                    {/* ALREADY ANSWERED. A SHORT marker, because the
-                        consequence — charged again, replaces what is on
-                        file — is stated once in the header and repeating
-                        it on sixteen rows buried the check names it was
-                        meant to qualify.
+                      {c.params.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn sm ghost runmore-fields-btn"
+                          aria-expanded={fieldsOpen}
+                          onClick={() =>
+                            setOpened((o) =>
+                              o.includes(c.id)
+                                ? o.filter((x) => x !== c.id)
+                                : [...o, c.id],
+                            )
+                          }
+                        >
+                          {fieldsOpen ? 'Hide inputs' : `Inputs (${c.params.length})`}
+                        </button>
+                      )}
+                    </div>
 
-                        The people count is the part that is NOT in the
-                        header and cannot be: "already run for 3 people"
-                        against six numbers now in the field is exactly
-                        the question an analyst working through a board
-                        of directors is asking. */}
-                    {c.answered && (
-                      <span className="runmore-again small">
-                        {' '}
-                        · already run
-                        {c.onFile > 0 && ` · ${c.onFile} ` +
-                          (c.onFile === 1 ? 'person' : 'people') + ' on file'}
-                      </span>
+                    {/* THE SAME FIELDS STEP 2 SHOWS, on this row.
+                        Prefilled from the vendor record, editable, and each
+                        one saves itself as it is typed — so what the screen
+                        shows is what the run will send. */}
+                    {fieldsOpen && c.params.length > 0 && (
+                      <div className="runmore-inputs">
+                        {c.params.map((param) => (
+                          <ParamField
+                            key={param.key}
+                            vendor={vendor}
+                            setVendor={setVendor}
+                            checkId={c.id}
+                            param={param}
+                            selected={Array.from(
+                              new Set([...vendor.selected, ...picked]),
+                            )}
+                            /* The dialog does not paint a field red for
+                               being blank until the check is ticked:
+                               nothing is being run, so nothing is yet
+                               wrong. Once it is ticked the field is the
+                               thing standing between the analyst and the
+                               run, and it says so. */
+                            missingKeys={
+                              new Set(
+                                isPicked
+                                  ? inputGaps(vendor, c.id, [
+                                      ...vendor.selected,
+                                      ...picked,
+                                    ]).map((g) => `${c.id}.${g.paramKey}`)
+                                  : [],
+                              )
+                            }
+                          />
+                        ))}
+                      </div>
                     )}
-                  </span>
-                  <span className="runmore-cost small nums muted">
-                    {c.costPaisa ? rupees(c.costPaisa) : 'free'}
-                    {c.credits ? ` · ${c.credits} cr` : ''}
-                  </span>
-                </label>
-              ))}
+                  </div>
+                )
+              })}
             </div>
           )
         })}
-
-        {/* CANNOT RUN, AND WHY — not hidden, and not silently disabled.
-            A missing input is the analyst's to fix and gets a link to the
-            field; a source refusing our account is not, and gets the
-            source's own sentence instead of an action it cannot offer. */}
-        {held.length > 0 && (
-          <div className="runmore-group">
-            <div className="runmore-group-h small runmore-held-h">
-              <span>Cannot run yet ({held.length})</span>
-              {/* ONE action for the section, not one per row. Every one of
-                  these buttons went to the same screen, and fourteen of
-                  them down the right-hand side read as fourteen different
-                  things to do. */}
-              {held.some((c) => c.needsField) && (
-                <button
-                  type="button"
-                  className="btn sm ghost"
-                  onClick={() => {
-                    onClose()
-                    navigate(`/vendor/${vendor.id}/select`)
-                  }}
-                >
-                  Fill inputs in on Step 2 →
-                </button>
-              )}
-            </div>
-            {held.map((c) => (
-              <div className="runmore-row is-held" key={c.id}>
-                <span className="runmore-name">{c.name}</span>
-                <span className="small muted runmore-why">{c.blockedBy}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
       </div>
     </Modal>
   )
@@ -618,6 +696,290 @@ function formatBytes(text: string): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * ONE RESULT, in full.
+ *
+ * Pulled out of the accordion because a check no longer holds one result.
+ * The person-level checks are run once per director, so a check can hold
+ * six, each about a different human being — and every one of them needs
+ * the same three tiers underneath it: what was asked, what the parser
+ * made of the answer, and the stored bytes.
+ *
+ * Keyed by RUN rather than by check, so opening the payload of the third
+ * director does not open the other five.
+ */
+function ResultBody({
+  vendor,
+  checkId,
+  result,
+  keyId,
+  rawOpen,
+  toggleRaw,
+  copied,
+  copy,
+}: {
+  vendor: Vendor
+  checkId: string
+  result: CheckResult
+  keyId: string
+  rawOpen: ReadonlySet<string>
+  toggleRaw: (id: string) => void
+  copied: string | null
+  copy: (id: string, text: string) => void
+}) {
+  const panel = rawPanel(result, vendor)
+  const inputs = askedFor(checkId, vendor, result)
+
+  return (
+    <>
+      {inputs.length > 0 && (
+        <div className="io-block">
+          <div className="io-label">What was asked</div>
+          <dl className="io-list">
+            {inputs.map((row) => (
+              <div className="io-row" key={`${row.label}-${row.from ?? ''}`}>
+                <dt className="io-key">
+                  {row.label}
+                  {row.from && <span className="io-from"> from {row.from}</span>}
+                </dt>
+                <dd className={`io-val${row.value ? '' : ' is-empty'}`}>
+                  {row.value || (row.required ? 'not provided' : '—')}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
+      {/* Tier two. Above the provenance line and the raw panel, because
+          this is what the reader came for; the payload below it is what
+          makes the reading defensible, which is a different job. */}
+      <Facts facts={result.facts} />
+
+      <div className="acc-meta">
+        <span className={`small ${panel.isReal ? 'muted' : 'warn-text'}`}>
+          {panel.isReal
+            ? 'Stored provider response — the exact bytes this result was computed from.'
+            : 'No stored payload for this check. This is a placeholder, not evidence.'}
+        </span>
+        <span className="acc-meta-right small muted">
+          {result.fetchedAt && <span>{new Date(result.fetchedAt).toLocaleString()}</span>}
+          {typeof result.costPaisa === 'number' && result.costPaisa > 0 && (
+            <span>₹{(result.costPaisa / 100).toFixed(2)}</span>
+          )}
+          {/* No size, no buttons when there is no payload. The placeholder
+              is a sentence saying nothing was stored; offering "View JSON"
+              on it, and a byte count for our own apology text, invites a
+              click that can only disappoint. The warning to its left is
+              the whole message. */}
+          {panel.isReal && (
+            <>
+              <span>{formatBytes(panel.text)}</span>
+              {/* Copy does NOT require opening. Someone sending a payload
+                  to whoever maintains an adapter has no reason to read it
+                  first. */}
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => copy(keyId, panel.text)}
+              >
+                {copied === keyId ? 'Copied' : 'Copy JSON'}
+              </button>
+              <button
+                type="button"
+                className="btn sm ghost"
+                aria-expanded={rawOpen.has(keyId)}
+                aria-controls={`raw-${keyId}`}
+                onClick={() => toggleRaw(keyId)}
+              >
+                {rawOpen.has(keyId) ? 'Hide JSON' : 'View JSON'}
+              </button>
+            </>
+          )}
+        </span>
+      </div>
+      {panel.isReal && rawOpen.has(keyId) && (
+        <pre className="raw raw-panel" id={`raw-${keyId}`}>
+          {panel.text}
+        </pre>
+      )}
+    </>
+  )
+}
+
+/* =====================================================================
+   THE RESULTS OF ONE CHECK
+   =====================================================================
+
+   A check used to hold exactly one result and a re-run overwrote it. That
+   was wrong in a way that cost real evidence: the five person-level checks
+   are run once per director, so running the second director erased the
+   first, and the screen gave no sign that anything had been there.
+
+   Every result is now kept, and ONE of them is primary — the one SCAN, the
+   risk score and the report read. The rest sit beside it, each tagged with
+   the input it was run against, each deletable, and any of them promotable.
+
+   Two rules this list follows, and both are about not lying by layout:
+
+     1. THE PRIMARY IS NAMED, not implied by position. "Newest at the top"
+        is how the number would be guessed wrong — the analyst who marked
+        the second result is exactly the person for whom position means
+        nothing.
+     2. DELETING ASKS FIRST, and says what happens to the score. Deleting
+        the primary promotes the newest remaining rather than leaving the
+        check unscored, and an analyst who does not know that will think
+        they have removed a finding when they have swapped it.
+*/
+function RunList({
+  vendor,
+  setVendor,
+  checkId,
+  runs,
+  rawOpen,
+  toggleRaw,
+  copied,
+  copy,
+}: {
+  vendor: Vendor
+  setVendor: (v: Vendor) => void
+  checkId: string
+  runs: CheckResult[]
+  rawOpen: ReadonlySet<string>
+  toggleRaw: (id: string) => void
+  copied: string | null
+  copy: (id: string, text: string) => void
+}) {
+  const toast = useToast()
+  const [busy, setBusy] = useState<number | null>(null)
+  const [confirming, setConfirming] = useState<number | null>(null)
+
+  /*
+    ONE RESULT AND NO ROW ID IS THE OLD SHAPE, and it renders exactly as it
+    always did — no header, no controls. A vendor whose checks each ran
+    once has nothing to choose between, and a "Primary" tag on a list of
+    one is noise that teaches the reader to ignore the tag on the lists
+    where it matters.
+  */
+  const single = runs.length === 1
+
+  const mark = async (runId: number) => {
+    setBusy(runId)
+    try {
+      setVendor(await api.markPrimary(vendor.id, runId))
+      toast('The score and the report now read this result.')
+    } catch (e) {
+      toast.error(e, 'That result could not be marked.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const remove = async (runId: number) => {
+    setBusy(runId)
+    try {
+      setVendor(await api.deleteRun(vendor.id, runId))
+      setConfirming(null)
+      toast('Result deleted. It stays in the audit log.')
+    } catch (e) {
+      toast.error(e, 'That result could not be deleted.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <>
+      {runs.map((run, index) => {
+        const keyId = run.id === undefined ? checkId : `${checkId}#${run.id}`
+        const subject = runSubject(checkId, run)
+
+        return (
+          <div className={`run-item${run.isPrimary && !single ? ' is-primary' : ''}`} key={keyId}>
+            {!single && (
+              <div className="run-head">
+                <span className="run-ord small nums muted">#{runs.length - index}</span>
+                <StatusBadge status={run.status} />
+                <span className="run-sum">
+                  <span className="run-value">{run.value || '—'}</span>
+                  {/* THE INPUT IS THE IDENTITY of a result on a check that
+                      was run several times. Without it the list reads as
+                      four answers to one question. */}
+                  {subject && <span className="small mono muted"> · {subject}</span>}
+                  {run.fetchedAt && (
+                    <span className="small muted">
+                      {' '}
+                      · {new Date(run.fetchedAt).toLocaleString()}
+                    </span>
+                  )}
+                </span>
+
+                {run.isPrimary ? (
+                  <span className="run-tag" title="The score and the report read this result">
+                    Counts
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={busy !== null || run.id === undefined}
+                    onClick={() => run.id !== undefined && void mark(run.id)}
+                  >
+                    Use this
+                  </button>
+                )}
+
+                {confirming === run.id ? (
+                  <span className="run-confirm small">
+                    {run.isPrimary
+                      ? 'Delete? The newest remaining result takes over the score.'
+                      : 'Delete this result?'}
+                    <button
+                      type="button"
+                      className="btn sm danger"
+                      disabled={busy !== null}
+                      onClick={() => run.id !== undefined && void remove(run.id)}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      onClick={() => setConfirming(null)}
+                    >
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn sm ghost run-del"
+                    disabled={busy !== null || run.id === undefined}
+                    onClick={() => run.id !== undefined && setConfirming(run.id)}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            )}
+
+            <ResultBody
+              vendor={vendor}
+              checkId={checkId}
+              result={run}
+              keyId={keyId}
+              rawOpen={rawOpen}
+              toggleRaw={toggleRaw}
+              copied={copied}
+              copy={copy}
+            />
+          </div>
+        )
+      })}
+    </>
+  )
 }
 
 export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
@@ -838,8 +1200,19 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
               {rows.map((check) => {
                 const result = vendor.checks[check.id]
                 const isOpen = open.has(check.id)
-                const panel = rawPanel(result, vendor)
-                const inputs = inputsFor(check.id, vendor)
+                /*
+                  EVERY RESULT OF THIS CHECK, newest first, with the
+                  primary among them — not just the one that counts.
+
+                  `vendor.checks` is the primary per check and is what the
+                  header reads, because the header is the summary and the
+                  summary has to be the number the report will carry.
+                  `vendor.runs` is the lot. An older payload with no `runs`
+                  degrades to the single result it has, which is exactly
+                  what it used to show.
+                */
+                const runs = (vendor.runs ?? []).filter((r) => r.checkId === check.id)
+                const theseRuns = runs.length ? runs : [result]
 
                 return (
                   <div className={`acc-item${isOpen ? ' is-open' : ''}`} key={check.id}>
@@ -856,7 +1229,18 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
 
                       <span className="acc-check">
                         <span className="acc-name">{check.name}</span>
-                        {/* <span className="small mono muted">{check.endpoint}</span> */}
+                        {/* SAID ON THE CLOSED ROW, under the name rather
+                            than in a column of its own: the header is a
+                            fixed grid and a sixth child only appears on
+                            some rows, which would misalign every row
+                            around it. A check holding six results, five of
+                            them about other directors, must not read as
+                            one finding to somebody who never opens it. */}
+                        {theseRuns.length > 1 && (
+                          <span className="acc-runs small nums">
+                            {theseRuns.length} results · one counts
+                          </span>
+                        )}
                       </span>
 
                       <span className="acc-status">
@@ -871,6 +1255,7 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
                         </span>
                       </span>
 
+
                       {/* "View response" was accurate and unhelpful: what
                           opened was a JSON dump. It now opens a readable
                           breakdown for any check whose parser is written,
@@ -882,81 +1267,16 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
 
                     {isOpen && (
                       <div className="acc-body" id={`panel-${check.id}`}>
-                        {inputs.length > 0 && (
-                          <div className="io-block">
-                            <div className="io-label">What was asked</div>
-                            <dl className="io-list">
-                              {inputs.map((row) => (
-                                <div className="io-row" key={`${row.label}-${row.from ?? ''}`}>
-                                  <dt className="io-key">
-                                    {row.label}
-                                    {row.from && (
-                                      <span className="io-from"> from {row.from}</span>
-                                    )}
-                                  </dt>
-                                  <dd className={`io-val${row.value ? '' : ' is-empty'}`}>
-                                    {row.value || (row.required ? 'not provided' : '—')}
-                                  </dd>
-                                </div>
-                              ))}
-                            </dl>
-                          </div>
-                        )}
-
-                        {/* Tier two. Above the provenance line and the raw
-                            panel, because this is what the reader came for;
-                            the payload below it is what makes the reading
-                            defensible, which is a different job. */}
-                        <Facts facts={result.facts} />
-
-                        <div className="acc-meta">
-                          <span className={`small ${panel.isReal ? 'muted' : 'warn-text'}`}>
-                            {panel.isReal
-                              ? 'Stored provider response — the exact bytes this result was computed from.'
-                              : 'No stored payload for this check. This is a placeholder, not evidence.'}
-                          </span>
-                          <span className="acc-meta-right small muted">
-                            {result.fetchedAt && <span>{new Date(result.fetchedAt).toLocaleString()}</span>}
-                            {typeof result.costPaisa === 'number' && result.costPaisa > 0 && (
-                              <span>₹{(result.costPaisa / 100).toFixed(2)}</span>
-                            )}
-                            {/* No size, no buttons when there is no payload.
-                                The placeholder is a sentence saying nothing
-                                was stored; offering "View JSON" on it, and a
-                                byte count for our own apology text, invites
-                                a click that can only disappoint. The warning
-                                to its left is the whole message. */}
-                            {panel.isReal && (
-                              <>
-                                <span>{formatBytes(panel.text)}</span>
-                                {/* Copy does NOT require opening. Someone
-                                    sending a payload to whoever maintains an
-                                    adapter has no reason to read it first. */}
-                                <button
-                                  type="button"
-                                  className="btn sm ghost"
-                                  onClick={() => copy(check.id, panel.text)}
-                                >
-                                  {copied === check.id ? 'Copied' : 'Copy JSON'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn sm ghost"
-                                  aria-expanded={rawOpen.has(check.id)}
-                                  aria-controls={`raw-${check.id}`}
-                                  onClick={() => toggleRaw(check.id)}
-                                >
-                                  {rawOpen.has(check.id) ? 'Hide JSON' : 'View JSON'}
-                                </button>
-                              </>
-                            )}
-                          </span>
-                        </div>
-                        {panel.isReal && rawOpen.has(check.id) && (
-                          <pre className="raw raw-panel" id={`raw-${check.id}`}>
-                            {panel.text}
-                          </pre>
-                        )}
+                        <RunList
+                          vendor={vendor}
+                          setVendor={setVendor}
+                          checkId={check.id}
+                          runs={theseRuns}
+                          rawOpen={rawOpen}
+                          toggleRaw={toggleRaw}
+                          copied={copied}
+                          copy={copy}
+                        />
                       </div>
                     )}
                   </div>

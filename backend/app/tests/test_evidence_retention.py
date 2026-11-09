@@ -188,12 +188,25 @@ class TestStaleEvidenceSaysSo:
 # =====================================================================
 
 class FakeSession:
+    """Enough of a Session for `_persist`, which now reads and inserts.
+
+    `scalars(...).all()` answers the "how many results does this check
+    already have" query; `scalar(...)` answers "is one of them primary".
+    """
+
     def __init__(self, existing=None):
         self._existing = existing
         self.added = []
 
     def scalar(self, _stmt):
-        return self._existing
+        # Stands in for "the id of the primary result, if there is one".
+        return getattr(self._existing, "id", 1) if self._existing else None
+
+    def scalars(self, _stmt):
+        return self
+
+    def all(self):
+        return [self._existing] if self._existing else []
 
     def add(self, obj):
         self.added.append(obj)
@@ -203,11 +216,28 @@ class FakeSession:
 
 
 class TestThroughPersist:
+    """APPENDING MADE THIS GUARANTEE STRUCTURAL.
+
+    These tests were written against a `_persist` that OVERWROTE one row
+    per check, where a failed re-run would replace a real payload with
+    nothing — observed live, a `casedetail` re-run hitting
+    INSUFFICIENT_CREDITS and blanking the response behind an already
+    computed score. The protection was a conditional branch that had to
+    be got right.
+
+    Results now accumulate: each run is its own row, and the earlier one
+    is never written to. The payload cannot be erased because nothing
+    touches it. What these tests assert is therefore the same promise,
+    held a stronger way — and the failed run is recorded honestly, in a
+    row of its own, instead of being half-merged into the old one.
+    """
+
     def build(self, existing, finding):
         from app.services.runner import RunResult
 
         runner = CheckRunner.__new__(CheckRunner)      # no DB, no providers
         runner.session = FakeSession(existing)
+        runner._inputs = lambda _v: {}
         result = RunResult(vendor_id="V1", spend=None)
         result.findings = [finding]
 
@@ -215,55 +245,45 @@ class TestThroughPersist:
         runner._persist(vendor, result)
         return existing, runner.session.added
 
-    def test_the_payload_is_still_there_after_a_failed_rerun(self):
+    def test_the_earlier_payload_is_untouched_by_a_failed_rerun(self):
+        """Not preserved by a branch — untouched, because nothing writes
+        to that row any more."""
         row = Row(REAL_PAYLOAD, facts=F.build(F.DETAIL,
                                               fields=[F.field("CNR", "HCBM…")]))
+        before = row.fetched_at
         self.build(row, failed())
         assert row.raw_response == REAL_PAYLOAD
+        assert row.fetched_at == before, (
+            "the earlier result must keep its own date; it is evidence of "
+            "when THAT response was obtained"
+        )
 
-    def test_the_flag_reports_the_payload_s_date_not_today_s(self):
-        """The bug this file exists to catch. `fetched_at` is overwritten
-        with the new run's timestamp two lines earlier, and `row` is the
-        same object as `existing`."""
-        row = Row(REAL_PAYLOAD, facts=F.build(F.DETAIL,
-                                              fields=[F.field("CNR", "HCBM…")]),
-                  fetched_at=YESTERDAY)
-        finding = failed()
-        finding.fetched_at = YESTERDAY + timedelta(days=1)
-        self.build(row, finding)
-
-        detail = row.facts["flags"][0]["detail"]
-        assert "13 Sep 2026" in detail, detail
-        assert "14 Sep 2026" not in detail
-
-    def test_the_status_still_tells_the_truth_about_this_run(self):
-        """Preserving evidence must not preserve a stale PASS. The row says
-        the check failed; only the payload is inherited."""
-        row = Row(REAL_PAYLOAD, facts=F.build(F.DETAIL, fields=[F.field("A", "b")]))
-        row.status = CheckStatus.PASS.value
-        self.build(row, failed())
-        assert row.status == CheckStatus.UNAVAILABLE.value
-        assert "INSUFFICIENT_CREDITS" in row.detail
-
-    def test_the_preservation_is_written_to_the_audit_log(self):
-        """Silently keeping different data than the run produced would be
-        its own integrity problem. The log says it happened and why."""
-        row = Row(REAL_PAYLOAD, facts=F.build(F.DETAIL, fields=[F.field("A", "b")]))
+    def test_the_failed_run_is_recorded_as_its_own_result(self):
+        """It used to be half-merged into the previous row — that row's
+        payload with this run's status. Two runs, two rows."""
+        row = Row(REAL_PAYLOAD)
         _, added = self.build(row, failed())
-        entries = [a for a in added if getattr(a, "action", None) == "EVIDENCE_PRESERVED"]
-        assert len(entries) == 1
-        assert "casedetail" in entries[0].detail
+        assert len(added) == 1
+        assert added[0].raw_response is None
+        assert added[0].status == failed().status.value
 
-    def test_a_successful_rerun_replaces_and_logs_nothing(self):
-        row = Row(REAL_PAYLOAD, facts=F.build(F.DETAIL, fields=[F.field("A", "b")]))
-        fresh = Finding("casedetail", CheckStatus.PASS, "Case found", "…",
-                        raw={"cnr": "NEW", "orders": []},
-                        facts=F.build(F.DETAIL, fields=[F.field("CNR", "NEW")]))
-        _, added = self.build(row, fresh)
-        assert row.raw_response == {"cnr": "NEW", "orders": []}
-        assert not [a for a in added
-                    if getattr(a, "action", None) == "EVIDENCE_PRESERVED"]
-        assert not (row.facts.get("flags") or [])
+    def test_a_failed_rerun_does_not_become_the_result_that_counts(self):
+        """The one that matters. A check with a real answer must not
+        start being scored off a run that returned nothing."""
+        row = Row(REAL_PAYLOAD)
+        _, added = self.build(row, failed())
+        assert added[0].is_primary is False
+
+    def test_the_first_result_counts_without_being_asked(self):
+        """A check with an answer and no primary would be plainly
+        answered and silently unscored."""
+        _, added = self.build(None, failed())
+        assert added[0].is_primary is True
+
+    def test_attempts_counts_the_runs_not_the_rows(self):
+        row = Row(REAL_PAYLOAD)
+        _, added = self.build(row, failed())
+        assert added[0].attempts == 2
 
 
 # =====================================================================

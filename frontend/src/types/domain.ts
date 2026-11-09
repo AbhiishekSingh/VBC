@@ -139,6 +139,10 @@ export interface CheckFacts {
 }
 
 export interface CheckResult {
+  /** The row id. A check holds several results now, and "mark this one"
+   *  and "delete this one" need to name which. Absent on anything
+   *  constructed rather than read. */
+  id?: number
   checkId: string
   status: CheckStatus
   value: string
@@ -150,6 +154,14 @@ export interface CheckResult {
   rawResponse?: unknown
   costPaisa?: number
   fetchedAt?: string
+  /** The one result of this check that SCAN, the risk score and the
+   *  report read. Exactly one per check. */
+  isPrimary?: boolean
+  /** What was asked, for THIS result, snapshotted when it ran.
+   *  `vendor.inputs` holds one value per key, so it shows whatever was
+   *  typed LAST — four runs against four directors would otherwise all
+   *  claim the fourth director's number. */
+  inputs?: Record<string, string>
 }
 
 export interface ManualEntry {
@@ -234,7 +246,12 @@ export interface Vendor {
   submitted: string
   selected: string[]
   inputs: Record<string, Record<string, string>>
+  /** The PRIMARY result per check — what counts, and what the score
+   *  and the report read. */
   checks: Record<string, CheckResult>
+  /** EVERY result, newest first, including the ones that do not count.
+   *  A check used to hold one and a re-run overwrote it. */
+  runs?: CheckResult[]
   scan: Record<string, string | null>
   manual: ManualEntry[]
   surveillance: Record<string, string | null>

@@ -19,6 +19,11 @@ class ApiModel(BaseModel):
 
 
 class CheckResultOut(ApiModel):
+    #: The ROW id. Absent on older payloads and on anything constructed
+    #: rather than read, so the screen must not key off it blindly — but
+    #: a check now holds several results and "mark this one" and "delete
+    #: this one" need to name which.
+    id: int | None = None
     checkId: str
     status: str
     value: str = ""
@@ -38,6 +43,17 @@ class CheckResultOut(ApiModel):
     rawResponse: Any | None = None
     costPaisa: int = 0
     fetchedAt: datetime | None = None
+
+    #: The one result of this check that SCAN, the risk score and the
+    #: report read. Exactly one per check, enforced by a partial unique
+    #: index rather than by whoever remembers.
+    isPrimary: bool = False
+
+    #: What was asked, for THIS result — snapshotted when it ran.
+    #: `vendor.inputs` holds one value per key, so it shows whatever was
+    #: typed LAST; four runs against four directors would otherwise all
+    #: claim the fourth director's number.
+    inputs: dict[str, str] = {}
 
 
 class ManualEntryIn(ApiModel):
@@ -180,7 +196,18 @@ class VendorOut(ApiModel):
     submitted: str
     selected: list[str]
     inputs: dict[str, dict[str, str]]
+    #: The PRIMARY result per check — what counts. Shape unchanged, so
+    #: the scoring engine and the report read exactly what they always
+    #: did.
     checks: dict[str, CheckResultOut]
+
+    #: EVERY result, newest first, including the ones that do not count.
+    #: A check used to hold one and a re-run overwrote it; the person
+    #: checks are run once per director, so the second run erased the
+    #: first. Read by the findings screen; never by anything computing a
+    #: number.
+    runs: list[CheckResultOut] = []
+
     scan: dict[str, str | None]
     manual: list[ManualEntryOut]
     surveillance: dict[str, str | None]

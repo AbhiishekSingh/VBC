@@ -290,6 +290,12 @@ export const httpApi: VbcApi = {
   runChecks: (id, only) =>
     post<RunChecksResult>(`/vendors/${id}/run`, only ? { only } : undefined),
 
+  markPrimary: (id, runId) =>
+    post<Vendor>(`/vendors/${id}/runs/${runId}/primary`),
+
+  deleteRun: (id, runId) =>
+    request<Vendor>(`/vendors/${id}/runs/${runId}`, { method: 'DELETE' }),
+
   addManualEntry: (id, entry: Omit<ManualEntry, 'id'>) =>
     post<Vendor>(`/vendors/${id}/manual`, entry),
 

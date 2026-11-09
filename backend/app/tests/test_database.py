@@ -219,13 +219,47 @@ class TestConstraints:
         with pytest.raises(IntegrityError):
             session.flush()
 
-    def test_a_check_cannot_be_recorded_twice_for_one_vendor(self, session, seeded):
+    def test_a_check_CAN_be_recorded_many_times_for_one_vendor(
+        self, session, seeded
+    ):
+        """It could not, until 9 Nov 2026. One result per check meant a
+        re-run overwrote the last one, which lost the thing the work is
+        made of: the person checks are run once per director, and the
+        second run erased the first."""
         make_vendor(session)
-        session.add(VendorCheck(vendor_id="234479", check_id="master", status="pass"))
+        session.add(VendorCheck(vendor_id="234479", check_id="master",
+                                status="pass", is_primary=True))
         session.flush()
-        session.add(VendorCheck(vendor_id="234479", check_id="master", status="fail"))
+        session.add(VendorCheck(vendor_id="234479", check_id="master",
+                                status="fail", is_primary=False))
+        session.flush()  # no IntegrityError
+
+    def test_only_ONE_of_them_can_be_the_result_that_counts(
+        self, session, seeded
+    ):
+        """The replacement guarantee, and it has to be the database's
+        rather than the application's: SCAN, the risk score and the
+        report all read "the primary result", and two of those is not a
+        thing that can be rendered or defended."""
+        make_vendor(session)
+        session.add(VendorCheck(vendor_id="234479", check_id="master",
+                                status="pass", is_primary=True))
+        session.flush()
+        session.add(VendorCheck(vendor_id="234479", check_id="master",
+                                status="fail", is_primary=True))
         with pytest.raises(IntegrityError):
             session.flush()
+
+    def test_two_different_checks_may_each_have_a_primary(
+        self, session, seeded
+    ):
+        """The index is partial on (vendor, check), not on vendor."""
+        make_vendor(session)
+        session.add(VendorCheck(vendor_id="234479", check_id="master",
+                                status="pass", is_primary=True))
+        session.add(VendorCheck(vendor_id="234479", check_id="dirs",
+                                status="pass", is_primary=True))
+        session.flush()
 
 
 # =====================================================================
