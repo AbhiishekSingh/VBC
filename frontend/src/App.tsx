@@ -31,6 +31,7 @@ import Risk from '@/pages/Risk'
 import Report from '@/pages/Report'
 import Outcome from '@/pages/Outcome'
 import Audit from '@/pages/Audit'
+import History from '@/pages/History'
 import Costs from '@/pages/Costs'
 
 export interface PageProps {
@@ -306,6 +307,18 @@ function Shell() {
             element={
               <StandalonePage title="Outcome sheet">
                 <Outcome />
+              </StandalonePage>
+            }
+          />
+          {/* THE LEDGER, beside the audit trail rather than inside it.
+              One answers "what happened"; this one answers "what was
+              spent". Prose and figures are different shapes and a single
+              screen serving both serves neither. */}
+          <Route
+            path="/history"
+            element={
+              <StandalonePage title="API history">
+                <History />
               </StandalonePage>
             }
           />

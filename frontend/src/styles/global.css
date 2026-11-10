@@ -1873,3 +1873,147 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
    results, five of them about other directors, must not read as one
    finding to somebody who never opens it. */
 .acc-runs { color: var(--ink-3); }
+
+/* ---------------------------------------------------------------------
+   ALREADY ON FILE, AND SET ASIDE
+   --------------------------------------------------------------------- */
+
+/* A check that has answered: ticked, locked, and not re-charged. Neutral
+   green rather than a warning colour — nothing is wrong, something has
+   been bought. */
+.chip.c-done {
+  background: var(--pass-wash);
+  color: var(--pass);
+  border-color: var(--pass);
+}
+.check-row input:disabled + .cell-strong { opacity: 0.85; }
+
+/* A result a person took out of the score. Dimmed, but NOT hidden and
+   not collapsed: a result that quietly stops counting is the one thing
+   this screen must never produce. The reason sits on the row. */
+.run-item.is-aside { opacity: 0.62; }
+.run-item.is-aside .run-value { text-decoration: line-through; }
+
+.run-aside-tag {
+  flex: none;
+  font-size: var(--text-xs); font-weight: var(--weight-semi);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--ink-3);
+  border: 1px solid var(--line-2);
+}
+/* THE REASON, on the row rather than in a tooltip. Why a finding was set
+   aside is the part a reader needs and the part a tooltip hides. */
+.run-aside-why { flex: 1 1 auto; min-width: 0; color: var(--ink-3); }
+
+/* The box that asks for it. Wide enough for a sentence, because the
+   answer to "why?" is a sentence. */
+.run-reason { min-width: 22rem; flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------------
+   API HISTORY — the ledger
+   ---------------------------------------------------------------------
+
+   Clients and vendors down the left with what each has cost, the calls
+   on the right. The left column is a filter AND a summary: picking a
+   client is the commonest thing to do here, and the number beside each
+   name is the answer to the question that brought the reader.
+   --------------------------------------------------------------------- */
+
+.hist-bar {
+  display: flex; align-items: center; gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.hist-bar .input { flex: 1 1 20rem; }
+
+.hist-split {
+  display: grid;
+  grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.hist-side {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: var(--space-2);
+  position: sticky; top: var(--space-4);
+}
+.hist-side-h {
+  color: var(--ink-3); font-weight: var(--weight-semi);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: var(--space-3) var(--space-2) var(--space-2);
+}
+.hist-side-h + .hist-pick { margin-top: 0; }
+
+.hist-pick {
+  display: flex; align-items: baseline; gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0; border-radius: var(--radius-sm);
+  background: none; font: inherit; color: inherit;
+  text-align: left; cursor: pointer;
+}
+.hist-pick:hover { background: var(--surface-2); }
+.hist-pick.is-on { background: var(--accent-wash); color: var(--accent); }
+.hist-pick-name {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.hist-main { min-width: 0; }
+.hist-table td { vertical-align: top; }
+.hist-table .num { text-align: right; white-space: nowrap; }
+/* Columns sized by what they hold. Left to itself the table gave the
+   vendor name four lines and the timestamp two, which turned a dense
+   ledger into a page of stacked fragments. */
+.hist-table td:first-child { white-space: nowrap; }
+.hist-table th:nth-child(2),
+.hist-table td:nth-child(2) { min-width: 12rem; }
+.hist-table th:nth-child(3),
+.hist-table td:nth-child(3) { min-width: 11rem; }
+.hist-table td:nth-child(2) .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A call whose result was set aside. DIMMED, NEVER HIDDEN: the money was
+   spent and the invoice says so, and a ledger that quietly drops rows is
+   the defect retiring the delete was meant to close. */
+.hist-table tr.is-aside td { opacity: 0.66; }
+.hist-aside { color: var(--ink-3); }
+
+/* A segmented control for the date range. */
+.seg {
+  display: inline-flex; flex: none;
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.seg-btn {
+  border: 0; background: none; font: inherit; color: var(--ink-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer; white-space: nowrap;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--line-2); }
+.seg-btn:hover { background: var(--surface-2); }
+.seg-btn.is-on { background: var(--accent); color: var(--on-accent, #fff); }
+
+/* A table cell that navigates. Looks like a link because it is one. */
+.linklike {
+  border: 0; background: none; padding: 0; font: inherit;
+  color: var(--accent); cursor: pointer; text-align: left;
+}
+.linklike:hover { text-decoration: underline; }
+
+@media (max-width: 900px) {
+  .hist-split { grid-template-columns: 1fr; }
+  .hist-side { position: static; }
+}
+
+/* A check that has run once: the header is there for the Ignore
+   control and for nothing else, so it sits right and stays out of the
+   way of the result underneath it. */
+.run-head.is-lone {
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+.run-head.is-lone .run-sum { flex: 1 1 auto; }

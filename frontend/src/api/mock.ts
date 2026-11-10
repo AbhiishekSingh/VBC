@@ -14,7 +14,16 @@
 import { CHECKS, MANUAL_TEMPLATES, SCAN_PARAMETERS } from '@/catalog/generated'
 import { scoreSurveillance } from '@/scoring'
 import { SEED_AUDIT, SEED_VENDORS, COST_REFERENCE } from './fixtures'
-import type { AuditEntry, CheckResult, Client, ManualEntry, User, Vendor } from '@/types/domain'
+import type {
+  AuditEntry,
+  CheckResult,
+  Client,
+  HistoryRow,
+  HistoryTotal,
+  ManualEntry,
+  User,
+  Vendor,
+} from '@/types/domain'
 import type { DecisionInput, VbcApi } from './contract'
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
@@ -203,13 +212,21 @@ function simulate(vendor: Vendor, checkId: string): CheckResult {
 
 let nextRunId = 9000
 
-/** Rebuild `checks` from `runs`: the primary per check, newest as fallback. */
+/**
+ * Rebuild `checks` from `runs`: the primary per check, newest as fallback.
+ *
+ * IGNORED RESULTS NEVER REACH IT. `checks` is what the scoring engine
+ * and the report read, so this is where "set aside" stops being a label
+ * and starts changing the number. The fallback reaches only for results
+ * still IN FORCE — falling back to an ignored row would quietly undo the
+ * judgement a person made, which is the whole of what ignoring means.
+ */
 function rebuildChecks(vendor: Vendor): void {
-  const runs = vendor.runs ?? []
+  const inForce = (vendor.runs ?? []).filter((r) => !r.ignoredAt)
   const checks: Record<string, CheckResult> = {}
-  for (const run of runs) if (run.isPrimary) checks[run.checkId] = run
+  for (const run of inForce) if (run.isPrimary) checks[run.checkId] = run
   // A check whose rows predate the primary flag still has to render.
-  for (const run of runs) if (!checks[run.checkId]) checks[run.checkId] = run
+  for (const run of inForce) if (!checks[run.checkId]) checks[run.checkId] = run
   vendor.checks = checks
 }
 
@@ -228,7 +245,9 @@ function inputsFor(vendor: Vendor, checkId: string): Record<string, string> {
 /** Append one result. Never replaces, never steals an existing primary. */
 function appendRun(vendor: Vendor, result: CheckResult): CheckResult {
   vendor.runs = vendor.runs ?? []
-  const hadPrimary = vendor.runs.some((r) => r.checkId === result.checkId && r.isPrimary)
+  const hadPrimary = vendor.runs.some(
+    (r) => r.checkId === result.checkId && r.isPrimary && !r.ignoredAt,
+  )
   const row: CheckResult = {
     ...result,
     id: nextRunId++,
@@ -247,6 +266,7 @@ function appendRun(vendor: Vendor, result: CheckResult): CheckResult {
   the findings history is populated from the first paint rather than
   appearing empty until something is re-run.
 */
+let seedClock = Date.now() - 3 * 86_400_000
 for (const vendor of vendors) {
   if (vendor.runs?.length) continue
   vendor.runs = Object.values(vendor.checks ?? {}).map((result) => ({
@@ -254,6 +274,22 @@ for (const vendor of vendors) {
     id: nextRunId++,
     isPrimary: true,
     inputs: result.inputs ?? inputsFor(vendor, result.checkId),
+    // The fixtures carry no timestamp. The real column is NOT NULL with
+    // a default, so a result without one exists only here — and a
+    // ledger with no dates is a ledger that cannot be filtered or
+    // reconciled against an invoice. Spread over the last few days so
+    // the history screen shows the shape it will have in production.
+    fetchedAt: result.fetchedAt ?? new Date((seedClock += 97_000)).toISOString(),
+    // Priced from the catalog when the fixture carries no figure. The
+    // real `_persist` records what the call cost, so a seeded row with
+    // no price is a gap in the fixture rather than a free call — and a
+    // ledger reading ₹0 across the board teaches the reader to ignore
+    // the column.
+    costPaisa:
+      result.costPaisa ??
+      (['pass', 'warn', 'fail'].includes(result.status)
+        ? checkDef(result.checkId)?.costPaisa ?? 0
+        : 0),
   }))
   rebuildChecks(vendor)
 }
@@ -549,37 +585,80 @@ export const mockApi: VbcApi = {
   },
 
   /**
-   * Remove one result of a check.
+   * Set one result aside. It is KEPT; it stops counting.
    *
-   * Deleting the primary PROMOTES the newest remaining rather than leaving
-   * the check unscored — a check that silently stops counting because a
-   * row was tidied away is the failure this whole feature exists to avoid.
-   * What was deleted survives in the audit log, because the row does not.
+   * This replaced a delete. Deleting took the result out of the score by
+   * destroying the evidence and the spend record on the way — a result
+   * is evidence and evidence is kept, and a call that cost money stays
+   * in the ledger whatever anybody later decides about its answer.
+   *
+   * The mock mirrors the server exactly, because the screens are built
+   * against the mock: the row survives whole, ignoring the one that
+   * counts promotes the newest still in force, and a reason is required.
    */
-  async deleteRun(vendorId, runId) {
+  async ignoreRun(vendorId, runId, reason) {
     const v = find(vendorId)
     const row = (v.runs ?? []).find((r) => r.id === runId)
     if (!row) throw new Error(`No run ${runId} on vendor ${vendorId}`)
+    if (!reason.trim()) throw new Error('A reason is required.')
+    if (row.ignoredAt) return latency(clone(v))
 
-    v.runs = (v.runs ?? []).filter((r) => r.id !== runId)
+    const wasPrimary = row.isPrimary
+    row.ignoredAt = new Date().toISOString()
+    row.ignoredBy = MOCK_USER.email
+    row.ignoreReason = reason.trim()
+    row.isPrimary = false
+
     const name = checkDef(row.checkId)?.name ?? row.checkId
     let promoted = ''
-    if (row.isPrimary) {
-      const replacement = v.runs.find((r) => r.checkId === row.checkId)
+    if (wasPrimary) {
+      const replacement = (v.runs ?? []).find(
+        (r) => r.checkId === row.checkId && !r.ignoredAt,
+      )
       if (replacement) {
         replacement.isPrimary = true
-        promoted = ` · ${replacement.value || replacement.status} promoted`
+        promoted = ` · ${replacement.value || replacement.status} now counts`
       }
     }
     rebuildChecks(v)
     log(
       vendorId,
-      'RUN_DELETED',
-      `${name} · ${row.value || row.status}` +
-        (row.inputs && Object.keys(row.inputs).length
-          ? ` (${Object.entries(row.inputs).map(([k, val]) => `${k}=${val}`).join(', ')})`
-          : '') +
-        ` deleted${promoted}`,
+      'RUN_IGNORED',
+      `${name} · ${row.value || row.status} set aside — ${row.ignoreReason}` +
+        (wasPrimary ? ' · it was the result that counted' : '') +
+        promoted,
+      MOCK_USER.email,
+    )
+    return latency(clone(v))
+  },
+
+  /** Put a result back in force. */
+  async unignoreRun(vendorId, runId) {
+    const v = find(vendorId)
+    const row = (v.runs ?? []).find((r) => r.id === runId)
+    if (!row) throw new Error(`No run ${runId} on vendor ${vendorId}`)
+    if (!row.ignoredAt) return latency(clone(v))
+
+    const was = row.ignoreReason
+    row.ignoredAt = null
+    row.ignoredBy = null
+    row.ignoreReason = null
+
+    // Only when the check has nothing else in force. Reinstating one of
+    // six is not a claim that it should be the one the score reads.
+    const hasPrimary = (v.runs ?? []).some(
+      (r) => r.checkId === row.checkId && r.isPrimary && !r.ignoredAt,
+    )
+    if (!hasPrimary) row.isPrimary = true
+
+    rebuildChecks(v)
+    log(
+      vendorId,
+      'RUN_REINSTATED',
+      `${checkDef(row.checkId)?.name ?? row.checkId} · ` +
+        `${row.value || row.status} counts again` +
+        (was ? ` — it had been set aside: ${was}` : ''),
+      MOCK_USER.email,
     )
     return latency(clone(v))
   },
@@ -660,6 +739,94 @@ export const mockApi: VbcApi = {
 
   async listCostReference() {
     return latency(COST_REFERENCE)
+  },
+
+  /**
+   * The ledger: every call ever made, with what it cost.
+   *
+   * Built from the same `runs` the findings screen reads, so the mock
+   * cannot show a spend the rest of the mock disagrees with.
+   *
+   * IGNORED ROWS ARE INCLUDED AND MARKED. A result taken out of the
+   * score was still a call that was paid for; leaving it out would
+   * under-report the bill, which is exactly the hole that retiring the
+   * delete was meant to close.
+   */
+  async listHistory(filter) {
+    const rows: HistoryRow[] = []
+    for (const vendor of vendors) {
+      if (filter?.vendorId && vendor.id !== filter.vendorId) continue
+      if (filter?.clientId && vendor.clientId !== filter.clientId) continue
+      for (const run of vendor.runs ?? []) {
+        /*
+          A ROW WITH NO TIMESTAMP IS SHOWN, NOT DROPPED.
+
+          `fetched_at` is NOT NULL with a default on the real column, so
+          this can only happen to a fixture — but the rule matters more
+          than the case. A date filter that silently omits rows it cannot
+          place makes the ledger under-report the bill, which is the one
+          failure this screen exists to prevent. Better an undated row in
+          the list than money that disappears.
+        */
+        const when = run.fetchedAt ?? ''
+        if (when) {
+          if (filter?.from && when.slice(0, 10) < filter.from) continue
+          if (filter?.to && when.slice(0, 10) > filter.to) continue
+        }
+        const def = checkDef(run.checkId)
+        rows.push({
+          runId: run.id ?? 0,
+          clientId: vendor.clientId,
+          clientName: vendor.clientName,
+          vendorId: vendor.id,
+          vendorName: vendor.name,
+          checkId: run.checkId,
+          checkName: def?.name ?? run.checkId,
+          provider: def?.provider ?? '',
+          status: run.status,
+          value: run.value,
+          inputs: run.inputs ?? {},
+          costPaisa: run.costPaisa ?? 0,
+          credits: def?.credits ?? 0,
+          attempts: 1,
+          fetchedAt: when,
+          isPrimary: Boolean(run.isPrimary),
+          ignoredAt: run.ignoredAt ?? null,
+          ignoredBy: run.ignoredBy ?? null,
+          ignoreReason: run.ignoreReason ?? null,
+        })
+      }
+    }
+    rows.sort((a, b) => (a.fetchedAt < b.fetchedAt ? 1 : -1))
+
+    // Rolled up FROM THE ROWS RETURNED, never from a second pass: the
+    // number at the top and the list below it cannot then disagree.
+    const roll = (
+      key: (r: HistoryRow) => string,
+      name: (r: HistoryRow) => string,
+    ): HistoryTotal[] => {
+      const acc = new Map<string, HistoryTotal>()
+      for (const row of rows) {
+        const id = key(row)
+        const at = acc.get(id) ?? { id, name: name(row), calls: 0, costPaisa: 0, credits: 0 }
+        at.calls += 1
+        at.costPaisa += row.costPaisa
+        at.credits += row.credits
+        acc.set(id, at)
+      }
+      return [...acc.values()].sort(
+        (a, b) => b.costPaisa - a.costPaisa || a.name.localeCompare(b.name),
+      )
+    }
+
+    return latency({
+      rows,
+      byClient: roll((r) => r.clientId, (r) => r.clientName),
+      byVendor: roll((r) => r.vendorId, (r) => r.vendorName),
+      totalCalls: rows.length,
+      totalCostPaisa: rows.reduce((n, r) => n + r.costPaisa, 0),
+      totalCredits: rows.reduce((n, r) => n + r.credits, 0),
+    })
   },
 
   /**

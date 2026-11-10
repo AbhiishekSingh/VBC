@@ -55,6 +55,29 @@ class CheckResultOut(ApiModel):
     #: claim the fourth director's number.
     inputs: dict[str, str] = {}
 
+    #: SET ASIDE BY A PERSON. Null means the result is in force.
+    #:
+    #: Sent so Step 3 can grey the row and print who set it aside and
+    #: why — the judgement is part of the evidence, not a filter applied
+    #: before the evidence is handed over. An ignored result keeps its
+    #: payload and its cost; it simply stops feeding the score.
+    ignoredAt: datetime | None = None
+    ignoredBy: str | None = None
+    ignoreReason: str | None = None
+
+
+class IgnoreIn(ApiModel):
+    """Why this result is being set aside.
+
+    REQUIRED, and `min_length` is doing real work. Ignoring moves a
+    client-facing number, and "" would let that happen with no account
+    of it — the same hole `decidedBy` left when the caller supplied it.
+    A file that cannot say why a finding was set aside is not one
+    anybody can defend a year later.
+    """
+
+    reason: str = Field(min_length=3)
+
 
 class ManualEntryIn(ApiModel):
     key: str
@@ -329,3 +352,70 @@ class ProviderStatusOut(ApiModel):
     #:
     #: Empty while nothing is blocked, which is the normal case.
     blockedChecks: dict[str, str] = {}
+
+
+# =====================================================================
+# API call history — the ledger
+# =====================================================================
+
+
+class HistoryRowOut(ApiModel):
+    """One API call, with what it cost and who it was spent on.
+
+    DISTINCT FROM THE AUDIT LOG, and the distinction is the reason this
+    exists. The audit log records acts, in prose, for a reader: "ran 11
+    checks", "set a result aside because…". Prose cannot be summed, and
+    "what has this client cost us" is a question about money that has to
+    be answered by adding numbers up.
+
+    So: one row per call, joined up to the vendor and the client it was
+    spent on, with the price as an integer.
+    """
+
+    runId: int
+    clientId: str
+    clientName: str
+    vendorId: str
+    vendorName: str
+    checkId: str
+    #: Resolved from the catalog, not stored on the row — a check that is
+    #: renamed should read by its current name everywhere, and the id is
+    #: carried beside it for anyone reconciling against raw tables.
+    checkName: str
+    provider: str
+    status: str
+    value: str = ""
+    inputs: dict[str, str] = {}
+    costPaisa: int = 0
+    credits: int = 0
+    attempts: int = 1
+    fetchedAt: datetime
+    isPrimary: bool = False
+
+    #: SET ASIDE, AND STILL HERE. A result taken out of the score was
+    #: still a call that was paid for, so it stays in the ledger and is
+    #: marked rather than filtered out. Leaving it out would make this
+    #: page under-report the bill, silently, which is the defect that
+    #: retiring the delete was meant to close.
+    ignoredAt: datetime | None = None
+    ignoredBy: str | None = None
+    ignoreReason: str | None = None
+
+
+class HistoryTotalOut(ApiModel):
+    id: str
+    name: str
+    calls: int
+    costPaisa: int
+    credits: int
+
+
+class HistoryOut(ApiModel):
+    rows: list[HistoryRowOut]
+    #: Rolled up over the SAME filter the rows were drawn with, so the
+    #: totals and the list on screen can never disagree.
+    byClient: list[HistoryTotalOut] = []
+    byVendor: list[HistoryTotalOut] = []
+    totalCalls: int = 0
+    totalCostPaisa: int = 0
+    totalCredits: int = 0

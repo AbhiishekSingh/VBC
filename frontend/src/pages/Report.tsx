@@ -290,7 +290,7 @@
 //       ]),
 //       'RISK FLAGS',
 //       '──────────',
-//       ...report.flags.map((f) => `[${f.level.toUpperCase()}] ${f.text}`),
+//       ...flags.map((f) => `[${f.level.toUpperCase()}] ${f.text}`),
 //       '',
 //       `RECOMMENDATION: ${report.recommendation}`,
 //       `Coverage: ${report.scan.coverageNote}`,
@@ -450,7 +450,7 @@
 //                 </tr>
 //               </thead>
 //               <tbody>
-//                 {report.flags.map((flag, i) => (
+//                 {flags.map((flag, i) => (
 //                   <tr key={i}>
 //                     <td>
 //                       <span className={`doc-flag f-${flag.level}`}>{flag.level}</span>
@@ -755,6 +755,23 @@ const STATUS_LABEL: Record<string, string> = {
   unavailable: 'Not examined',
   not_configured: 'No provider',
   skipped_missing_input: 'Not run',
+  /*
+    EXAMINED, AND SET ASIDE BY A PERSON.
+
+    Not a `CheckStatus` — no provider ever returns this and the scoring
+    engine has no opinion about it. It is a state of the FILE: the check
+    ran, it answered, and every one of its results was set aside.
+
+    It needs its own word because the alternative is silence. `checks`
+    holds only results in force, so a check whose results were all
+    ignored simply drops out of this index — and a check that is absent
+    reads exactly like a check that was never run. That is the one thing
+    this product refuses to let happen: something not examined must
+    never look like something that came back clean, and the converse
+    holds just as hard. A deliberate human judgement must not be
+    presented as a gap in coverage.
+  */
+  set_aside: 'Set aside',
 }
 
 const STATUS_TONE: Record<string, string> = {
@@ -765,6 +782,9 @@ const STATUS_TONE: Record<string, string> = {
   unavailable: 'none',
   not_configured: 'none',
   skipped_missing_input: 'none',
+  // Medium, not none: a reader skimming the index has to notice that a
+  // finding was taken out, and why.
+  set_aside: 'medium',
 }
 
 export default function Report({ vendor, setPrimary }: PageProps) {
@@ -790,11 +810,21 @@ export default function Report({ vendor, setPrimary }: PageProps) {
     ['pass', 'warn', 'fail'].includes(c.status),
   ).length
 
-  /** Every check that ran, in catalogue order, for the evidence index. */
-  const evidence = useMemo(
-    () =>
-      CHECKS.filter((c) => vendor.checks[c.id]).map((c) => {
-        const result = vendor.checks[c.id]
+  /**
+   * Every check that ran, in catalogue order, for the evidence index.
+   *
+   * Two sources, and the second exists because of the first. `checks`
+   * holds only results IN FORCE, so a check whose every result was set
+   * aside is absent from it — and absence from this index is read as
+   * "never run". Those checks are put back, under their own word.
+   */
+  const evidence = useMemo(() => {
+    const runs = vendor.runs ?? []
+    return CHECKS.filter(
+      (c) => vendor.checks[c.id] || runs.some((r) => r.checkId === c.id),
+    ).map((c) => {
+      const result = vendor.checks[c.id]
+      if (result) {
         return {
           id: c.id,
           name: c.name,
@@ -802,9 +832,60 @@ export default function Report({ vendor, setPrimary }: PageProps) {
           tone: STATUS_TONE[result.status] ?? 'none',
           value: result.value || publicDetail(result.detail, { capitalise: true }) || '—',
         }
-      }),
-    [vendor.checks],
+      }
+
+      // Nothing in force, but results exist: every one was set aside.
+      // The REASON is the finding here — "set aside" on its own invites
+      // the reader to assume the worst or to assume nothing, and both
+      // are worse than the sentence the analyst already wrote.
+      const aside = runs.filter((r) => r.checkId === c.id)
+      const reasons = Array.from(
+        new Set(aside.map((r) => r.ignoreReason).filter(Boolean) as string[]),
+      )
+      return {
+        id: c.id,
+        name: c.name,
+        statusLabel: STATUS_LABEL.set_aside,
+        tone: STATUS_TONE.set_aside,
+        value:
+          `${aside.length} result${aside.length === 1 ? '' : 's'} set aside` +
+          (reasons.length ? ` — ${reasons.join('; ')}` : ''),
+      }
+    })
+  }, [vendor.checks, vendor.runs])
+
+  /** Checks that ran and hold nothing in force. */
+  const setAside = useMemo(
+    () => evidence.filter((e) => e.statusLabel === STATUS_LABEL.set_aside),
+    [evidence],
   )
+
+  /**
+   * The report's flags, plus one this screen can see and `buildReport`
+   * cannot: a check examined and then set aside in full.
+   *
+   * It is RAISED rather than left to the index, because a reader who
+   * skims the flags and the verdict is the ordinary reader. A finding
+   * removed from the score by a person is exactly the kind of thing
+   * that must not be discoverable only by reading forty rows carefully
+   * — and the file is read back, by somebody else, after the decision
+   * it supported has been questioned.
+   */
+  const flags = useMemo(() => {
+    if (!setAside.length) return report.flags
+    return [
+      ...report.flags,
+      {
+        level: 'medium',
+        text:
+          `${setAside.length} check${setAside.length === 1 ? '' : 's'} ` +
+          `examined and set aside by the analyst, so ` +
+          `${setAside.length === 1 ? 'it does' : 'they do'} not contribute ` +
+          `to the score: ` +
+          setAside.map((e) => `${e.name} (${e.value})`).join('; '),
+      },
+    ]
+  }, [report.flags, setAside])
 
   const exportText = () => {
     const lines = [
@@ -975,7 +1056,7 @@ export default function Report({ vendor, setPrimary }: PageProps) {
             <span className="doc-num">{report.sections.length + 1}</span>
             Risk flags
           </h2>
-          {report.flags.length === 0 ? (
+          {flags.length === 0 ? (
             <p className="doc-p">
               No adverse findings and no coverage gaps were raised by the checks that were run.
             </p>

@@ -29,6 +29,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from app.api import schemas as s
 from app.db.models import AuditLog, VendorCheck, Vendor
 from app.domain.types import CheckStatus
 from app.services.runner import CheckRunner, Finding, RunResult
@@ -182,85 +183,169 @@ class TestOnlyOneCounts:
         assert "first" in changed[0].detail
 
 
-class TestDeleting:
-    def test_deleting_the_primary_PROMOTES_rather_than_unscoring(
+class TestIgnoring:
+    """Setting a result aside, which REPLACED deleting it.
+
+    Deleting did what an analyst wanted — take a result out of the score
+    — by destroying the evidence and the spend record on the way. These
+    assert the replacement keeps both: the row survives whole, the
+    ledger still counts it, and only the score stops reading it.
+    """
+
+    def _ignore(self, session, vendor_id, run_id, reason="superseded"):
+        from app.api import routes
+        return routes.ignore_run(
+            vendor_id, run_id, s.IgnoreIn(reason=reason),
+            session=session, actor=_actor(),
+        )
+
+    def test_ignoring_the_primary_PROMOTES_rather_than_unscoring(
         self, session, seeded
     ):
         """A check left with results and no primary is plainly answered
         and silently uncounted."""
-        from app.api import routes
-
         vendor = _vendor(session, "RUN010")
         _run(session, vendor, "ssl", "first")
         _run(session, vendor, "ssl", "second")
         rows = _rows(session, vendor.id, "ssl")
 
-        routes.delete_run(vendor.id, rows[0].id, session=session,
-                          actor=_actor())
+        self._ignore(session, vendor.id, rows[0].id)
         session.expire_all()
         left = _rows(session, vendor.id, "ssl")
-        assert len(left) == 1
-        assert left[0].value == "second"
-        assert left[0].is_primary is True
 
-    def test_deleting_a_non_primary_leaves_the_primary_alone(
+        # BOTH rows are still there. That is the whole difference.
+        assert len(left) == 2
+        assert left[0].ignored_at is not None
+        assert left[0].is_primary is False
+        assert left[1].value == "second"
+        assert left[1].is_primary is True
+
+    def test_the_row_survives_whole_with_its_cost(self, session, seeded):
+        """An ignored call was still a call that was paid for. A ledger
+        built over these rows has to keep counting it."""
+        vendor = _vendor(session, "RUN010B")
+        _run(session, vendor, "ssl", "paid for")
+        row = _rows(session, vendor.id, "ssl")[0]
+        row.cost_paisa = 500
+        session.flush()
+
+        self._ignore(session, vendor.id, row.id)
+        session.expire_all()
+        kept = _rows(session, vendor.id, "ssl")[0]
+        assert kept.cost_paisa == 500
+        assert kept.value == "paid for"
+        assert kept.ignore_reason == "superseded"
+        assert kept.ignored_by == "a.mehta@q1ssl.com"
+
+    def test_ignoring_a_non_primary_leaves_the_primary_alone(
         self, session, seeded
     ):
-        from app.api import routes
-
         vendor = _vendor(session, "RUN011")
         _run(session, vendor, "ssl", "first")
         _run(session, vendor, "ssl", "second")
         rows = _rows(session, vendor.id, "ssl")
 
-        routes.delete_run(vendor.id, rows[1].id, session=session,
-                          actor=_actor())
+        self._ignore(session, vendor.id, rows[1].id)
         session.expire_all()
         left = _rows(session, vendor.id, "ssl")
-        assert [r.value for r in left] == ["first"]
+        assert [r.value for r in left] == ["first", "second"]
         assert left[0].is_primary is True
+        assert left[1].is_primary is False
 
-    def test_the_last_result_can_go_and_the_check_reads_as_never_run(
+    def test_an_ignored_result_never_reaches_the_scoring_map(
         self, session, seeded
     ):
+        """`checks` is what the scoring engine and the report read. This
+        is the line where "set aside" stops being a label and starts
+        changing the number."""
         from app.api import routes
 
         vendor = _vendor(session, "RUN012")
         _run(session, vendor, "ssl", "only")
-        rows = _rows(session, vendor.id, "ssl")
+        row = _rows(session, vendor.id, "ssl")[0]
 
-        routes.delete_run(vendor.id, rows[0].id, session=session,
-                          actor=_actor())
-        session.expire_all()
-        assert _rows(session, vendor.id, "ssl") == []
+        self._ignore(session, vendor.id, row.id)
+        out = routes._serialise(session, vendor)
 
-    def test_what_was_deleted_survives_in_the_audit_log(
+        assert "ssl" not in out.checks
+        # ...and it is still SERVED, so Step 3 can show it greyed with
+        # its reason. A result nobody can see is one nobody can reinstate.
+        assert [r.value for r in out.runs] == ["only"]
+        assert out.runs[0].ignoreReason == "superseded"
+
+    def test_the_act_and_its_reason_are_in_the_audit_log(
         self, session, seeded
     ):
-        """The row is going and the log is append-only, so the log is
-        the only place it can survive."""
-        from app.api import routes
-
         vendor = _vendor(session, "RUN013")
-        _run(session, vendor, "ssl", "the one deleted")
-        rows = _rows(session, vendor.id, "ssl")
+        _run(session, vendor, "ssl", "the one set aside")
+        row = _rows(session, vendor.id, "ssl")[0]
 
-        routes.delete_run(vendor.id, rows[0].id, session=session,
-                          actor=_actor())
+        self._ignore(session, vendor.id, row.id, reason="wrong director")
         entries = session.scalars(
             select(AuditLog).where(AuditLog.vendor_id == vendor.id)
         ).all()
-        deleted = [e for e in entries if e.action == "CHECK_RESULT_DELETED"]
-        assert len(deleted) == 1
-        assert "the one deleted" in deleted[0].detail
-        assert "it was the result that counted" in deleted[0].detail
+        logged = [e for e in entries if e.action == "CHECK_RESULT_IGNORED"]
+        assert len(logged) == 1
+        assert "the one set aside" in logged[0].detail
+        assert "wrong director" in logged[0].detail
+        assert "It was the result that counted" in logged[0].detail
+
+    def test_a_reason_is_required(self, session, seeded):
+        """Ignoring moves a client-facing number. "" would let that
+        happen with no account of it."""
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            s.IgnoreIn(reason="")
+
+    def test_reinstating_puts_it_back_and_is_audited(self, session, seeded):
+        from app.api import routes
+
+        vendor = _vendor(session, "RUN013B")
+        _run(session, vendor, "ssl", "second thoughts")
+        row = _rows(session, vendor.id, "ssl")[0]
+
+        self._ignore(session, vendor.id, row.id, reason="looked wrong")
+        routes.unignore_run(vendor.id, row.id, session=session,
+                            actor=_actor())
+        session.expire_all()
+
+        back = _rows(session, vendor.id, "ssl")[0]
+        assert back.ignored_at is None
+        assert back.ignore_reason is None
+        # The only result in force, so it counts again rather than
+        # leaving the check holding a live result and scoring nothing.
+        assert back.is_primary is True
+
+        entries = session.scalars(
+            select(AuditLog).where(AuditLog.vendor_id == vendor.id)
+        ).all()
+        assert any(e.action == "CHECK_RESULT_REINSTATED" for e in entries)
+
+    def test_an_ignored_result_cannot_be_made_the_one_that_counts(
+        self, session, seeded
+    ):
+        """Refused rather than silently reinstating: somebody set it
+        aside with a reason, and reversing that is its own act."""
+        from fastapi import HTTPException
+
+        from app.api import routes
+
+        vendor = _vendor(session, "RUN013C")
+        _run(session, vendor, "ssl", "first")
+        _run(session, vendor, "ssl", "second")
+        rows = _rows(session, vendor.id, "ssl")
+        self._ignore(session, vendor.id, rows[1].id)
+
+        with pytest.raises(HTTPException) as caught:
+            routes.mark_primary(vendor.id, rows[1].id, session=session,
+                                actor=_actor())
+        assert caught.value.status_code == 409
 
     def test_a_run_belonging_to_another_vendor_is_a_404(
         self, session, seeded
     ):
         from fastapi import HTTPException
-
-        from app.api import routes
 
         mine = _vendor(session, "RUN014")
         theirs = _vendor(session, "RUN015")
@@ -268,7 +353,7 @@ class TestDeleting:
         row = _rows(session, theirs.id, "ssl")[0]
 
         with pytest.raises(HTTPException) as caught:
-            routes.delete_run(mine.id, row.id, session=session, actor=_actor())
+            self._ignore(session, mine.id, row.id)
         assert caught.value.status_code == 404
 
 

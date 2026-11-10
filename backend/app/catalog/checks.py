@@ -747,6 +747,19 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — identity",
         endpoint="POST /profile-api/mobile/prefill",
         provider=GL,
+        # ₹5 a call, every Gridlines endpoint, charged ONCE PER PERSON.
+        #
+        # These four carried no `cost_paisa` at all, so they defaulted to
+        # zero — which made `guard_paid()` inert over them and had the
+        # screen label a real, billable call "free". A spend guard that
+        # waves a provider through is not a guard, and a price of zero is
+        # a claim about money that was simply untrue.
+        #
+        # Flat ₹5 is an interim set by the client until the admin screen
+        # that owns prices exists. The per-person part is not a detail:
+        # one tick against a board of five directors is five calls and
+        # ₹25.
+        cost_paisa=500,
         note="Name, PAN, date of birth and address behind the contact "
              "number. Personal data about an individual, not a company record.",
         params=(
@@ -763,6 +776,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — digital footprint",
         endpoint="POST /profile-api/mobile/digital-footprint",
         provider=GL,
+        cost_paisa=500,   # ₹5, per person — see `prefill`
         note="Which online services this number and email appear against.",
         params=(
             _p("mobile", "Contact mobile", required=True,
@@ -798,6 +812,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — EPFO membership",
         endpoint="POST /epfo-api/fetch-uan",
         provider=GL,
+        cost_paisa=500,   # ₹5, per person — see `prefill`
         note="The UAN behind the contact number. The person's own PAN "
              "narrows the match — optional, and NOT the company's.",
         params=(
@@ -824,6 +839,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Contact person — employment history",
         endpoint="POST /epfo-api/employment-history/fetch-by-uan",
         provider=GL,
+        cost_paisa=500,   # ₹5, per person — see `prefill`
         note="Employers and dates against a UAN. Give the UAN directly — "
              "this check stands on its own.",
         # NO `requires`. It used to chain off `epfomember`, so the only

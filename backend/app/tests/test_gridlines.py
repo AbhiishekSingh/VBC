@@ -1692,3 +1692,45 @@ class TestPrefillRenders:
         assert "ABCDE1234F" in blob
         assert "TEST@EXAMPLE.COM" in blob
         assert "9876543210" in blob
+
+
+class TestGridlinesIsPriced:
+    """₹5 a call, every Gridlines endpoint, charged once per person.
+
+    These four carried no `cost_paisa` at all, so they defaulted to
+    zero — which made `guard_paid()` inert over them and had the screen
+    label a real, billable call "free". A spend guard that waves a
+    provider through is not a guard, and a price of zero is a claim
+    about money that was simply untrue.
+    """
+
+    def test_every_gridlines_check_costs_five_rupees(self):
+        from app.catalog.checks import CHECKS
+
+        gridlines = [c for c in CHECKS if c.provider == "gridlines"]
+        assert len(gridlines) == 4, "the Gridlines surface changed"
+        for check in gridlines:
+            assert check.cost_paisa == 500, check.id
+
+    def test_the_price_is_per_person(self):
+        """One tick against a board of five directors is five calls and
+        ₹25. The flat catalogue price would quote a fifth of it, on
+        exactly the checks nobody can price by eye."""
+        from app.catalog.checks import CHECKS_BY_ID
+        from app.domain.validation import split_subjects
+
+        subjects = split_subjects("9876543210\n9876543211\n9876543212")
+        assert len(subjects) == 3
+        assert CHECKS_BY_ID["prefill"].cost_paisa * len(subjects) == 1500
+
+    def test_the_spend_guard_now_applies_to_them(self):
+        """At zero, `guard_paid()` waved every Gridlines call through and
+        `VBC_ALLOW_PAID_CALLS=false` stopped nothing. A guard that cannot
+        refuse is not a guard."""
+        from app.catalog.checks import CHECKS
+
+        for check in (c for c in CHECKS if c.provider == "gridlines"):
+            assert check.cost_paisa > 0, (
+                f"{check.id} is billable but priced at zero, so the spend "
+                f"guard cannot refuse it"
+            )

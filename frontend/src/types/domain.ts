@@ -162,6 +162,20 @@ export interface CheckResult {
    *  typed LAST — four runs against four directors would otherwise all
    *  claim the fourth director's number. */
   inputs?: Record<string, string>
+
+  /* ---- set aside by a person -------------------------------------
+   *
+   * Null/absent means the result is IN FORCE. Set means somebody took
+   * it out of the score deliberately, and said why.
+   *
+   * The row is kept whole either way: payload, facts and cost. History
+   * still counts it, because it was still a call that was paid for.
+   * This replaced a delete, which took all three away to achieve the
+   * one thing the analyst actually wanted.
+   */
+  ignoredAt?: string | null
+  ignoredBy?: string | null
+  ignoreReason?: string | null
 }
 
 export interface ManualEntry {
@@ -356,4 +370,60 @@ export interface GatedVerdict {
   gated: boolean
   reasons: string[]
   headline: string
+}
+
+/* ---- API call history -------------------------------------------------
+ *
+ * One row per call ever made for a vendor, with what it cost. Read by the
+ * History screen and by nothing that computes a finding.
+ *
+ * Separate from `AuditEntry` on purpose. The audit log records ACTIONS —
+ * who approved what, who set a result aside — in prose, and prose cannot
+ * be summed. This is the ledger: one row, one call, one price, joined up
+ * to the vendor and the client it was spent on.
+ */
+
+export interface HistoryRow {
+  runId: number
+  clientId: string
+  clientName: string
+  vendorId: string
+  vendorName: string
+  checkId: string
+  checkName: string
+  provider: string
+  status: CheckStatus
+  value: string
+  /** What was asked, snapshotted at run time. */
+  inputs: Record<string, string>
+  costPaisa: number
+  credits: number
+  /** How many times this check had been attempted when this row ran. */
+  attempts: number
+  fetchedAt: string
+  /** The result SCAN, the risk score and the report read. */
+  isPrimary: boolean
+  /** Set aside by a person — still billed, still listed. */
+  ignoredAt?: string | null
+  ignoredBy?: string | null
+  ignoreReason?: string | null
+}
+
+export interface HistoryTotal {
+  id: string
+  name: string
+  calls: number
+  costPaisa: number
+  credits: number
+}
+
+export interface HistoryPage {
+  rows: HistoryRow[]
+  /** Spend rolled up per client and per vendor, over the SAME filter the
+   *  rows were drawn with — so the totals and the list always agree. */
+  byClient: HistoryTotal[]
+  byVendor: HistoryTotal[]
+  totalCalls: number
+  totalCostPaisa: number
+  totalCredits: number
 }

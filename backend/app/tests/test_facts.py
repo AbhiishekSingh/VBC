@@ -341,6 +341,7 @@ class TestApiBoundary:
             "detail": "d", "facts": blob, "raw_response": {"a": 1},
             "cost_paisa": 500, "fetched_at": None, "is_primary": True,
             "inputs": {"cin": "U1"},
+            "ignored_at": None, "ignored_by": None, "ignore_reason": None,
         })()
         out = routes._run_out(row)
         assert out.facts == blob, (
