@@ -12,14 +12,15 @@ Two habits run through every handler:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api import schemas as s
-from app.catalog.checks import CHECKS, expand_selection
+from app.catalog.checks import CHECKS, CHECKS_BY_ID, expand_selection
 from app.catalog.manual_fields import TEMPLATES_BY_ID
 from app.catalog.scan import SCAN_PARAMETERS, scan_parameter
 from app.catalog.surveillance import SURVEILLANCE_PARAMETERS
@@ -77,12 +78,25 @@ def _audit(session: Session, vendor_id: str | None, actor: str, action: str, det
     session.add(AuditLog(vendor_id=vendor_id, actor=actor, action=action, detail=detail))
 
 
+def _day(text: str) -> datetime:
+    """A YYYY-MM-DD filter as an aware midnight.
+
+    Naive would compare against a timestamptz column and Postgres would
+    read it in the SERVER's zone, which is how a date filter quietly
+    shifts by five and a half hours.
+    """
+    return datetime.combine(date.fromisoformat(text[:10]), datetime.min.time(),
+                            tzinfo=timezone.utc)
+
+
 def _run_out(row: VendorCheck) -> s.CheckResultOut:
     return s.CheckResultOut(
         id=row.id, checkId=row.check_id, status=row.status, value=row.value,
         detail=row.detail, facts=row.facts, rawResponse=row.raw_response,
         costPaisa=row.cost_paisa, fetchedAt=row.fetched_at,
         isPrimary=row.is_primary, inputs=row.inputs or {},
+        ignoredAt=row.ignored_at, ignoredBy=row.ignored_by,
+        ignoreReason=row.ignore_reason,
     )
 
 
@@ -105,14 +119,27 @@ def _serialise(session: Session, vendor: Vendor) -> s.VendorOut:
         .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
     ).all()
 
-    checks = {r.check_id: _run_out(r) for r in rows if r.is_primary}
-    # A check with results but no primary should be impossible — the
-    # first run takes it, and deleting one promotes another. If it ever
-    # happens, falling back to the newest keeps the vendor readable and
-    # the score computable rather than silently dropping the check; the
-    # repair belongs in whatever let it happen.
-    for row in reversed(rows):
+    # IGNORED RESULTS NEVER REACH `checks`.
+    #
+    # `checks` is what the scoring engine and the report read, so this
+    # one line is where "set aside" stops being a label and starts
+    # changing the number. A fallback that reached for an ignored row
+    # when nothing else was in force would quietly undo the judgement a
+    # person made, which is the whole thing being ignored means.
+    in_force = [r for r in rows if r.ignored_at is None]
+
+    checks = {r.check_id: _run_out(r) for r in in_force if r.is_primary}
+    # A check with results in force but no primary should be impossible —
+    # the first run takes it, and ignoring one promotes another. If it
+    # ever happens, falling back to the newest IN-FORCE result keeps the
+    # vendor readable and the score computable rather than silently
+    # dropping the check; the repair belongs in whatever let it happen.
+    for row in reversed(in_force):
         checks.setdefault(row.check_id, _run_out(row))
+
+    # `runs` is every result, ignored ones included: Step 3 shows them
+    # greyed with their reason, and a result nobody can see is a result
+    # nobody can reinstate.
     runs = [_run_out(r) for r in rows]
 
     ratings = {
@@ -502,6 +529,16 @@ def mark_primary(vendor_id: str, run_id: int,
     row = session.get(VendorCheck, run_id)
     if row is None or row.vendor_id != vendor.id:
         raise HTTPException(status_code=404, detail="No such result.")
+    if row.ignored_at is not None:
+        # Refused rather than silently reinstating. Somebody set this
+        # result aside with a reason; making it the one the score reads
+        # is a reversal of that, and a reversal gets its own act and its
+        # own audit line.
+        raise HTTPException(
+            status_code=409,
+            detail="That result was set aside. Reinstate it first, then "
+                   "choose it.",
+        )
     if row.is_primary:
         return _serialise(session, vendor)
 
@@ -532,56 +569,147 @@ def mark_primary(vendor_id: str, run_id: int,
     return _serialise(session, vendor)
 
 
-@router.delete("/vendors/{vendor_id}/runs/{run_id}", response_model=s.VendorOut)
-def delete_run(vendor_id: str, run_id: int,
+def _promote_after(session: Session, vendor_id: str, check_id: str,
+                   actor_email: str, because: str) -> None:
+    """Give the check a new result that counts, if one is left.
+
+    A check that plainly holds results and is silently unscored is the
+    failure this prevents — it reads on every screen as examined, and
+    contributes nothing to the number the client is shown.
+
+    Only IN-FORCE results are eligible. Promoting an ignored one would
+    reinstate by the back door a judgement somebody made deliberately.
+    """
+    replacement = session.scalar(
+        select(VendorCheck)
+        .where(VendorCheck.vendor_id == vendor_id,
+               VendorCheck.check_id == check_id,
+               VendorCheck.ignored_at.is_(None))
+        .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
+        .limit(1)
+    )
+    if replacement is None:
+        return
+    replacement.is_primary = True
+    _audit(
+        session, vendor_id, actor_email, "CHECK_PRIMARY_SET",
+        f"{check_id}: {because}, so the run from "
+        f"{replacement.fetched_at:%d %b %Y %H:%M} "
+        f"({replacement.status} · {replacement.value}) is now the one the "
+        f"score reads.",
+    )
+
+
+@router.post("/vendors/{vendor_id}/runs/{run_id}/ignore",
+             response_model=s.VendorOut)
+def ignore_run(vendor_id: str, run_id: int, body: s.IgnoreIn,
                session: Session = Depends(get_session),
                actor: User = Depends(current_user)):
-    """Remove one result of a check.
+    """Set one result aside. It is kept; it stops counting.
 
-    Deleting EVIDENCE, so three things hold:
+    THIS REPLACED A DELETE, and the replacement is the point.
 
-      * the audit log keeps what was deleted — check, status, value,
-        when it was obtained and what it cost — because the row is
-        going and the log is append-only;
-      * deleting the primary PROMOTES the newest of what remains,
-        rather than leaving a check that plainly has results and is
-        silently unscored;
-      * the last result of a check can be deleted, and then the check
-        reads as never run, which is true.
+    Deleting did what an analyst wanted — take a result out of the score
+    — by destroying the evidence and the spend record to get there. Two
+    commitments this product makes were in conflict, and the delete
+    resolved them the wrong way: a result is evidence and evidence is
+    kept, and a call that cost money stays in the ledger whatever
+    anybody later decides about its answer.
+
+    So the row stays whole. Its payload, its facts and its cost are
+    untouched, History still counts it, and the score stops reading it.
+
+    A REASON IS REQUIRED. Ignoring moves a client-facing number, and a
+    file that cannot say why a finding was set aside is not a file
+    anyone can defend a year later. Same stance as the override reason
+    on a decision that contradicts the recommendation.
+
+    Ignoring the result that counts promotes the newest one still in
+    force. Ignoring the last one leaves the check unscored and SAID TO
+    BE SET ASIDE — never silently, and never as "not checked", which
+    would make a deliberate human judgement look like a gap in
+    coverage.
     """
     vendor = _vendor_or_404(session, vendor_id)
     row = session.get(VendorCheck, run_id)
     if row is None or row.vendor_id != vendor.id:
         raise HTTPException(status_code=404, detail="No such result.")
+    if row.ignored_at is not None:
+        return _serialise(session, vendor)
 
     was_primary, check_id = row.is_primary, row.check_id
-    _audit(
-        session, vendor.id, actor.email, "CHECK_RESULT_DELETED",
-        f"{check_id}: deleted the run from {row.fetched_at:%d %b %Y %H:%M} "
-        f"({row.status} · {row.value}), cost "
-        f"₹{(row.cost_paisa or 0) / 100:.2f}"
-        + (" — it was the result that counted." if was_primary else "."),
-    )
-    session.delete(row)
+    row.ignored_at = datetime.now(timezone.utc)
+    row.ignored_by = actor.email
+    row.ignore_reason = body.reason.strip()
+    # Cleared before anything is promoted: the partial unique index
+    # allows one primary per check, so setting first would be rejected.
+    row.is_primary = False
     session.flush()
 
+    _audit(
+        session, vendor.id, actor.email, "CHECK_RESULT_IGNORED",
+        f"{check_id}: set aside the run from "
+        f"{row.fetched_at:%d %b %Y %H:%M} ({row.status} · {row.value}), "
+        f"cost ₹{(row.cost_paisa or 0) / 100:.2f} — {row.ignore_reason}"
+        + (" It was the result that counted." if was_primary else ""),
+    )
+
     if was_primary:
-        replacement = session.scalar(
-            select(VendorCheck)
-            .where(VendorCheck.vendor_id == vendor.id,
-                   VendorCheck.check_id == check_id)
-            .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
-            .limit(1)
-        )
-        if replacement is not None:
-            replacement.is_primary = True
-            _audit(
-                session, vendor.id, actor.email, "CHECK_PRIMARY_SET",
-                f"{check_id}: the result that counted was deleted, so the "
-                f"run from {replacement.fetched_at:%d %b %Y %H:%M} "
-                f"({replacement.status} · {replacement.value}) is now the "
-                f"one the score reads.",
-            )
+        _promote_after(session, vendor.id, check_id, actor.email,
+                       "the result that counted was set aside")
+    session.commit()
+    return _serialise(session, vendor)
+
+
+@router.post("/vendors/{vendor_id}/runs/{run_id}/unignore",
+             response_model=s.VendorOut)
+def unignore_run(vendor_id: str, run_id: int,
+                 session: Session = Depends(get_session),
+                 actor: User = Depends(current_user)):
+    """Put a result back in force.
+
+    Reversible on purpose: what was recorded is a person's judgement,
+    and people reconsider. Both directions are audited, so the file
+    shows the reconsideration rather than hiding it.
+
+    It does NOT take back the result that counts. Reinstating one of six
+    is not a claim that it should be the one the score reads; that is
+    `markPrimary`, a separate and separately audited act. The only
+    exception is a check with nothing else in force, where this result
+    is the only candidate and leaving it unscored would mean a check
+    holding a live result and contributing nothing.
+    """
+    vendor = _vendor_or_404(session, vendor_id)
+    row = session.get(VendorCheck, run_id)
+    if row is None or row.vendor_id != vendor.id:
+        raise HTTPException(status_code=404, detail="No such result.")
+    if row.ignored_at is None:
+        return _serialise(session, vendor)
+
+    was = row.ignore_reason
+    row.ignored_at = None
+    row.ignored_by = None
+    row.ignore_reason = None
+    session.flush()
+
+    _audit(
+        session, vendor.id, actor.email, "CHECK_RESULT_REINSTATED",
+        f"{row.check_id}: the run from {row.fetched_at:%d %b %Y %H:%M} "
+        f"({row.status} · {row.value}) counts again"
+        + (f" — it had been set aside: {was}" if was else "."),
+    )
+
+    has_primary = session.scalar(
+        select(VendorCheck.id).where(
+            VendorCheck.vendor_id == vendor.id,
+            VendorCheck.check_id == row.check_id,
+            VendorCheck.is_primary.is_(True),
+        ).limit(1)
+    )
+    if has_primary is None:
+        _promote_after(session, vendor.id, row.check_id, actor.email,
+                       "a result was reinstated and the check had none in "
+                       "force")
     session.commit()
     return _serialise(session, vendor)
 
@@ -930,6 +1058,120 @@ def list_audit(vendorId: str | None = Query(None), limit: int = Query(500, le=20
     if vendorId:
         stmt = stmt.where(AuditLog.vendor_id == vendorId)
     return list(session.scalars(stmt))
+
+
+@router.get("/history", response_model=s.HistoryOut)
+def list_history(
+    # ANNOTATED, not `= Query(...)`. With the old spelling the DEFAULT of
+    # each parameter is the `Query` object itself, which is truthy — so
+    # `if clientId:` is true when nobody passed a client, and `frm[:10]`
+    # raises on an object that is not subscriptable. FastAPI fills these
+    # in when it routes a request and hides the problem; anything calling
+    # the function directly, a test included, walks straight into it.
+    # Annotated keeps the real default where a default belongs.
+    clientId: Annotated[str | None, Query()] = None,
+    vendorId: Annotated[str | None, Query()] = None,
+    frm: Annotated[str | None, Query(alias="from")] = None,
+    to: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(le=5000)] = 1000,
+    session: Session = Depends(get_session),
+):
+    """Every API call made, with what it cost, for whom.
+
+    THE LEDGER, as distinct from the audit log.
+
+    The audit log answers "what happened and who did it", in sentences.
+    This answers "what has been spent, on which vendor, for which
+    client" — a question about money, which means it has to be numbers
+    that add up. The two are not substitutes and neither replaces the
+    other.
+
+    Three rules this follows:
+
+      * IGNORED RESULTS ARE INCLUDED, and marked. A result taken out of
+        the score was still a call that was paid for. Filtering them out
+        would under-report the bill silently, which is the hole that
+        retiring the delete existed to close in the first place — it
+        would be absurd to stop destroying rows and then omit them here.
+
+      * THE TOTALS ARE COMPUTED OVER THE SAME FILTER AS THE ROWS. Summed
+        from the rows returned, never from a second query, so the number
+        at the top and the list below it cannot disagree. Two queries
+        against one question is how a page ends up arguing with itself.
+
+      * ROWS ARE NEWEST FIRST and capped. A ledger that times out is a
+        ledger nobody opens.
+    """
+    stmt = (
+        select(VendorCheck, Vendor, Client)
+        .join(Vendor, VendorCheck.vendor_id == Vendor.id)
+        .join(Client, Vendor.client_id == Client.id)
+        .order_by(VendorCheck.fetched_at.desc(), VendorCheck.id.desc())
+        .limit(limit)
+    )
+    if vendorId:
+        stmt = stmt.where(VendorCheck.vendor_id == vendorId)
+    if clientId:
+        stmt = stmt.where(Vendor.client_id == clientId)
+    # Dates are half-open on the right: `to` names a DAY, and a row
+    # stamped 17:40 on that day belongs to it. Parsed leniently because
+    # a malformed filter should narrow nothing rather than 500.
+    if frm:
+        try:
+            stmt = stmt.where(VendorCheck.fetched_at >= _day(frm))
+        except ValueError:
+            pass
+    if to:
+        try:
+            stmt = stmt.where(
+                VendorCheck.fetched_at < _day(to) + timedelta(days=1))
+        except ValueError:
+            pass
+
+    rows: list[s.HistoryRowOut] = []
+    for run, vendor, client in session.execute(stmt).all():
+        definition = CHECKS_BY_ID.get(run.check_id)
+        rows.append(s.HistoryRowOut(
+            runId=run.id,
+            clientId=client.id, clientName=client.name,
+            vendorId=vendor.id, vendorName=vendor.name,
+            checkId=run.check_id,
+            checkName=definition.name if definition else run.check_id,
+            provider=definition.provider if definition else "",
+            status=run.status, value=run.value or "",
+            inputs=run.inputs or {},
+            costPaisa=run.cost_paisa or 0, credits=run.credits or 0,
+            attempts=run.attempts or 1, fetchedAt=run.fetched_at,
+            isPrimary=run.is_primary,
+            ignoredAt=run.ignored_at, ignoredBy=run.ignored_by,
+            ignoreReason=run.ignore_reason,
+        ))
+
+    def roll(key, name) -> list[s.HistoryTotalOut]:
+        acc: dict[str, dict] = {}
+        for row in rows:
+            bucket = acc.setdefault(
+                key(row),
+                {"id": key(row), "name": name(row), "calls": 0,
+                 "costPaisa": 0, "credits": 0},
+            )
+            bucket["calls"] += 1
+            bucket["costPaisa"] += row.costPaisa
+            bucket["credits"] += row.credits
+        return [
+            s.HistoryTotalOut(**b)
+            for b in sorted(acc.values(),
+                            key=lambda b: (-b["costPaisa"], b["name"]))
+        ]
+
+    return s.HistoryOut(
+        rows=rows,
+        byClient=roll(lambda r: r.clientId, lambda r: r.clientName),
+        byVendor=roll(lambda r: r.vendorId, lambda r: r.vendorName),
+        totalCalls=len(rows),
+        totalCostPaisa=sum(r.costPaisa for r in rows),
+        totalCredits=sum(r.credits for r in rows),
+    )
 
 
 @router.get("/cost-reference", response_model=list[s.CostRefOut])

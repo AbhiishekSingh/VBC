@@ -854,16 +854,26 @@ function RunList({
 }) {
   const toast = useToast()
   const [busy, setBusy] = useState<number | null>(null)
-  const [confirming, setConfirming] = useState<number | null>(null)
+  const [asking, setAsking] = useState<number | null>(null)
+  const [reason, setReason] = useState('')
 
   /*
-    ONE RESULT AND NO ROW ID IS THE OLD SHAPE, and it renders exactly as it
-    always did — no header, no controls. A vendor whose checks each ran
-    once has nothing to choose between, and a "Primary" tag on a list of
-    one is noise that teaches the reader to ignore the tag on the lists
-    where it matters.
+    ONE RESULT IS QUIETER, NOT BARE.
+
+    The header used to be suppressed entirely for a check that had run
+    once: nothing to choose between, and a "Counts" tag on a list of one
+    is noise that teaches the reader to ignore the tag on the lists where
+    it matters. Both still true — so the ORDINAL and the primary controls
+    are what a single result does without.
+
+    The header itself stays, because it now carries Ignore, and a result
+    that cannot be set aside because it happens to be the only one is a
+    control that disappears exactly when it is first needed. A check run
+    once and run wrong is the ordinary case, not an edge one.
+
+    `single` therefore means "do not clutter", never "do not offer".
   */
-  const single = runs.length === 1
+  const single = runs.length === 1 && !runs[0]?.ignoredAt
 
   const mark = async (runId: number) => {
     setBusy(runId)
@@ -877,14 +887,40 @@ function RunList({
     }
   }
 
-  const remove = async (runId: number) => {
+  /*
+    SET ASIDE, NOT DELETED.
+
+    There was a Delete here. It did what the analyst wanted — take a
+    result out of the score — by destroying the evidence and the spend
+    record to get there, which put two of this product's commitments
+    against each other and resolved them the wrong way.
+
+    The row now stays whole. Only the score stops reading it, and the
+    reason is kept beside it, because a file that cannot say why a
+    finding was set aside is not one anybody can defend a year later.
+  */
+  const ignore = async (runId: number) => {
+    if (!reason.trim()) return
     setBusy(runId)
     try {
-      setVendor(await api.deleteRun(vendor.id, runId))
-      setConfirming(null)
-      toast('Result deleted. It stays in the audit log.')
+      setVendor(await api.ignoreRun(vendor.id, runId, reason.trim()))
+      setAsking(null)
+      setReason('')
+      toast('Set aside. It is kept, and still counted as spend.')
     } catch (e) {
-      toast.error(e, 'That result could not be deleted.')
+      toast.error(e, 'That result could not be set aside.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const reinstate = async (runId: number) => {
+    setBusy(runId)
+    try {
+      setVendor(await api.unignoreRun(vendor.id, runId))
+      toast('Back in force.')
+    } catch (e) {
+      toast.error(e, 'That result could not be reinstated.')
     } finally {
       setBusy(null)
     }
@@ -897,18 +933,30 @@ function RunList({
         const subject = runSubject(checkId, run)
 
         return (
-          <div className={`run-item${run.isPrimary && !single ? ' is-primary' : ''}`} key={keyId}>
-            {!single && (
-              <div className="run-head">
-                <span className="run-ord small nums muted">#{runs.length - index}</span>
-                <StatusBadge status={run.status} />
+          <div
+            className={
+              `run-item${run.isPrimary && !single ? ' is-primary' : ''}` +
+              (run.ignoredAt ? ' is-aside' : '')
+            }
+            key={keyId}
+          >
+            {(
+              <div className={`run-head${single ? ' is-lone' : ''}`}>
+                {!single && (
+                  <span className="run-ord small nums muted">
+                    #{runs.length - index}
+                  </span>
+                )}
+                {!single && <StatusBadge status={run.status} />}
                 <span className="run-sum">
-                  <span className="run-value">{run.value || '—'}</span>
+                  {!single && <span className="run-value">{run.value || '—'}</span>}
                   {/* THE INPUT IS THE IDENTITY of a result on a check that
                       was run several times. Without it the list reads as
                       four answers to one question. */}
-                  {subject && <span className="small mono muted"> · {subject}</span>}
-                  {run.fetchedAt && (
+                  {!single && subject && (
+                    <span className="small mono muted"> · {subject}</span>
+                  )}
+                  {!single && run.fetchedAt && (
                     <span className="small muted">
                       {' '}
                       · {new Date(run.fetchedAt).toLocaleString()}
@@ -916,51 +964,111 @@ function RunList({
                   )}
                 </span>
 
-                {run.isPrimary ? (
-                  <span className="run-tag" title="The score and the report read this result">
-                    Counts
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn sm ghost"
-                    disabled={busy !== null || run.id === undefined}
-                    onClick={() => run.id !== undefined && void mark(run.id)}
-                  >
-                    Use this
-                  </button>
-                )}
-
-                {confirming === run.id ? (
-                  <span className="run-confirm small">
-                    {run.isPrimary
-                      ? 'Delete? The newest remaining result takes over the score.'
-                      : 'Delete this result?'}
-                    <button
-                      type="button"
-                      className="btn sm danger"
-                      disabled={busy !== null}
-                      onClick={() => run.id !== undefined && void remove(run.id)}
-                    >
-                      Delete
-                    </button>
+                {/* SET ASIDE: the tag says so, and says WHY on the row
+                    rather than in a tooltip. A result that quietly stops
+                    counting is the one thing this must never produce. */}
+                {run.ignoredAt ? (
+                  <>
+                    <span className="run-aside-tag" title={run.ignoreReason ?? ''}>
+                      Set aside
+                    </span>
+                    <span className="run-aside-why small">
+                      {run.ignoreReason}
+                      {run.ignoredBy && (
+                        <span className="muted"> · {run.ignoredBy}</span>
+                      )}
+                    </span>
                     <button
                       type="button"
                       className="btn sm ghost"
-                      onClick={() => setConfirming(null)}
+                      disabled={busy !== null || run.id === undefined}
+                      onClick={() => run.id !== undefined && void reinstate(run.id)}
                     >
-                      Keep
+                      Reinstate
                     </button>
-                  </span>
+                  </>
                 ) : (
-                  <button
-                    type="button"
-                    className="btn sm ghost run-del"
-                    disabled={busy !== null || run.id === undefined}
-                    onClick={() => run.id !== undefined && setConfirming(run.id)}
-                  >
-                    Delete
-                  </button>
+                  <>
+                    {/* The primary controls are the part a list of one
+                        does without: there is nothing to choose between. */}
+                    {single ? null : run.isPrimary ? (
+                      <span
+                        className="run-tag"
+                        title="The score and the report read this result"
+                      >
+                        Counts
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn sm ghost"
+                        disabled={busy !== null || run.id === undefined}
+                        onClick={() => run.id !== undefined && void mark(run.id)}
+                      >
+                        Use this
+                      </button>
+                    )}
+
+                    {/* ASKS FOR A REASON, in place, and will not proceed
+                        without one. Ignoring moves a client-facing number;
+                        the server refuses a blank reason and so does this,
+                        rather than letting the analyst discover the rule
+                        from an error. */}
+                    {asking === run.id ? (
+                      <span className="run-confirm small">
+                        <input
+                          className="input run-reason"
+                          autoFocus
+                          value={reason}
+                          placeholder={
+                            run.isPrimary
+                              ? 'Why? The newest result still in force takes over.'
+                              : 'Why is this being set aside?'
+                          }
+                          onChange={(e) => setReason(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && run.id !== undefined) {
+                              void ignore(run.id)
+                            }
+                            if (e.key === 'Escape') {
+                              setAsking(null)
+                              setReason('')
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="btn sm primary"
+                          disabled={busy !== null || !reason.trim()}
+                          onClick={() => run.id !== undefined && void ignore(run.id)}
+                        >
+                          Set aside
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm ghost"
+                          onClick={() => {
+                            setAsking(null)
+                            setReason('')
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn sm ghost run-del"
+                        disabled={busy !== null || run.id === undefined}
+                        onClick={() => {
+                          setReason('')
+                          if (run.id !== undefined) setAsking(run.id)
+                        }}
+                      >
+                        Ignore
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -1173,8 +1281,24 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
       </div>
 
       {CHECK_GROUPS.map((group) => {
+        /*
+          A CHECK WHOSE EVERY RESULT WAS SET ASIDE STAYS ON THIS SCREEN.
+
+          This read `vendor.checks[c.id]`, which holds only results in
+          force — so setting aside the last result of a check made the
+          whole row disappear. Three things wrong with that, and the
+          third is the one that bites: it looks deleted, when the point
+          of Ignore is that nothing is; the reader cannot see that a
+          finding was taken out, which is the opposite of what an audit
+          file is for; and the Reinstate button goes with it, so the act
+          becomes irreversible through the screen that performed it.
+        */
         const rows = CHECKS.filter(
-          (c) => c.group === group.id && vendor.checks[c.id] && inScope(c.id),
+          (c) =>
+            c.group === group.id &&
+            inScope(c.id) &&
+            (vendor.checks[c.id] ||
+              (vendor.runs ?? []).some((r) => r.checkId === c.id)),
         )
         if (!rows.length) return null
 
@@ -1198,7 +1322,6 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
           >
             <div className="acc">
               {rows.map((check) => {
-                const result = vendor.checks[check.id]
                 const isOpen = open.has(check.id)
                 /*
                   EVERY RESULT OF THIS CHECK, newest first, with the
@@ -1212,7 +1335,28 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
                   what it used to show.
                 */
                 const runs = (vendor.runs ?? []).filter((r) => r.checkId === check.id)
-                const theseRuns = runs.length ? runs : [result]
+                const inForce = vendor.checks[check.id]
+                const theseRuns = runs.length ? runs : inForce ? [inForce] : []
+
+                /*
+                  The header summarises what COUNTS. With nothing in
+                  force there is no such thing, so it summarises the
+                  state instead — "set aside", with the reason — rather
+                  than borrowing the first ignored result's words and
+                  presenting a withdrawn finding as the finding.
+                */
+                const aside = !inForce
+                const reasons = aside
+                  ? Array.from(
+                      new Set(
+                        theseRuns
+                          .map((r) => r.ignoreReason)
+                          .filter(Boolean) as string[],
+                      ),
+                    )
+                  : []
+                const result = inForce ?? theseRuns[0]
+                if (!result) return null
 
                 return (
                   <div className={`acc-item${isOpen ? ' is-open' : ''}`} key={check.id}>
@@ -1244,14 +1388,27 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
                       </span>
 
                       <span className="acc-status">
-                        <StatusBadge status={result.status} />
+                        {aside ? (
+                          <span className="run-aside-tag">Set aside</span>
+                        ) : (
+                          <StatusBadge status={result.status} />
+                        )}
                       </span>
 
                       <span className="acc-result">
-                        <span className="acc-value">{result.value || '—'}</span>
+                        <span className="acc-value">
+                          {aside
+                            ? `${theseRuns.length} result${
+                                theseRuns.length === 1 ? '' : 's'
+                              } set aside`
+                            : result.value || '—'}
+                        </span>
                         <span className="small muted">
-                          {publicDetail(result.detail, { capitalise: true }) ||
-                            STATUS_EXPLANATION[result.status]}
+                          {aside
+                            ? reasons.join('; ') ||
+                              'Kept as evidence; not read by the score.'
+                            : publicDetail(result.detail, { capitalise: true }) ||
+                              STATUS_EXPLANATION[result.status]}
                         </span>
                       </span>
 

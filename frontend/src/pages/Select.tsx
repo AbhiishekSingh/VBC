@@ -64,6 +64,7 @@ import {
 } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
 import type { PageProps } from '@/App'
+import type { CheckStatus, Vendor } from '@/types/domain'
 
 /** A check plus everything it transitively needs. */
 function withPrerequisites(checkId: string, acc: string[] = []): string[] {
@@ -104,6 +105,31 @@ const isSelectable = (id: string, _blocked?: ReadonlyMap<string, string>): boole
   return Boolean(def) && def!.state !== 'not_configured' && !def!.always
 }
 
+/**
+ * Checks that have ANSWERED and are therefore locked on.
+ *
+ * ONLY pass / warn / fail count. A check whose results are all
+ * `unavailable`, `not_configured` or `skipped_missing_input` produced no
+ * evidence — nothing was examined, so there is nothing to protect and it
+ * stays unlocked and re-runnable. This is the runner's own definition of
+ * "already on file", deliberately, so the screen and the server cannot
+ * disagree about what a second Run would charge for.
+ *
+ * Read from `checks`, not `runs`: `checks` holds the results in force, so
+ * a check whose every result was SET ASIDE unlocks again — which is
+ * right, because the analyst has said the evidence does not stand and
+ * running it again is how they replace it.
+ */
+const ANSWERED: CheckStatus[] = ['pass', 'warn', 'fail']
+
+function answeredChecks(vendor: Vendor): Set<string> {
+  return new Set(
+    Object.values(vendor.checks)
+      .filter((r) => ANSWERED.includes(r.status))
+      .map((r) => r.checkId),
+  )
+}
+
 /** Names rather than raw ids — "needs mca, dirs" told nobody anything. */
 const nameOf = (id: string): string => CHECKS.find((c) => c.id === id)?.name ?? id
 
@@ -123,6 +149,21 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const selected = vendor.selected
+
+  /*
+    LOCKED ON: a check that has already answered.
+
+    Deselecting used to be how an analyst took a result out of the score,
+    and it had two faults. It hid the result rather than recording a
+    judgement about it — on the screen it became indistinguishable from a
+    check nobody ever ran — and the next Run then re-called and re-billed
+    everything still ticked anyway.
+
+    So the tick is now a record of what has been bought, and it cannot be
+    taken back. Taking a RESULT out of the score is Ignore, on Step 3,
+    which keeps the evidence, keeps the spend, and asks why.
+  */
+  const locked = useMemo(() => answeredChecks(vendor), [vendor.checks])
 
   /*
     WHICH SOURCES ARE REFUSING OUR ACCOUNT RIGHT NOW.
@@ -214,6 +255,10 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
   const toggle = async (checkId: string) => {
     const def = CHECKS.find((c) => c.id === checkId)
     if (!def || def.state === 'not_configured' || def.always) return
+    // Unreachable from the box, which is disabled — but `toggle` is also
+    // called by the group tick and by the presets, and a lock that only
+    // one caller honours is not a lock.
+    if (locked.has(checkId) && selected.includes(checkId)) return
     // A BLOCKED CHECK CAN BE TICKED ON. It used to be refused here, on
     // the grounds that the call could not be made — but that is a
     // prediction from what the source told somebody else earlier, and
@@ -225,7 +270,11 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     if (selected.includes(checkId)) {
       // Switching a check off takes its dependents with it — leaving them
       // selected would queue calls that cannot be made.
-      const orphaned = dependentsOf(checkId).filter((d) => selected.includes(d))
+      // A dependent that has ANSWERED is not switched off with its
+      // parent: it holds evidence that was paid for, and the parent's
+      // result is on file too, so nothing it needs has gone away.
+      const orphaned = dependentsOf(checkId)
+        .filter((d) => selected.includes(d) && !locked.has(d))
       next = selected.filter((id) => id !== checkId && !orphaned.includes(id))
       if (orphaned.length) {
         toast(
@@ -256,7 +305,9 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
       next = [...selected, ...Array.from(new Set(additions))]
     } else {
       const orphaned = ids.flatMap(dependentsOf).filter((d) => selected.includes(d))
-      const drop = new Set([...ids, ...orphaned])
+      const drop = new Set(
+        [...ids, ...orphaned].filter((id) => !locked.has(id)),
+      )
       next = selected.filter((id) => !drop.has(id))
       if (orphaned.length) {
         toast(`${orphaned.length} dependent check(s) switched off too`)
@@ -285,9 +336,22 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     await commit(withDeps, withDeps)
   }
 
+  /**
+   * What this Run will actually call.
+   *
+   * NOT the selection. A check already on file is not re-called and not
+   * re-charged, so quoting the whole selection would name a price three
+   * times what the button is about to spend — and an estimate the
+   * analyst learns to distrust is worse than none at all.
+   */
+  const toRun = useMemo(
+    () => selected.filter((id) => !locked.has(id)),
+    [selected, locked],
+  )
+
   /* ---- cost, kept in three separate currencies ---------------------- */
   const cost = useMemo(() => {
-    const active = selected.map((id) => CHECKS.find((c) => c.id === id)).filter(Boolean)
+    const active = toRun.map((id) => CHECKS.find((c) => c.id === id)).filter(Boolean)
     // PEOPLE COUNTED, not calls assumed. The person-level checks take a
     // list — five directors in one field — and are charged per person, so
     // the flat catalogue price would quote a fifth of the real figure on
@@ -311,7 +375,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     // `vendor` whole, not just `vendor.unlocked`: the person-level prices
     // are read off the check inputs, so typing a fourth number has to move
     // the figure the Run button is standing next to.
-  }, [selected, vendor])
+  }, [toRun, vendor])
 
   /* ---- which SCAN parameters this selection can fill ---------------- */
   const coverage = useMemo(() => {
@@ -408,10 +472,26 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     setRunning(true)
     setRunError(null)
     try {
-      const result = await api.runChecks(vendor.id)
+      /*
+        THE DELTA, NEVER THE WHOLE SELECTION.
+
+        This posted nothing, which the server reads as "run everything
+        selected" — and the runner does not skip a check that already
+        answered. So coming back to Step 2 to add two checks re-called
+        and re-billed every check already on file, upwards of ₹40 on a
+        full MCA set, with nothing on screen to say it had happened.
+
+        `only` is what makes the trip back safe. Re-running a check on
+        purpose is still possible and still charged; it is done from the
+        Step 3 popup, where it is one deliberate tick rather than a side
+        effect of pressing Run again.
+      */
+      const result = await api.runChecks(vendor.id, toRun)
       setVendor(result.vendor)
+      const kept = selected.length - toRun.length
       toast(
         `${result.ran} checks settled` +
+          (kept ? ` · ${kept} already on file, not re-run or re-charged` : '') +
           (result.skippedMissingInput.length
             ? ` · ${result.skippedMissingInput.length} skipped for missing input`
             : ''),
@@ -449,7 +529,7 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
           type="button"
           className="btn primary"
           disabled={
-            running || !selected.length || missing.length > 0 || badInputs.length > 0
+            running || !toRun.length || missing.length > 0 || badInputs.length > 0
           }
           onClick={run}
         >
@@ -460,12 +540,18 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
               ? `Fill ${missing.length} required input${missing.length > 1 ? 's' : ''} to run`
               : badInputs.length
                 ? `Fix ${badInputs.length} input${badInputs.length > 1 ? 's' : ''} to run`
-                : `Run ${selected.length} checks →`}
+                : /* COUNTS WHAT WILL BE CALLED. "Run 11 checks" over a
+                     selection of eleven where eight are already on file
+                     promises eight calls that will not happen and a
+                     price that will not be charged. */
+                  !toRun.length
+                  ? 'Everything selected is already on file'
+                  : `Run ${toRun.length} check${toRun.length === 1 ? '' : 's'} →`}
         </button>
       </>,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cost, running, selected.length, vendor, missing.length, badInputs.length])
+  }, [cost, running, toRun.length, selected.length, vendor, missing.length, badInputs.length])
 
   const matches = (check: (typeof CHECKS)[number]): boolean => {
     if (query.trim()) {
@@ -546,7 +632,22 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
       )}
 
       <div className="grid-4">
-        <Tile n={selected.length} label="Checks selected" tone="accent" />
+        {/* SELECTED and TO BE RUN are different numbers now, and the
+            tile says both. Sixteen selected beside a button reading "Run
+            1 check" is a discrepancy the analyst has to resolve on their
+            own otherwise, and the resolution — fifteen are already paid
+            for — is the reassuring half. */}
+        <Tile
+          n={selected.length}
+          label="Checks selected"
+          tone="accent"
+          note={
+            selected.length - toRun.length
+              ? `${selected.length - toRun.length} already on file · ` +
+                `${toRun.length || 'none'} to run`
+              : undefined
+          }
+        />
         <Tile
           n={rupees(cost.rupeesTotal)}
           label="FileSure spend"
@@ -735,11 +836,32 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
                               // A blocked check already selected stays
                               // tickable, so it can be switched OFF. Only
                               // turning one ON is refused, by `toggle`.
-                              disabled={check.always || isPending || (!!unavailable && !isOn)}
+                              disabled={
+                                check.always ||
+                                isPending ||
+                                (!!unavailable && !isOn) ||
+                                // ALREADY ANSWERED. The tick records what
+                                // has been bought and cannot be taken
+                                // back; Ignore on Step 3 is how a result
+                                // stops counting.
+                                locked.has(check.id)
+                              }
                               onChange={() => void toggle(check.id)}
                             />
                             <span className="cell-strong">{check.name}</span>
                             {isPending && <span className="spinner" aria-hidden="true" />}
+                            {locked.has(check.id) && (
+                              <span
+                                className="chip c-done"
+                                title={
+                                  'This check has a result on file. It is not ' +
+                                  're-run or re-charged. To stop a result ' +
+                                  'counting, set it aside on the findings screen.'
+                                }
+                              >
+                                already run · not re-charged
+                              </span>
+                            )}
                             {unavailable && <span className="chip c-warn">Unavailable</span>}
                             {check.always && <span className="chip">Always runs · free</span>}
                             {check.requires.length > 0 && (

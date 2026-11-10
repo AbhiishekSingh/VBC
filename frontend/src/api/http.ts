@@ -19,7 +19,14 @@
  * and whether retrying could plausibly help.
  */
 
-import type { AuditEntry, Client, ManualEntry, User, Vendor } from '@/types/domain'
+import type {
+  AuditEntry,
+  Client,
+  HistoryPage,
+  ManualEntry,
+  User,
+  Vendor,
+} from '@/types/domain'
 import type {
   ClientInput,
   DecisionInput,
@@ -293,8 +300,11 @@ export const httpApi: VbcApi = {
   markPrimary: (id, runId) =>
     post<Vendor>(`/vendors/${id}/runs/${runId}/primary`),
 
-  deleteRun: (id, runId) =>
-    request<Vendor>(`/vendors/${id}/runs/${runId}`, { method: 'DELETE' }),
+  ignoreRun: (id, runId, reason) =>
+    post<Vendor>(`/vendors/${id}/runs/${runId}/ignore`, { reason }),
+
+  unignoreRun: (id, runId) =>
+    post<Vendor>(`/vendors/${id}/runs/${runId}/unignore`),
 
   addManualEntry: (id, entry: Omit<ManualEntry, 'id'>) =>
     post<Vendor>(`/vendors/${id}/manual`, entry),
@@ -313,6 +323,16 @@ export const httpApi: VbcApi = {
 
   listAudit: (vendorId) =>
     request<AuditEntry[]>(`/audit${vendorId ? `?vendorId=${vendorId}` : ''}`),
+
+  listHistory: (filter) => {
+    const q = new URLSearchParams()
+    if (filter?.clientId) q.set('clientId', filter.clientId)
+    if (filter?.vendorId) q.set('vendorId', filter.vendorId)
+    if (filter?.from) q.set('from', filter.from)
+    if (filter?.to) q.set('to', filter.to)
+    const query = q.toString()
+    return request<HistoryPage>(`/history${query ? `?${query}` : ''}`)
+  },
 
   listCostReference: () =>
     request<{ group: string; item: string; unit: string; source: string }[]>('/cost-reference'),

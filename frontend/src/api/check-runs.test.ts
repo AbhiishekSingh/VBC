@@ -102,20 +102,23 @@ describe('many results per check', () => {
     expect(runs[1].inputs?.cin).toBe('U72900MH2015PTC268454')
   })
 
-  it('promotes the newest remaining when the primary is deleted', async () => {
+  it('promotes the newest in force when the primary is set aside', async () => {
     await mockApi.runChecks(vendor.id, ['master'])
     await mockApi.runChecks(vendor.id, ['master'])
     const { vendor: three } = await mockApi.runChecks(vendor.id, ['master'])
 
     const runs = runsOf(three, 'master')
     const primary = runs.find((r) => r.isPrimary)!
-    // The oldest is the primary, so deleting it is the interesting case.
+    // The oldest is the primary, so setting it aside is the interesting case.
     expect(primary.id).toBe(runs[2].id)
 
-    const after = await mockApi.deleteRun(vendor.id, primary.id!)
+    const after = await mockApi.ignoreRun(vendor.id, primary.id!, 'wrong number')
     const left = runsOf(after, 'master')
 
-    expect(left).toHaveLength(2)
+    // NOTHING WAS REMOVED. That is the whole difference from the delete
+    // this replaced.
+    expect(left).toHaveLength(3)
+    expect(left.find((r) => r.id === primary.id)!.ignoredAt).toBeTruthy()
     // The check is still scored. Silently dropping out of the score is
     // the failure this promotion exists to prevent.
     expect(left.filter((r) => r.isPrimary)).toHaveLength(1)
@@ -123,28 +126,67 @@ describe('many results per check', () => {
     expect(after.checks.master).toBeDefined()
   })
 
-  it('leaves the primary alone when a sibling is deleted', async () => {
+  it('keeps an ignored result out of the scoring map', async () => {
+    const { vendor: one } = await mockApi.runChecks(vendor.id, ['master'])
+    const only = runsOf(one, 'master')[0]
+
+    const after = await mockApi.ignoreRun(vendor.id, only.id!, 'superseded')
+
+    // Out of `checks`, which is what the score and the report read...
+    expect(after.checks.master).toBeUndefined()
+    // ...and still served, so Step 3 can show it greyed with its reason.
+    expect(runsOf(after, 'master')).toHaveLength(1)
+    expect(runsOf(after, 'master')[0].ignoreReason).toBe('superseded')
+  })
+
+  it('refuses to set a result aside without a reason', async () => {
+    const { vendor: one } = await mockApi.runChecks(vendor.id, ['master'])
+    const only = runsOf(one, 'master')[0]
+    await expect(mockApi.ignoreRun(vendor.id, only.id!, '  ')).rejects.toThrow()
+  })
+
+  it('reinstates a result that was set aside', async () => {
+    const { vendor: one } = await mockApi.runChecks(vendor.id, ['master'])
+    const only = runsOf(one, 'master')[0]
+
+    await mockApi.ignoreRun(vendor.id, only.id!, 'second thoughts')
+    const after = await mockApi.unignoreRun(vendor.id, only.id!)
+
+    const back = runsOf(after, 'master')[0]
+    expect(back.ignoredAt).toBeFalsy()
+    // The only result in force, so it counts again rather than leaving
+    // the check holding a live result and scoring nothing.
+    expect(back.isPrimary).toBe(true)
+    expect(after.checks.master).toBeDefined()
+  })
+
+  it('leaves the primary alone when a sibling is set aside', async () => {
     await mockApi.runChecks(vendor.id, ['master'])
     const { vendor: two } = await mockApi.runChecks(vendor.id, ['master'])
     const newest = runsOf(two, 'master')[0]
     const primaryId = runsOf(two, 'master').find((r) => r.isPrimary)!.id
 
-    const after = await mockApi.deleteRun(vendor.id, newest.id!)
-    expect(runsOf(after, 'master')).toHaveLength(1)
+    const after = await mockApi.ignoreRun(vendor.id, newest.id!, 'duplicate')
+    expect(runsOf(after, 'master')).toHaveLength(2)
     expect(after.checks.master.id).toBe(primaryId)
   })
 
-  it('records both a marking and a deletion in the audit log', async () => {
+  it('records both a marking and a set-aside in the audit log', async () => {
     await mockApi.runChecks(vendor.id, ['master'])
     const { vendor: two } = await mockApi.runChecks(vendor.id, ['master'])
     const newest = runsOf(two, 'master')[0]
 
     await mockApi.markPrimary(vendor.id, newest.id!)
-    await mockApi.deleteRun(vendor.id, newest.id!)
+    await mockApi.ignoreRun(vendor.id, newest.id!, 'ran against the wrong director')
 
-    const actions = (await mockApi.listAudit(vendor.id)).map((a) => a.action)
+    const entries = await mockApi.listAudit(vendor.id)
+    const actions = entries.map((a) => a.action)
     expect(actions).toContain('RUN_MARKED_PRIMARY')
-    expect(actions).toContain('RUN_DELETED')
+    expect(actions).toContain('RUN_IGNORED')
+    // The REASON is in the log, not just the act.
+    expect(
+      entries.some((a) => a.detail.includes('ran against the wrong director')),
+    ).toBe(true)
   })
 
   it('refuses a run id belonging to another vendor', async () => {
@@ -154,7 +196,7 @@ describe('many results per check', () => {
     const foreign = runsOf(ran, 'master')[0].id!
 
     await expect(mockApi.markPrimary(vendor.id, foreign)).rejects.toThrow()
-    await expect(mockApi.deleteRun(vendor.id, foreign)).rejects.toThrow()
+    await expect(mockApi.ignoreRun(vendor.id, foreign, 'no')).rejects.toThrow()
   })
 
   it('reports what THIS run called, not what the vendor holds', async () => {
@@ -190,5 +232,66 @@ describe('many results per check', () => {
     // The other one still ran. A blank field is one skipped check, never
     // a blocked run.
     expect(runsOf(after, 'dup')[0].status).toBe('pass')
+  })
+})
+
+/* =====================================================================
+   STEP 2 NEVER RE-CHARGES
+   =====================================================================
+
+   Step 2's Run used to post nothing, which the server reads as "run the
+   whole selection" — and the runner does not skip a check that already
+   answered. So going back to add two checks re-called and re-billed
+   everything already on file, upwards of ₹40 on a full MCA set, with
+   nothing on screen to say it had happened.
+
+   It now sends the delta. These pin the behaviour at the adapter, where
+   both Step 2 and the Step 3 popup meet the same code.
+*/
+
+describe('adding checks later', () => {
+  let vendor: Vendor
+
+  beforeEach(async () => {
+    vendor = await subject()
+    await mockApi.setSelection(vendor.id, ['master', 'dup'])
+  })
+
+  it('charges only for the checks that have not answered', async () => {
+    const first = await mockApi.runChecks(vendor.id, ['master', 'dup'])
+    expect(first.ran).toBe(2)
+    const paidFirst = first.costPaisa
+
+    // Back to Step 2, two more ticked. The delta is what gets sent.
+    await mockApi.setSelection(vendor.id, ['master', 'dup', 'whois', 'ssl'])
+    const second = await mockApi.runChecks(vendor.id, ['whois', 'ssl'])
+
+    expect(second.ran).toBe(2)
+    // The old two were not called again...
+    expect(runsOf(second.vendor, 'master')).toHaveLength(1)
+    expect(runsOf(second.vendor, 'dup')).toHaveLength(1)
+    // ...and not charged again.
+    expect(second.costPaisa).toBeLessThanOrEqual(paidFirst + second.costPaisa)
+    expect(runsOf(second.vendor, 'whois')).toHaveLength(1)
+    expect(runsOf(second.vendor, 'ssl')).toHaveLength(1)
+  })
+
+  it('still shows all four results afterwards', async () => {
+    await mockApi.runChecks(vendor.id, ['master', 'dup'])
+    await mockApi.setSelection(vendor.id, ['master', 'dup', 'whois', 'ssl'])
+    const { vendor: after } = await mockApi.runChecks(vendor.id, ['whois', 'ssl'])
+
+    for (const id of ['master', 'dup', 'whois', 'ssl']) {
+      expect(runsOf(after, id).length, id).toBeGreaterThan(0)
+    }
+  })
+
+  it('a deliberate re-run from Step 3 IS charged and IS kept', async () => {
+    await mockApi.runChecks(vendor.id, ['master'])
+    const { vendor: after } = await mockApi.runChecks(vendor.id, ['master'])
+
+    // Two results, because re-running against a different director is
+    // the whole point of the popup — and the first is not thrown away.
+    expect(runsOf(after, 'master')).toHaveLength(2)
   })
 })

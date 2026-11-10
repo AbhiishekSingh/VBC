@@ -235,6 +235,7 @@ const ICON = {
   outcome: 'M9 12h6m-6 4h6M9 8h2M6 3h9l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm8 .5V8h4.5',
   audit: 'M12 8v4l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
   costs: 'M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
+  history: 'M3 3v18h18M7 15l4-4 3 3 5-6',
 } as const
 
 export function Sidebar({
@@ -330,6 +331,10 @@ export function Sidebar({
         <NavLink to="/outcome" className={cls} title="Outcome sheet">
           <Icon d={ICON.outcome} />
           <span className="nav-text">Outcome sheet</span>
+        </NavLink>
+        <NavLink to="/history" className={cls} title="API history">
+          <Icon d={ICON.history} />
+          <span className="nav-text">API history</span>
         </NavLink>
         <NavLink to="/audit" className={cls} title="Audit trail">
           <Icon d={ICON.audit} />

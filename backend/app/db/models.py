@@ -500,6 +500,35 @@ class VendorCheck(Base):
 
     fetched_at: Mapped[datetime] = created_at()
 
+    #: SET ASIDE BY A PERSON — not deleted, and the difference matters.
+    #:
+    #: There was a delete, and deleting destroyed the row. That put two
+    #: of this product's own commitments against each other: a result is
+    #: evidence and evidence is kept, and a call that cost money has to
+    #: stay in the ledger whatever anyone later thinks of its answer.
+    #: A deleted row left a sentence in the audit log and a hole in the
+    #: spend.
+    #:
+    #: So nothing is destroyed. An ignored result keeps its payload, its
+    #: facts and its cost; History counts it; the score does not read it;
+    #: Step 3 greys it and prints the reason. Reversible, because the
+    #: judgement it records is a person's and people reconsider.
+    #:
+    #: NULL means in force. Set means set aside at that moment.
+    ignored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment=(
+            "When a person set this result aside. NULL means it counts. "
+            "Ignored results are kept whole and still counted as spend."
+        ),
+    )
+    ignored_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: WHY. Required by the API, because ignoring moves a client-facing
+    #: number and a file that cannot say why a finding was set aside is
+    #: not a file anyone can defend a year later.
+    ignore_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     vendor: Mapped[Vendor] = relationship(back_populates="checks")
 
     __table_args__ = (
@@ -526,6 +555,14 @@ class VendorCheck(Base):
         Index(
             "ix_vendor_checks_vendor_check",
             "vendor_id", "check_id", "fetched_at",
+        ),
+        # The IN-FORCE results of one vendor — what the serialiser and
+        # the scoring engine read on every vendor fetch. Partial: the
+        # ignored rows are read by History, which filters by vendor and
+        # date instead.
+        Index(
+            "ix_vendor_checks_in_force", "vendor_id", "check_id",
+            postgresql_where=text("ignored_at IS NULL"),
         ),
         # Finds every row whose facts need rebuilding after a parser fix.
         # Partial: rows with no facts at all are the "never parsed" case,
