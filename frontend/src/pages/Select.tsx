@@ -213,18 +213,6 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
     }
   }, [])
 
-  /*
-    The DISTINCT reasons behind the blocked checks.
-
-    A provider that bills per product can have one pool down and the
-    others fine, so the number of blocked checks and the number of actual
-    faults are different numbers. The headline uses this one.
-  */
-  const reasons = useMemo(
-    () => Array.from(new Set(blocked.values())),
-    [blocked],
-  )
-
   /** The source's own words for why this check cannot run, or null. */
   const blockedReason = (checkId: string): string | null =>
     blocked.get(checkId) ?? null
@@ -600,27 +588,21 @@ export default function Select({ vendor, setVendor, setPrimary }: PageProps) {
         for the wrong response. Distinct reasons is the honest count: one
         empty wallet is one line however many checks it stops.
       */}
-      {reasons.length > 0 && (
-        <Callout
-          kind="warn"
-          title={
-            reasons.length === 1
-              ? 'One data source is not answering'
-              : `${reasons.length} data sources are not answering`
-          }
-        >
-          {blocked.size === 1
-            ? 'One check is switched off below and will not be charged for.'
-            : `${blocked.size} checks are switched off below and will not be charged for.`}{' '}
-          What the source said:
-          <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
-            {reasons.map((reason) => (
-              <li key={reason}>{reason}</li>
-            ))}
-          </ul>
-        </Callout>
-      )}
+      {/*
+        NO OUTAGE BANNER.
 
+        A Callout here listed every refusing source and the count of
+        checks they stopped. It was removed because it said nothing the
+        rows below do not already say, and it said it in the most
+        expensive place on the page — above the catalogue, pushing the
+        choice the analyst came to make off the screen.
+
+        NOTHING IS HIDDEN BY THIS. Each affected row still carries an
+        "Unavailable" chip and the source's own sentence under it —
+        "Not running: ...". That is closer to where the decision is
+        made, and it is per check rather than a summary the reader has
+        to map back onto fourteen rows themselves.
+      */}
       {running && (
         <Callout kind="info" title="Running the selected checks">
           <div style={{ marginTop: 'var(--space-2)' }}>
