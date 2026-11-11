@@ -1359,6 +1359,37 @@ export const CHECKS = [
     ]
   },
   {
+    "id": "dwhois",
+    "group": "domain",
+    "name": "Domain registration & age",
+    "endpoint": "GET /whoisserver/WhoisService",
+    "provider": "whoisxml",
+    "note": "Who holds the domain now, how old it is, and when it expires. A snapshot — NOT a history of ownership changes.",
+    "state": "active",
+    "requires": [],
+    "feeds": [],
+    "costPaisa": 0,
+    "credits": 1,
+    "screenshots": 0,
+    "needsCompanyUnlock": false,
+    "needsDirectorUnlock": false,
+    "always": false,
+    "admin": false,
+    "params": [
+      {
+        "key": "domainName",
+        "label": "Domain",
+        "required": true,
+        "fromVendor": "domain",
+        "fromResult": null,
+        "type": "text",
+        "options": [],
+        "default": "",
+        "placeholder": "example.com"
+      }
+    ]
+  },
+  {
     "id": "reput",
     "group": "domain",
     "name": "Domain trust score",
