@@ -293,6 +293,32 @@ CHECKS: tuple[CheckDefinition, ...] = (
         ),
     ),
     CheckDefinition(
+        id="dwhois",
+        group=CheckGroup.DOMAIN,
+        name="Domain registration & age",
+        endpoint="GET /whoisserver/WhoisService",
+        provider=WX,
+        note="Who holds the domain now, how old it is, and when it "
+             "expires. A snapshot — NOT a history of ownership changes.",
+        # ONE credit, against Domain ownership history's fifty. A
+        # different WhoisXML product billed from a different pool, which
+        # is why it answered 200 on 11 Nov 2026 while the Domain
+        # Research Suite ones were returning 403 for insufficient
+        # credits on the same key in the same minute.
+        credits=1,
+        # DELIBERATELY FEEDS NOTHING. S3 is fed by `whois`, and two
+        # checks writing one SCAN parameter is a race whose winner
+        # depends on dispatch order — the kind of thing that moves a
+        # client-facing number for no reason anybody can reconstruct.
+        # Domain age reaches the score through `whois` or not at all,
+        # until somebody decides which source is authoritative.
+        feeds=(),
+        params=(
+            _p("domainName", "Domain", required=True, from_vendor="domain",
+               placeholder="example.com"),
+        ),
+    ),
+    CheckDefinition(
         id="reput",
         group=CheckGroup.DOMAIN,
         name="Domain trust score",
@@ -918,7 +944,7 @@ def expand_selection(selected: list[str]) -> list[str]:
 #: `personaddr` was removed — Gridlines refuses that product for this
 #: account, in the Mobile Intelligence Suite as well as here, so it was
 #: never a check anybody could run.
-assert len(CHECKS) == 51, f"expected 51 checks, got {len(CHECKS)}"
+assert len(CHECKS) == 52, f"expected 52 checks, got {len(CHECKS)}"
 #: 7, down from 8 on 2026-09-14: `court` came back from hook to ACTIVE.
 #: It had been demoted on 2026-09-08 when LegalCheck submit rejected every
 #: body shape tried — the cause turned out to be a single field, a company

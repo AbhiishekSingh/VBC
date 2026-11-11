@@ -34,11 +34,17 @@ DOMAIN_REPUTATION_URL = "https://domain-reputation.whoisxmlapi.com/api/v2"
 SSL_CERTIFICATES_URL = "https://ssl-certificates.whoisxmlapi.com/api/v1"
 REVERSE_WHOIS_URL = "https://reverse-whois.whoisxmlapi.com/api/v2"
 SCREENSHOT_URL = "https://website-screenshot.whoisxmlapi.com/api/v1"
+#: The PLAIN WHOIS API — a different product from WHOIS History, billed
+#: from a different pool. Wired on 11 Nov 2026 because the Domain
+#: Research Suite subscription lapsed and took `whois` and `rwhois` with
+#: it, while this one answered 200 on the same key in the same minute.
+WHOIS_URL = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
 
 WHOIS_HISTORY_CREDITS = 50  # purchase mode; preview returns a count only
 REPUTATION_CREDITS = 1
 SSL_CREDITS = 1
 REVERSE_WHOIS_CREDITS = 1
+WHOIS_CREDITS = 1  # the plain WHOIS API, against WHOIS History's 50
 
 #: A record carrying only this text is a failed lookup on WhoisXML's side,
 #: not a fact about the domain.
@@ -94,6 +100,118 @@ class WhoisXmlProvider(HttpProvider):
             "records": usable,
             "dropped_failed_lookups": dropped,
             **_summarise_history(usable),
+        }
+
+    def whois_current(self, domain: str) -> dict:
+        """The CURRENT registration record. One credit, not fifty.
+
+        A DIFFERENT QUESTION FROM `whois_history`, and the difference is
+        the whole reason both exist. History answers "has the registrant
+        changed, and when" — a shell company bought off the shelf last
+        month looks nothing like a domain held by one owner since 2009.
+        This answers "who holds it now, and how old is it". Useful, and
+        not a substitute: nothing here can tell you the domain changed
+        hands in March.
+
+        Written against a real response (amul.com, 10 Nov 2026) rather
+        than from the documentation, which is the only way any parser in
+        this file has ever worked first time.
+        """
+        self._require_key()
+        response = self.request(
+            "GET",
+            WHOIS_URL,
+            params={
+                "apiKey": self.settings.whoisxml_api_key,
+                "domainName": domain,
+                "outputFormat": "JSON",
+            },
+        )
+        self.spend.record("whois", credits=WHOIS_CREDITS)
+
+        payload = response.payload or {}
+        record = payload.get("WhoisRecord") or {}
+
+        # TWO TIERS, AND ONLY ONE OF THEM CARRIES CONTACTS.
+        #
+        # `registryData` is the thin registry answer and has no
+        # registrant block at all; the populated one sits at the top
+        # level, from the registrar's RDAP. Reading the wrong tier
+        # returns nothing on a domain where the data is right there —
+        # proven on the response this was written against, where
+        # `registryData` has no registrant and the top level names one.
+        registrant = record.get("registrant") or {}
+        registry = record.get("registryData") or {}
+
+        created = record.get("createdDateNormalized") or record.get("createdDate") \
+            or registry.get("createdDateNormalized") or registry.get("createdDate")
+        expires = record.get("expiresDateNormalized") or record.get("expiresDate") \
+            or registry.get("expiresDateNormalized") or registry.get("expiresDate")
+        updated = record.get("updatedDateNormalized") or record.get("updatedDate")
+
+        servers = (record.get("nameServers") or {}).get("hostNames") \
+            or (registry.get("nameServers") or {}).get("hostNames") or []
+
+        # AN UNREGISTERED DOMAIN HAS NO DATES, AND THAT IS THE ANSWER.
+        #
+        # The guard asked for `created` unconditionally at first, so a
+        # domain nobody owns came back UNAVAILABLE — "we could not read
+        # the response" — when the response was perfectly readable and
+        # said the domain does not exist. That turns a real adverse
+        # finding into an apparent fault of ours, which is the precise
+        # inversion this product exists to avoid.
+        #
+        # So the shape is only required where the shape should be there.
+        registered = record.get("domainAvailability") == "UNAVAILABLE"
+
+        guard = ParseGuard("whoisxml.whois")
+        guard.expect_any("domain", raw=record,
+                         parsed=[record.get("domainName"), registry.get("domainName")],
+                         hint="WhoisRecord.domainName")
+        if registered:
+            guard.expect("created", raw=record, parsed=created,
+                         hint="WhoisRecord.createdDate / .createdDateNormalized")
+        guard.raise_if_gaps(payload=payload)
+
+        age_days = record.get("estimatedDomainAge")
+        return {
+            "domain": record.get("domainName") or registry.get("domainName"),
+            "created": created,
+            "updated": updated,
+            "expires": expires,
+            #: DAYS, not years — 11022 on a domain registered in 1996.
+            #: Named for its unit so nobody divides it twice.
+            "age_days": int(age_days) if isinstance(age_days, (int, float)) else None,
+            "registrar": record.get("registrarName") or registry.get("registrarName"),
+            "registrar_iana_id": record.get("registrarIANAID"),
+            "registrant_name": registrant.get("name") or registrant.get("organization"),
+            "registrant_org": registrant.get("organization"),
+            "registrant_email": registrant.get("email") or record.get("contactEmail"),
+            "registrant_phone": registrant.get("telephone"),
+            "registrant_country": registrant.get("country")
+            or registrant.get("countryCode"),
+            "registrant_state": registrant.get("state"),
+            "registrant_city": registrant.get("city"),
+            "name_servers": servers,
+            "status": record.get("status") or registry.get("status"),
+            # REDACTION, STATED BY THE SOURCE.
+            #
+            # `dataError: MASKED_WHOIS_DATA` arrives WITH a populated
+            # registrant block, which looks like a contradiction and is
+            # not: the registry redacted the contacts per the holder's
+            # disclosure preferences, and what survives came from the
+            # registrar. So those names are not registry-verified, and a
+            # screen presenting them as such would overstate its own
+            # evidence. Carried through as a fact about the RESPONSE for
+            # the parser to flag.
+            "masked": record.get("dataError") == "MASKED_WHOIS_DATA",
+            "data_error": record.get("dataError"),
+            #: `domainAvailability` says UNAVAILABLE for a domain that IS
+            #: registered — the exact opposite of what "unavailable"
+            #: means everywhere else in this product, where it is a
+            #: CheckStatus for "we could not examine this". Translated
+            #: here so the collision never reaches a screen.
+            "registered": registered,
         }
 
     def domain_reputation(self, domain: str, *, mode: str = "fast") -> dict:

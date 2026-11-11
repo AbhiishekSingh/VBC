@@ -1656,6 +1656,42 @@ class CheckRunner:
                 facts=factsets.whois(data),
             )
 
+        if check_id == "dwhois":
+            data = wx.whois_current(get("domainName", vendor.domain or ""))
+            age_days = data.get("age_days")
+            years = round(age_days / 365.25, 1) if isinstance(age_days, int) else None
+
+            # NOT REGISTERED IS THE ADVERSE ONE. A vendor quoting a
+            # domain nobody owns is a finding; a young domain is not.
+            if data.get("registered") is False:
+                status = CheckStatus.FAIL
+                value = "Not registered"
+            elif years is None:
+                # Registered, but the source gave no creation date. That
+                # is a gap in the answer, not a clean result — saying
+                # "domain age —" beside a green tick would be exactly
+                # the thing this product refuses to do.
+                status = CheckStatus.WARN
+                value = "Registered · age unknown"
+            else:
+                status = CheckStatus.PASS if years >= 2 else CheckStatus.WARN
+                value = f"Domain age {years} yrs"
+
+            holder = data.get("registrant_name") or (
+                "registrant redacted" if data.get("masked") else "registrant not given"
+            )
+            return Finding(
+                check_id,
+                status,
+                value,
+                f"Registered {data.get('created') or 'date not given'} · "
+                f"{holder} · registrar {data.get('registrar') or 'not given'}"
+                + (" · contacts redacted at the registry"
+                   if data.get("masked") else ""),
+                raw=data, credits=1,
+                facts=factsets.whois_current(data),
+            )
+
         if check_id == "reput":
             data = wx.domain_reputation(get("domainName", vendor.domain or ""),
                                         mode=get("mode", "fast") or "fast")

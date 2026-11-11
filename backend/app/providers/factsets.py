@@ -1199,6 +1199,105 @@ def financials(parsed: dict) -> dict:
 # Domain · WhoisXML
 # =====================================================================
 
+def whois_current(data: dict) -> dict:
+    """The current registration record — age, holder, registrar.
+
+    A DIFFERENT FINDING FROM `whois` ABOVE, and the rendering says so.
+    That one shows a history of changes; this one is a snapshot. Giving
+    them the same shape would invite a reader to think the snapshot
+    carries the history, which is the one misreading that matters here:
+    "registrant GCMMF" tells you nothing about whether it was somebody
+    else in March.
+
+    Written against a real response, which is where all three of the
+    flags below come from. None of them is in the documentation.
+    """
+    age_days = data.get("age_days")
+    years = round(age_days / 365.25, 1) if isinstance(age_days, int) else None
+
+    flags: list[dict] = []
+
+    # SAID BY THE SOURCE, not inferred. The registry redacted the
+    # contacts; what is shown came from the registrar's copy. A reader
+    # entitled to treat a registrant name as corroboration of the entity
+    # is entitled to know it was not registry-verified.
+    if data.get("masked"):
+        flags.append(F.flag(
+            "info", "Contact details are redacted at the registry",
+            "The source returned MASKED_WHOIS_DATA. Any registrant shown "
+            "below came from the registrar's record, not the registry, so "
+            "it is not registry-verified.",
+        ))
+
+    # A YOUNG DOMAIN IS NOT ADVERSE, and this flag does not say it is.
+    # A company incorporated last year has a domain registered last
+    # year. It is worth a human look beside the incorporation date,
+    # which is a comparison this check cannot make on its own.
+    if isinstance(age_days, int) and age_days < 365:
+        flags.append(F.flag(
+            "warn", "Registered within the last year",
+            f"The domain is {age_days} days old. Worth reading beside the "
+            f"incorporation date: the two matching is ordinary, and a long-"
+            f"established company on a new domain is not.",
+        ))
+
+    if data.get("registered") is False:
+        flags.append(F.flag(
+            "bad", "The domain is not registered",
+            "WHOIS holds no record of it. A vendor quoting a domain that "
+            "nobody owns is a finding in itself.",
+        ))
+
+    return F.build(
+        F.DETAIL,
+        lede=(
+            "The registration as it stands TODAY. This check does not show "
+            "whether the domain changed hands, and an unchanged-looking "
+            "record here is not evidence that it never did."
+        ),
+        stats=[
+            # YEARS for the reader, from days for the arithmetic. The
+            # source sends `estimatedDomainAge` in DAYS — 11022 on a
+            # domain registered in 1996 — and reading it as years is a
+            # thirty-fold error in the direction of reassurance.
+            F.stat("Domain age",
+                   f"{years} yrs" if years is not None else "—",
+                   tone="good" if (years or 0) >= 2 else "warn"),
+            F.stat("Registrar", data.get("registrar") or "—"),
+            F.stat("Name servers", len(data.get("name_servers") or [])),
+        ],
+        fields=[
+            F.field("Domain", data.get("domain"), format="text"),
+            F.field("Registered", F.human_date(data.get("created")), format="date"),
+            F.field("Expires", F.human_date(data.get("expires")), format="date"),
+            F.field("Last changed", F.human_date(data.get("updated")), format="date"),
+            F.field("Registrar", data.get("registrar")),
+            F.field("Registrant", data.get("registrant_name")
+                    or ("redacted" if data.get("masked") else None)),
+            F.field("Registrant email", data.get("registrant_email")),
+            F.field("Registrant phone", data.get("registrant_phone")),
+            F.field("Registrant location", " · ".join(
+                x for x in (data.get("registrant_city"),
+                            data.get("registrant_state"),
+                            data.get("registrant_country")) if x) or None),
+            F.field("Status", data.get("status")),
+            # NOT `domainAvailability`, whose value for a registered
+            # domain is the word UNAVAILABLE — which in this product
+            # means "we could not examine it". Translated before it can
+            # reach a screen and be read as the opposite of the truth.
+            F.field("Registered now",
+                    "Yes" if data.get("registered") else "No", format="bool"),
+        ],
+        rows=F.table(
+            [F.column("host", "Name server")],
+            [{"host": h} for h in (data.get("name_servers") or [])],
+            empty_note="No name servers returned — a registered domain "
+                       "with none is not resolving.",
+        ) if data.get("name_servers") else None,
+        flags=flags,
+    )
+
+
 def whois(data: dict) -> dict:
     """Ownership history. The provider already summarises; don't recompute."""
     records = data.get("records") or []
