@@ -2017,3 +2017,31 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   margin-bottom: var(--space-2);
 }
 .run-head.is-lone .run-sum { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------------
+   THE FINDINGS COUNTS, ON ONE LINE
+   ---------------------------------------------------------------------
+
+   This was four full-width tiles. They were honest and they were
+   expensive: the findings themselves began below the fold.
+
+   The colours survive the shrink because they are the part doing the
+   work — a reader scanning this line has to see at a glance that
+   something is adverse. "Not checked" keeps a real colour rather than
+   fading into the prose for the same reason the tile had a dashed
+   border: a check that never ran must not read as one that came back
+   clean.
+   --------------------------------------------------------------------- */
+
+.findings-counts {
+  display: flex; flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+  margin: calc(var(--space-2) * -1) 0 0;
+}
+.findings-counts > span { white-space: nowrap; }
+.findings-counts .fc-pass { color: var(--pass); font-weight: var(--weight-semi); }
+.findings-counts .fc-warn { color: var(--warn); font-weight: var(--weight-semi); }
+.findings-counts .fc-fail { color: var(--adverse); font-weight: var(--weight-semi); }
+.findings-counts .fc-none { color: var(--unchecked); font-weight: var(--weight-semi); }
+.findings-counts .fc-none .muted { font-weight: var(--weight-regular); }

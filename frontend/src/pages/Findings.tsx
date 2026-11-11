@@ -23,7 +23,6 @@ import {
   Modal,
   STATUS_EXPLANATION,
   StatusBadge,
-  Tile,
   rupees,
 } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
@@ -1260,25 +1259,37 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
         </p>
       </div>
 
-      <div className="grid-4">
-        <Tile n={counts.pass} label="Passed" tone="pass" />
-        <Tile n={counts.warn} label="Needs attention" tone="warn" />
-        <Tile n={counts.fail} label="Adverse" tone="adverse" />
-        <Tile
-          n={counts.notChecked}
-          label="Not checked"
-          tone="unchecked"
-          note={
-            [
+      {/*
+        THE COUNTS, ON ONE LINE.
+
+        Four tiles across the full width. They carried real information
+        and they carried it at the cost of the first screen: the
+        findings themselves — the thing this page is for — started below
+        the fold.
+
+        What the tiles were defending is kept, and it is the fourth
+        number. NOT CHECKED is stated with the same weight as the other
+        three and still broken down by reason, because "8 passed" over a
+        selection of ten reads as a clean vendor unless the two that
+        never ran are in the same sentence. A gap in our evidence does
+        not get to be quieter than a pass.
+      */}
+      <p className="findings-counts small nums">
+        <span className="fc-pass">{counts.pass} passed</span>
+        <span className="fc-warn">{counts.warn} need attention</span>
+        <span className="fc-fail">{counts.fail} adverse</span>
+        <span className="fc-none">
+          {counts.notChecked} not checked
+          {counts.notChecked > 0 &&
+            ` (${[
               counts.skippedInput && `${counts.skippedInput} missing input`,
               counts.notApplicable && `${counts.notApplicable} not applicable`,
               counts.unavailable && `${counts.unavailable} unavailable`,
             ]
               .filter(Boolean)
-              .join(' · ') || undefined
-          }
-        />
-      </div>
+              .join(' · ')})`}
+        </span>
+      </p>
 
       {CHECK_GROUPS.map((group) => {
         /*
