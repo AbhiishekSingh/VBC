@@ -540,6 +540,78 @@ class EcourtsProvider(HttpProvider):
             "total": data.get("total") or data.get("totalCount"),
         }
 
+    def case_search_names(self, names: list[str], **filters) -> dict:
+        """Search SEVERAL spellings of one party, and merge the hits.
+
+        WHY MORE THAN ONE SPELLING.
+
+        Cause-list entries are typed by court clerks, so one company turns
+        up as "Meridian Packaging Pvt Ltd", "Meridian Packaging Private
+        Limited", "M/s Meridian Packaging" and "Meridian Pkg P Ltd" across
+        four courts. Searching a single string finds one of those and
+        reports the other three as absent — and "no cases found" is the
+        most reassuring sentence this product can print, so it is the one
+        that must not be produced by a thin query.
+
+        EACH NAME IS A PAID CALL. Two spellings is two charges, so the
+        caller passes the distinct ones and this returns `searched` for
+        the screen to show what was bought.
+
+        Deduplicated BY CNR, which is the case's own identifier: the same
+        case found under two spellings is one case, and counting it twice
+        would overstate exposure in the same breath as the wider search
+        was meant to measure it honestly.
+        """
+        wanted = []
+        for name in names:
+            cleaned = str(name or "").strip()
+            if cleaned and cleaned.casefold() not in {
+                w.casefold() for w in wanted
+            }:
+                wanted.append(cleaned)
+        if not wanted:
+            raise ValueError("case_search_names needs at least one name.")
+
+        merged: dict[str, dict] = {}
+        # A row with no CNR cannot be deduplicated against anything, so it
+        # is kept under a key of its own rather than silently dropped or
+        # collapsed with its neighbours.
+        loose: list[dict] = []
+        searched: list[dict] = []
+        unverified: list[str] = []
+
+        for name in wanted:
+            one = self.case_search(parties=name, **filters)
+            unverified = one.get("unverified_filters") or unverified
+            fresh = 0
+            for row in one["results"]:
+                cnr = str(row.get("cnr") or "").strip()
+                if not cnr:
+                    loose.append({**row, "matched_name": name})
+                    fresh += 1
+                elif cnr not in merged:
+                    merged[cnr] = {**row, "matched_name": name}
+                    fresh += 1
+            searched.append({
+                "name": name, "hits": one["count"], "new": fresh,
+                "total": one.get("total"),
+            })
+
+        results = list(merged.values()) + loose
+        return {
+            "searched": searched,
+            "names": wanted,
+            "calls": len(wanted),
+            "query": {"parties": wanted, **{k: v for k, v in filters.items() if v}},
+            "unverified_filters": unverified,
+            "results": results,
+            "count": len(results),
+            # The provider's own total, from the LAST query only. Summing
+            # the per-name totals would double-count the overlap this
+            # method exists to remove.
+            "total": searched[-1]["total"] if searched else None,
+        }
+
     def case_detail(self, cnr: str) -> dict:
         """Everything about one case, by CNR.
 

@@ -1667,13 +1667,66 @@ def _hollow(row: dict) -> bool:
     return not any(populated)
 
 
+def _searched_names(data: dict) -> list[str]:
+    """The party names a case search actually sent.
+
+    THREE SHAPES, and the spread between them is the defect itself.
+
+    The provider returns ``query`` as a DICT of filters. The tests were
+    written against a LIST. So `" ".join(... data["query"] ...)` joined
+    list items under test and dict KEYS in production — meaning every
+    live search compared the literal string "parties" to the vendor's
+    legal name and raised "Search term differs" every single time, while
+    a green suite said the flag worked.
+
+    A flag that always fires is worse than none: the one search that had
+    really drifted looked exactly like the forty that had not.
+
+    All three are read here. `names` is current; the other two are rows
+    already on file, and a stored result must not start flagging the day
+    its renderer changes.
+    """
+    names = data.get("names")
+    if not names:
+        query = data.get("query")
+        if isinstance(query, dict):
+            names = query.get("parties")
+        elif isinstance(query, list):
+            names = query
+        else:
+            names = [query] if query else []
+    if isinstance(names, str):
+        names = [names]
+    return [str(n).strip() for n in (names or []) if n and str(n).strip()]
+
+
 def case_search(data: dict, *, subject: str | None = None) -> dict:
     rows = data.get("results") or []
     flags: list[dict] = []
 
-    query = " ".join(str(q) for q in (data.get("query") or []))
-    if subject and query:
-        score = name_similarity(query, subject)
+    """
+    WHAT WAS ACTUALLY SEARCHED.
+
+    This read `" ".join(... data["query"] ...)`, and `query` is a DICT —
+    so iterating it yielded the KEYS. Every search compared the literal
+    string "parties" against the vendor's legal name, scored near zero,
+    and raised "Search term differs from the vendor's legal name" on
+    every single run. A flag that fires every time is a flag nobody
+    reads, which is worse than not having it: the one search that really
+    had drifted looked exactly like the forty that had not.
+
+    `names` is the list of spellings actually sent. Older payloads
+    predate it and still carry the string under `query["parties"]`.
+    """
+    searched = _searched_names(data)
+
+    # THE BEST MATCH DECIDES. Several spellings are searched on purpose,
+    # and one of them being a loose variant is the point of the exercise
+    # — it is only worth flagging when NONE of them is close to the name
+    # on file.
+    query = ", ".join(searched)
+    if subject and searched:
+        score = max(name_similarity(n, subject) for n in searched)
         # Two different problems, and the NEAR miss is the worse one. A
         # query nothing like the vendor's name is usually deliberate — a
         # trading name, a subsidiary. A query one or two characters off is a
