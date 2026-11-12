@@ -1889,23 +1889,52 @@ class CheckRunner:
                                "No party name",
                                "Court records are searched by the registered "
                                "legal name; the trade name will not match.")
-            data = ec.case_search(
-                parties=party,
+            # BOTH SPELLINGS, WHEN THEY DIFFER.
+            #
+            # Cause-list entries are typed by court clerks, so one company
+            # appears as "Meridian Packaging Pvt Ltd", "Meridian Packaging
+            # Private Limited" and "M/s Meridian Packaging" across
+            # different courts. One string finds one of them and reports
+            # the rest as absent — and "no cases found" is the most
+            # reassuring sentence this product prints, so it is the one
+            # that must never come out of a thin query.
+            #
+            # The analyst's typed value wins outright: if they entered a
+            # party name, that is the search they asked for. Only the
+            # vendor's own two names are tried together, and only when
+            # they actually differ. Each is a paid call.
+            typed = get("parties", "").strip()
+            names = [typed] if typed else [
+                n for n in (vendor.legal_name, vendor.name) if n and n.strip()
+            ]
+            data = ec.case_search_names(
+                names,
                 courtCodes=get("courtCodes") or None,
                 filingDateFrom=get("filingDateFrom") or None,
             )
             count = data["count"]
+            spellings = len(data["names"])
             # A hit is not automatically adverse — a company recovering a
             # debt appears here alongside one being wound up. The side is in
             # petitioners/respondents, and judging it is the analyst's job.
+            #
+            # And a NAME MATCH IS NOT AN IDENTIFICATION. Indian company
+            # names repeat, so these are candidates for a person to
+            # confirm, not findings about this vendor. The wording says
+            # so, and it is the difference between a defensible report
+            # and one that collapses the first time somebody checks.
             return Finding(
                 check_id,
                 CheckStatus.WARN if count else CheckStatus.PASS,
-                f"{count} case(s) naming this party" if count else "No cases found",
-                (f"Review the parties on each — appearing as petitioner is not "
-                 f"the same fact as appearing as respondent."
+                (f"{count} possible case(s) to review" if count
+                 else "No cases found"),
+                ((f"Matched on name only, across {spellings} spelling(s) — "
+                  f"confirm each is this vendor before relying on it. "
+                  f"Appearing as petitioner is not the same fact as "
+                  f"appearing as respondent.")
                  if count else
-                 f"Searched {', '.join(data['query'])} with no matches."),
+                 f"Searched {spellings} spelling(s): "
+                 f"{', '.join(data['names'])} — no matches."),
                 raw=data,
                 # Two flags nothing else catches: a search term that drifted
                 # from the vendor's legal name, and results that carry a CNR
