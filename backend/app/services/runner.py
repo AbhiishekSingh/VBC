@@ -1972,6 +1972,29 @@ class CheckRunner:
                 return Finding(check_id, CheckStatus.SKIPPED_MISSING_INPUT,
                                "No CNR", "Supply a CNR, or run the case search "
                                "first so one can be taken from its results.")
+
+            # REFUSED BEFORE THE CHARGE, NOT AFTER IT.
+            #
+            # A case detail costs ₹1.50 and the provider bills on
+            # accepting the request. Handing it something that is not a
+            # CNR buys a 404 — and the run then reports CASE_NOT_FOUND,
+            # which reads as "this case does not exist" rather than
+            # "we sent a value that was never a case number".
+            #
+            # The search index returns stubs: a row with an identifier
+            # and nothing else. Those identifiers are not always CNRs,
+            # and a stub must not be turned into a paid lookup.
+            if not CNR_SHAPE.match(str(cnr).strip().upper()):
+                return Finding(
+                    check_id, CheckStatus.SKIPPED_MISSING_INPUT,
+                    "Not a CNR",
+                    f"'{cnr}' is not a case number — a CNR is four letters "
+                    f"then twelve digits. Nothing was sent and nothing was "
+                    f"charged. If this came from the case search, that row "
+                    f"was an index stub rather than a matter; look the case "
+                    f"up by its case number instead.",
+                )
+
             data = ec.case_detail(cnr)
             parties = " v ".join(filter(None, [
                 ", ".join(data["petitioners"]) or None,

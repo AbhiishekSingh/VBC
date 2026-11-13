@@ -550,6 +550,18 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Court case search",
         endpoint="GET /search",
         provider=EC,
+        # PRICED, at last. Every eCourts check carried no `cost_paisa`,
+        # so the catalogue said "free" on the screen while `config.py`
+        # held ₹1.50 and ₹99 for the spend guard — two numbers for one
+        # thing, and the one the analyst saw was the wrong one.
+        #
+        # Worse than cosmetic: with the price at zero the History ledger
+        # totals zero, which is how three provider accounts ran dry in
+        # the same week with nothing on any screen counting down.
+        #
+        # ₹0.60 search and ₹99 legal check are published. ₹1.50 for a
+        # case detail came from a 402 we were shown, not from the docs.
+        cost_paisa=60,     # ₹0.60 PAYG — ₹0.20 on subscription
         note="Cases naming this party, with petitioner/respondent so the side is visible",
         params=(
             _p("parties", "Party name", required=True, from_vendor="legal_name",
@@ -564,6 +576,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Upcoming hearings",
         endpoint="POST /causelist/cnr/batch",
         provider=EC,
+        cost_paisa=60,   # ₹0.60 per distinct CNR
         note="Which matched cases are listed for hearing — active, not merely historical",
         requires=("courtsearch",),
     ),
@@ -573,6 +586,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Case detail",
         endpoint="GET /case/{cnr}",
         provider=EC,
+        cost_paisa=150,   # ₹1.50 — from a 402, not published
         note="Full record for one case, including its order list",
         params=(
             _p("cnr", "CNR", required=True, from_result="courtsearch",
@@ -585,6 +599,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Order text",
         endpoint="GET /case/{cnr}/order-md/{file}",
         provider=EC,
+        cost_paisa=150,   # ₹1.50 — same family as case detail
         note="What the orders actually say — capped by VBC_ECOURTS_MAX_ORDERS",
         requires=("casedetail",),
     ),
@@ -594,6 +609,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Order analysis (provider model)",
         endpoint="GET /case/{cnr}/order-ai/{file}",
         provider=EC,
+        cost_paisa=150,   # ₹1.50 — same family as case detail
         note="PROVIDER-GENERATED analysis, not registry fact. See scope decision 1.",
         requires=("casedetail",),
     ),
@@ -603,6 +619,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Cause list search",
         endpoint="GET /causelist/search",
         provider=EC,
+        cost_paisa=60,   # ₹0.60 — the search family
         note="Scheduled hearings naming this party — fuzzy match, analyst confirms identity",
         params=(
             _p("litigant", "Party name", required=True, from_vendor="legal_name"),
@@ -667,6 +684,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Refresh a case from source",
         endpoint="POST /case/{cnr}/refresh",
         provider=EC,
+        cost_paisa=75,   # 0.75 credits per CNR, charged every request
         note="Async — queues a re-pull; the provider quotes 5-10 minutes",
         admin=True,
         params=(_p("cnr", "CNR", required=True, from_result="courtsearch"),),
@@ -722,6 +740,7 @@ CHECKS: tuple[CheckDefinition, ...] = (
         name="Litigation exposure",
         endpoint="POST /legal-check → GET /legal-check/{code}/report",
         provider=EC,
+        cost_paisa=9900,   # ₹99 PAYG — ₹33 on subscription
         state=ACTIVE,
         note=("Risk band with an identity-confidence score — the only court "
               "check that produces a SCORED result rather than rows for an "
