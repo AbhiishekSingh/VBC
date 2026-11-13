@@ -548,7 +548,10 @@ CHECKS: tuple[CheckDefinition, ...] = (
         id="courtsearch",
         group=CheckGroup.REP,
         name="Court case search",
-        endpoint="GET /search",
+        # v2 since 13 Nov 2026. v1 did not reject the old `parties`
+        # filter — it ignored it and answered with the first page of all
+        # 352 million cases in the index.
+        endpoint="GET /v2/search",
         provider=EC,
         # PRICED, at last. Every eCourts check carried no `cost_paisa`,
         # so the catalogue said "free" on the screen while `config.py`

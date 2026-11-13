@@ -1690,7 +1690,11 @@ def _searched_names(data: dict) -> list[str]:
     if not names:
         query = data.get("query")
         if isinstance(query, dict):
-            names = query.get("parties")
+            #: `litigants` since the v2 migration on 13 Nov 2026;
+            #: `parties` on every result stored before it. Both are read,
+            #: because a result already on file must not start flagging
+            #: the day the wire parameter was renamed underneath it.
+            names = query.get("litigants") or query.get("parties")
         elif isinstance(query, list):
             names = query
         else:

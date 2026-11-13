@@ -198,6 +198,26 @@ class Settings(BaseSettings):
     #: unconfirmed, also assumed at parity with case detail. Each order is
     #: a separate billed call, which is what `ecourts_max_orders` caps.
     ecourts_order_paisa: int = 150
+
+    #: Case re-scrape. PUBLISHED at 0.75 credits per CNR, charged on every
+    #: request. It read `ecourts_case_paisa` until 13 Nov 2026, so the
+    #: guard reserved ₹1.50 for a ₹0.75 call while the catalogue quoted
+    #: ₹0.75 — two numbers for one thing, and on a thin balance the larger
+    #: one refuses a call the account could afford.
+    ecourts_refresh_paisa: int = 75
+
+    #: How a party name is matched. The provider's own default is `all` —
+    #: EVERY word must match — which is close to guaranteeing a miss here,
+    #: because VBC searches the MCA legal name and courts record what the
+    #: clerk typed. "FLAMINGO INFINITE PRIVATE LIMITED" does not match
+    #: "FLAMINGO INFINITE PVT LTD" under `all`, and the miss prints as
+    #: "no cases found".
+    #:
+    #: `fuzzy` is therefore the default here and the difference is not
+    #: cosmetic: it is whether a litigation check can find litigation.
+    #: Narrow it per run when a name is distinctive enough to need no help.
+    ecourts_name_match_mode: str = "fuzzy"
+
     #: Refuse a Case Search filter the capability catalog does not list.
     #: On by default: the published parameter list was truncated, and a
     #: filter the server silently ignores produces a WIDER result set than

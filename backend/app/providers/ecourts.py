@@ -59,6 +59,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Iterable
 
 from app.config import Settings
 from app.providers.base import (
@@ -86,15 +87,39 @@ BAND_LOW = "LOW"
 #: Terminal job states.
 DONE = ("completed", "failed", "error", "cancelled")
 
-#: Filters the server accepts but `/search/capabilities` does not list.
-#: `parties` was confirmed by direct call on 2026-09-07: it returned 200
-#: with populated `data.results[]` for a company name. The catalog lists
-#: `petitioners` and `respondents` separately; `parties` matches either
-#: side in one call, which is what a vendor check needs — a company can be
-#: respondent in one matter and petitioner in the next.
-#: Anything added here needs the same evidence. It is not a place to
-#: silence the guard.
-CONFIRMED_UNLISTED_FILTERS: frozenset[str] = frozenset({"parties"})
+#: Name filters, which `/search/capabilities` does not list among its
+#: field arrays. It advertises them under `multiValueNameParams` —
+#: CAPITALISED, as "Litigants", "Petitioners" and so on. The capitalised
+#: spelling does not work. The lowercase one does. Confirmed 13 Nov 2026
+#: against production: `litigants=State Bank of India` returned 100,273
+#: populated rows; `Litigants=` returned nothing with no error.
+#:
+#: `litigants` matches EITHER side in one call, which is what a vendor
+#: check needs — a company can be respondent in one matter and petitioner
+#: in the next.
+#:
+#: This replaces CONFIRMED_UNLISTED_FILTERS, which whitelisted `parties`
+#: on the strength of a 200 seen on 2026-09-07. That behaviour is gone:
+#: v1 `/search?parties=` no longer filters and no longer errors. It
+#: IGNORES the parameter and returns the first page of all 352 million
+#: cases in the index, every row a hollow stub. The whitelist did not
+#: merely stop helping — it suppressed the capability check that would
+#: have caught the change. Nothing goes in here without a captured
+#: response, and a captured response expires.
+NAME_FILTERS: frozenset[str] = frozenset({
+    "litigants", "petitioners", "respondents", "advocates", "judges",
+})
+
+#: Companion to the name filters. Values: all · any · phrase · fuzzy.
+#:
+#: THE DEFAULT IS `all` — every word must match — and that default is a
+#: false-negative machine for this product. VBC searches the MCA legal
+#: name by design, so the query is "FLAMINGO INFINITE PRIVATE LIMITED"
+#: while the court clerk typed "FLAMINGO INFINITE PVT LTD". Under `all`
+#: that is a miss, and a miss prints as "no cases found" — the single
+#: most reassuring sentence this product can produce, and the one it
+#: must never produce from a query that could not have succeeded.
+NAME_MATCH_MODES: frozenset[str] = frozenset({"all", "any", "phrase", "fuzzy"})
 
 
 class EcourtsProvider(HttpProvider):
@@ -467,7 +492,11 @@ class EcourtsProvider(HttpProvider):
         fields: set[str] = set()
         for key in ("sortableFields", "facetableFields", "projectableFields",
                     "presenceFilterableFields", "filterableFields",
-                    "searchableFields", "queryableFields"):
+                    "searchableFields", "queryableFields",
+                    #: The real catalogue's spelling, captured 13 Nov 2026.
+                    #: `presenceFilterableFields` above was a guess at this
+                    #: name and has never matched anything.
+                    "existsFilterableFields"):
             value = data.get(key)
             if isinstance(value, list):
                 fields.update(str(v) for v in value)
@@ -490,19 +519,37 @@ class EcourtsProvider(HttpProvider):
         * every key is checked against ``search_capabilities()`` and an
           unknown one raises immediately, naming the valid fields — instead
           of being silently ignored by the server;
-        * a search that returns NOTHING while carrying a key the capability
-          catalog did not confirm is reported as a parse gap, never as "no
-          cases". An empty result from a malformed query and an empty result
-          from a clean company are indistinguishable from the outside, and
-          only one of them may reach a report as good news.
+        * a search whose RESULTS DO NOT NAME THE SUBJECT is reported as a
+          parse gap, never as "no cases". See `_subject_is_named` — that
+          check, not any field in the response, is what proves the filter
+          was applied.
+
+        ON `/v2/search`. v1 `/search` is deprecated and, worse, broken for
+        this use: it ignores an unknown name filter instead of rejecting
+        it, and answers with the first page of all 352 million cases.
+        `/search/capabilities` names the correct path itself, under
+        `v2Search.searchPath`.
         """
         self._require_key()
         params = {k: v for k, v in filters.items() if not is_blank(v)}
         if not params:
             raise ValueError("case_search needs at least one filter.")
 
-        known = set(self.search_capabilities()["fields"]) | CONFIRMED_UNLISTED_FILTERS
-        unverified = sorted(k for k in params if known and k not in known)
+        mode = str(params.pop("nameMatchMode", "")
+                   or self.settings.ecourts_name_match_mode or "").strip()
+        names = {k: v for k, v in params.items() if k in NAME_FILTERS}
+        if names:
+            if mode and mode not in NAME_MATCH_MODES:
+                raise ValueError(
+                    f"nameMatchMode {mode!r} is not one of "
+                    f"{sorted(NAME_MATCH_MODES)}."
+                )
+            if mode:
+                params["nameMatchMode"] = mode
+
+        known = set(self.search_capabilities()["fields"]) | NAME_FILTERS
+        unverified = sorted(k for k in params
+                            if known and k not in known and k != "nameMatchMode")
         if known and unverified and self.settings.ecourts_strict_search:
             raise ValueError(
                 f"Case Search filter(s) {unverified} are not in this account's "
@@ -511,7 +558,7 @@ class EcourtsProvider(HttpProvider):
             )
 
         response = self._paid("ecourts.search", self.settings.ecourts_search_paisa,
-                              "GET", self._url("search"),
+                              "GET", self._url("v2/search"),
                                 headers=self._headers(), params=params)
 
         data = (response.payload or {}).get("data") or {}
@@ -522,6 +569,43 @@ class EcourtsProvider(HttpProvider):
                          hint="data.results[] · the case list")
             guard.raise_if_gaps(payload=response.payload)
             results = []
+
+        rows = [_case_row(r) for r in results if isinstance(r, dict)]
+
+        # THE GUARD THAT HOLDS.
+        #
+        # Rows came back; do they belong to who we asked about? When
+        # `parties` silently stopped filtering, twenty rows arrived naming
+        # twenty strangers and nothing noticed. `activeFilters` does not
+        # help — a SUCCESSFUL v2 search returns `activeFilters: []` too,
+        # because it echoes facet filters only, never name parameters.
+        #
+        # So the test is the content, which depends on no provider field
+        # and therefore survives the next API change: if we searched for a
+        # name and not one row on the page names anybody resembling it,
+        # the filter was not applied. Unexamined — never "no cases".
+        if rows and names and not any(
+            _subject_is_named(row, names.values()) for row in rows
+        ):
+            named = sum(
+                1 for row in rows
+                if (row.get("petitioners") or row.get("respondents"))
+            )
+            why = (
+                "every row is a bare identifier with no parties at all, "
+                "which is what the index returns when it is not filtering"
+                if not named else
+                "the rows name other parties entirely"
+            )
+            raise ProviderParseGap(
+                f"Case Search returned {len(rows)} row(s) for "
+                f"{sorted(names.values())} and {why}. The name filter was "
+                f"not applied, so this is NOT a finding about the subject "
+                f"and NOT an absence of litigation — it is unexamined. "
+                f"Check the parameter names against "
+                f"GET /search/capabilities before paying for it again.",
+                payload=response.payload,
+            )
 
         if not results and unverified:
             raise ProviderParseGap(
@@ -535,10 +619,22 @@ class EcourtsProvider(HttpProvider):
 
         return {
             "query": params,
+            "name_match_mode": params.get("nameMatchMode"),
             "unverified_filters": unverified,
-            "results": [_case_row(r) for r in results if isinstance(r, dict)],
+            "results": rows,
             "count": len(results),
-            "total": data.get("total") or data.get("totalCount"),
+            #: v2 calls it `totalHits`; the v1 spellings are kept because a
+            #: `total` of None read on screen as "unknown" rather than as a
+            #: field we were looking for under the wrong name.
+            "total": next(
+                (data[k] for k in ("totalHits", "total", "totalCount")
+                 if data.get(k) is not None),
+                None,
+            ),
+            #: A LOWER BOUND, not a count, when the server truncates. It
+            #: says so by setting facetMode to "full" — documented, and the
+            #: difference between "about 100,000" and "100,273".
+            "total_is_lower_bound": data.get("facetMode") == "full",
         }
 
     def case_search_names(self, names: list[str], **filters) -> dict:
@@ -582,7 +678,7 @@ class EcourtsProvider(HttpProvider):
         unverified: list[str] = []
 
         for name in wanted:
-            one = self.case_search(parties=name, **filters)
+            one = self.case_search(litigants=name, **filters)
             unverified = one.get("unverified_filters") or unverified
             fresh = 0
             for row in one["results"]:
@@ -603,7 +699,7 @@ class EcourtsProvider(HttpProvider):
             "searched": searched,
             "names": wanted,
             "calls": len(wanted),
-            "query": {"parties": wanted, **{k: v for k, v in filters.items() if v}},
+            "query": {"litigants": wanted, **{k: v for k, v in filters.items() if v}},
             "unverified_filters": unverified,
             "results": results,
             "count": len(results),
@@ -635,7 +731,8 @@ class EcourtsProvider(HttpProvider):
                                 headers=self._headers())
 
         data = (response.payload or {}).get("data") or {}
-        case = data.get("courtCaseData") or {}
+        primary = data.get("courtCaseData") or {}
+        case = _merge_case_blocks(data)
         guard = ParseGuard("ecourts.case_detail")
         guard.expect("case data", raw=data, parsed=case,
                      hint="data.courtCaseData")
@@ -644,6 +741,22 @@ class EcourtsProvider(HttpProvider):
             parsed=[case.get("caseStatus"), case.get("disposalType")],
             hint="caseStatus / disposalType · whether the matter is live",
         )
+        # DISPOSED WITHOUT A DISPOSAL TYPE IS NOT AN ANSWER.
+        #
+        # "Disposed" covers a withdrawal and a conviction alike, so the
+        # TYPE is the finding and the status alone is close to useless.
+        # Until 13 Nov 2026 this field read `courtCaseData.disposalType`,
+        # which does not exist — on the captured NCLT response it lives in
+        # `tribunalCaseData` — so every disposed case reported its status
+        # with no type and nothing noticed, because the guard above was
+        # satisfied by `caseStatus`.
+        if str(case.get("caseStatus") or "").upper() == "DISPOSED":
+            guard.expect_any(
+                "disposal type", raw=data,
+                parsed=[case.get("disposalType"), case.get("disposalTypeRaw")],
+                hint="disposalType · a withdrawal and a conviction are "
+                     "both DISPOSED, and only one is good news",
+            )
         guard.raise_if_gaps(payload=response.payload)
 
         files = _files_list(data)
@@ -689,6 +802,13 @@ class EcourtsProvider(HttpProvider):
             "order_count": case.get("orderCount"),
             "judgment_count": case.get("judgmentCount"),
             "hearing_count": case.get("hearingCount"),
+            #: Interlocutory applications. NOT a clerical detail: the
+            #: captured NCLT matter carries 33 of them, which is the
+            #: difference between a dormant file and a live, heavily
+            #: contested dispute. Nothing read it before 13 Nov 2026
+            #: because it sits in the second block.
+            "ia_count": case.get("iaCount"),
+            "interlocutory_applications": case.get("interlocutoryApplications") or [],
             "files": files,
             #: True when the response already carries provider MODEL output.
             #: It does so on this endpoint, unasked. Scope decision #1 says
@@ -698,7 +818,15 @@ class EcourtsProvider(HttpProvider):
                 isinstance(f, dict) and f.get("aiAnalysis") for f in files
             ),
             "data_last_modified": dig(data, "entityInfo", "dateModified"),
-            "court_case_data": case,
+            #: The provider's own `courtCaseData`, UNMERGED. The evidence
+            #: tier must stay what the provider sent — merging is our
+            #: reading of it, and the two must not be confused where an
+            #: analyst goes to check our working.
+            "court_case_data": primary,
+            #: The merged view the fields above were read from, so a
+            #: disagreement between a field and the raw block can be
+            #: traced without re-reading the payload.
+            "case_merged": case,
         }
 
     def order_download(self, cnr: str, filename: str) -> dict:
@@ -786,7 +914,7 @@ class EcourtsProvider(HttpProvider):
     def case_refresh(self, cnr: str) -> dict:
         """Ask the provider to re-pull one case. Async — 202, then wait."""
         self._require_key()
-        response = self._paid("ecourts.case-refresh", self.settings.ecourts_case_paisa,
+        response = self._paid("ecourts.case-refresh", self.settings.ecourts_refresh_paisa,
                               "POST", self._url(f"case/{_cnr(cnr)}/refresh"),
                                 headers=self._headers())
         data = (response.payload or {}).get("data") or {}
@@ -811,7 +939,7 @@ class EcourtsProvider(HttpProvider):
             return {"refreshed": [], "queued": [], "invalid": []}
 
         response = self._paid(
-            "ecourts.bulk-refresh", self.settings.ecourts_case_paisa,
+            "ecourts.bulk-refresh", self.settings.ecourts_refresh_paisa,
             "POST", self._url("case/bulk-refresh"),
             units=len(unique),
             headers=self._headers({"Content-Type": "application/json"}),
@@ -1020,25 +1148,192 @@ def _matches(data) -> list[dict]:
     return []
 
 
+#: Blocks under `data` that describe THE CASE, most authoritative first.
+#: Named rather than discovered so that `files`, `entityInfo` and
+#: `descriptions` — which are about the response, not the matter — can
+#: never leak a same-named key into the merged view.
+_CASE_BLOCKS: tuple[str, ...] = (
+    "courtCaseData", "tribunalCaseData", "caseData", "districtCaseData",
+    "highCourtCaseData", "supremeCourtCaseData",
+)
+
+
+def _merge_case_blocks(data: dict) -> dict:
+    """One case, assembled from however many blocks the response splits
+    it across.
+
+    WHAT WENT WRONG. `case_detail` read `data.courtCaseData` alone. The
+    captured NCLT response puts roughly half the record in a SECOND
+    block, `data.tribunalCaseData`: `disposalType`, `caseNumber`,
+    `courtName`, `orderCount`, `hearingCount`, `judgmentCount`,
+    `caseDurationDays`, `caseCategoryFacetPath`, `district`. Every one of
+    those came back None, and the ParseGuard passed, because the two
+    things it checked both sat in the block we did read.
+
+    WHY NOT JUST MERGE THE TWO. Because one sample is one sample. That
+    response is an NCLT matter, which is why its second block is called
+    `tribunalCaseData`; a district or High Court case may name it
+    differently or not carry one. Hard-coding two names from a single
+    capture is how the `parties` whitelist came to exist.
+
+    So: a named list, earliest wins, absent blocks cost nothing, and an
+    unknown block name degrades to today's behaviour rather than to a
+    crash. A block whose name is not listed but which carries `cnr` is
+    picked up too — recognising the thing by what it holds, which is the
+    only approach that has survived contact with these providers.
+
+    EARLIEST WINS, and only over a BLANK. A later block never overwrites
+    a value the primary block actually carried, so this can add fields
+    but never silently change one.
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    ordered: list[dict] = []
+    for key in _CASE_BLOCKS:
+        block = data.get(key)
+        if isinstance(block, dict) and block:
+            ordered.append(block)
+    for key, block in data.items():
+        if (key not in _CASE_BLOCKS and isinstance(block, dict)
+                and block.get("cnr") and block not in ordered):
+            ordered.append(block)
+
+    merged: dict = {}
+    for block in ordered:
+        for key, value in block.items():
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+    return merged
+
+
+#: Words that carry no identifying weight in an Indian company name.
+#: "PRIVATE LIMITED" is shared by millions of companies, so a row that
+#: matched only on those words has told us nothing about whether the
+#: search filtered at all.
+_NAME_NOISE: frozenset[str] = frozenset({
+    "private", "limited", "ltd", "pvt", "p", "company", "co", "corporation",
+    "corp", "inc", "incorporated", "llp", "and", "the", "of", "m", "s",
+    "ms", "india", "indian",
+})
+
+
+def _name_tokens(value: str) -> set[str]:
+    """The words of a name that actually identify it."""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())
+    return {w for w in cleaned.split() if len(w) > 1 and w not in _NAME_NOISE}
+
+
+#: Shortest prefix two words may share and still count as the same name.
+#: Four characters keeps "infinite"/"infinity" and "packaging"/"packagin"
+#: together — clerk typos, which a fuzzy search is meant to find and this
+#: guard must not then throw away — while keeping "state"/"stationery"
+#: apart.
+_PREFIX_MATCH = 4
+
+
+def _subject_is_named(row: dict, wanted: Iterable[str]) -> bool:
+    """Does this search hit actually name one of the parties we asked for?
+
+    THE POINT. When a name filter stops being applied — as `parties` did
+    — the provider does not say so. It returns a page of somebody else's
+    cases with a 200 and a well-formed body. No flag in the response
+    distinguishes that from a real result: `activeFilters` is empty on a
+    successful name search too.
+
+    What distinguishes them is the content. A row genuinely matched on
+    "State Bank of India" names State Bank of India somewhere in its
+    parties. A row from an unfiltered corpus dump does not.
+
+    Deliberately GENEROUS, because it has to be. A clerk writes "M/s
+    Flamingo Infinite Pvt. Ltd." for "FLAMINGO INFINITE PRIVATE LIMITED",
+    and a fuzzy search is SUPPOSED to find that — a guard that rejected
+    it would undo the fuzzy matching one layer down. So one distinctive
+    word in common is enough, a shared four-character prefix counts, and
+    "private limited" counts for nothing because millions of companies
+    share it.
+
+    This is NOT identity matching. The analyst still confirms the
+    subject. It asks only the cruder question: is this page about our
+    subject at all, or about the first twenty rows of the national index?
+
+    A ROW WITH NO PARTY NAMES VOUCHES FOR NOTHING. It returned True here
+    at first, reasoning that silence should not count against a thin row.
+    That let the exact failure this guard exists for walk straight
+    through: every row of the corpus dump is a bare identifier with empty
+    `petitioners` and `respondents`, so every row abstained and the page
+    passed. A name search whose rows name nobody cannot have matched on a
+    name.
+    """
+    haystack = _name_tokens(" ".join(
+        str(v) for key in ("petitioners", "respondents", "parties",
+                           "petitioner_advocates", "respondent_advocates")
+        for v in (row.get(key) or [])
+        if isinstance(v, str)
+    ))
+    if not haystack:
+        return False
+    for name in wanted:
+        tokens = _name_tokens(name)
+        if not tokens:
+            # Nothing to compare against. Refusing here would make an
+            # unsearchable name look like a provider defect.
+            return True
+        if tokens & haystack:
+            return True
+        for token in tokens:
+            for other in haystack:
+                shared = min(len(token), len(other), _PREFIX_MATCH)
+                if shared >= _PREFIX_MATCH and token[:shared] == other[:shared]:
+                    return True
+    return False
+
+
 CNR_LEN = 16
 
 
 def _cnr(value: str) -> str:
-    """Validate a CNR before it becomes a URL path segment."""
+    """Validate a CNR before it becomes a URL path segment.
+
+    Shares `CNR_SHAPE` with the runner's pre-charge guard deliberately.
+    They disagreed until 13 Nov 2026 — not in their rules, but in having
+    two copies of one rule, and a guard that rejects what the validator
+    accepts spends money proving the point.
+    """
     text = str(value or "").strip().upper()
-    if len(text) != CNR_LEN or not text[:4].isalpha() or not text[4:].isdigit():
+    if not CNR_SHAPE.match(text):
         raise ValueError(
-            f"'{value}' is not a CNR. Expected 4 letters then 12 digits, "
-            f"e.g. DLHC010001232024. Nothing was sent and nothing was "
-            f"charged. A search hit that carries no CNR is an index stub, "
-            f"not a case — look the matter up by its case number instead."
+            f"'{value}' is not a CNR. Expected {CNR_LEN} characters opening "
+            f"with a court code, e.g. DLHC010001232024 or NCLTCH0001872024. "
+            f"Nothing was sent and nothing was charged. A search hit that "
+            f"carries no CNR is an index stub, not a case — look the matter "
+            f"up by its case number instead."
         )
     return text
 
 
-#: 4 letters then 12 digits. A CNR is the only identifier in a search hit
-#: that can be handed back to `/case/{cnr}`, and it has a shape.
-CNR_SHAPE = re.compile(r"^[A-Z]{4}\d{12}$")
+#: Sixteen characters, opening with a court-code prefix of letters.
+#:
+#: THIS WAS `^[A-Z]{4}\d{12}$` — four letters then twelve digits —
+#: written from the district-court examples in the documentation, which
+#: all look like `DLHC010001232024`. Tribunals do not:
+#:
+#:     NCLTCH0001872024   SIX letters, then ten digits   (NCLT Chennai)
+#:     DRTM3OA006572016   letters and digits interleaved (DRT Mumbai-3)
+#:
+#: Both are real. Both were returned by the live search on 13 Nov 2026
+#: and both resolve at `/case/{cnr}`. The strict pattern would have
+#: refused every NCLT and DRT matter BEFORE the call, reporting a valid
+#: case as an index stub — which is worse than the 404 it was written to
+#: prevent, because it looks like our considered judgement rather than a
+#: gap. Insolvency and debt-recovery matters are also the ones a vendor
+#: check most wants to find.
+#:
+#: What the guard is actually for is rejecting index stubs — `row-9`, a
+#: truncated identifier, an internal id — before they become a ₹1.50
+#: lookup. Length, character set and a leading alphabetic court code do
+#: that without assuming a layout no tribunal follows.
+CNR_SHAPE = re.compile(r"^[A-Z]{3}[A-Z0-9]{13}$")
 
 
 def _cnr_in(row: dict) -> str | None:
