@@ -182,7 +182,13 @@ class Settings(BaseSettings):
     #: Case Search. NOT confirmed. Case detail is ₹1.50 and the docs price
     #: both as "credits per request", so this assumes parity. A wrong-but-
     #: close number keeps the guard armed; 0 disarmed it completely.
-    ecourts_search_paisa: int = 150
+    #:
+    #: PUBLISHED 12 Nov 2026 and corrected from 150: the docs give ₹0.60
+    #: pay-as-you-go, ₹0.20 on a subscription. The provider's own 402
+    #: agrees — "Required: ₹0.60, Available: ₹0.50". The old guess was
+    #: 2.5x over, which is the safer direction for a guard and the wrong
+    #: direction for a quote the analyst reads before pressing Run.
+    ecourts_search_paisa: int = 60
 
     #: Case detail. CONFIRMED 14 Sep 2026 by a 402 from the provider:
     #: "INSUFFICIENT_CREDITS: Required: ₹1.50, Available: ₹1.10".
@@ -209,6 +215,22 @@ class Settings(BaseSettings):
 
     # --- HTTP behaviour ------------------------------------------------
     http_timeout_seconds: float = 30.0
+
+    #: A LONGER CEILING FOR THE CALLS THAT ARE DOCUMENTED AS SLOW.
+    #:
+    #: eCourts publishes the figures: `order-ai` takes 10–60 seconds and
+    #: `order-md` up to 300, because both render a document before they
+    #: answer. Thirty seconds is right for an ordinary lookup and wrong
+    #: for those two — and wrong in the worst direction, because the
+    #: charge lands when the provider accepts the request, not when we
+    #: finish reading the reply. Giving up at thirty seconds spends the
+    #: money, discards the document and records a timeout that reads as
+    #: the provider's fault.
+    #:
+    #: 310 rather than 300: the published figure is how long the work
+    #: can take, and a client that expires at exactly the limit turns
+    #: the slowest successful call into a failure.
+    http_slow_timeout_seconds: float = 310.0
     http_max_retries: int = 3
     http_backoff_base_seconds: float = 0.5
 

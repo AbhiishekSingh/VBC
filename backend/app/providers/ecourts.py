@@ -57,6 +57,7 @@ key, that means a slow check costs money once, not once per attempt.
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from app.config import Settings
@@ -724,6 +725,14 @@ class EcourtsProvider(HttpProvider):
             "GET", self._url(f"case/{_cnr(cnr)}/order-md/{filename}"),
             headers=self._headers(),
             params=None if signed else {"signed": "false"},
+            # DOCUMENTED AT UP TO 300 SECONDS — it renders a watermarked
+            # PDF before answering. The default 30s client timeout gave
+            # up long before that, and gave up AFTER the charge: eCourts
+            # bills on accepting the request, not on our reading the
+            # reply. So the money went, the document was discarded, and
+            # the run recorded a timeout that read as the provider's
+            # fault rather than ours.
+            timeout=self.settings.http_slow_timeout_seconds,
         )
         data = (response.payload or {}).get("data") or {}
         return {
@@ -752,6 +761,10 @@ class EcourtsProvider(HttpProvider):
             "ecourts.order-ai", self.settings.ecourts_order_paisa,
             "GET", self._url(f"case/{_cnr(cnr)}/order-ai/{filename}"),
             headers=self._headers(),
+            # Documented at 10–60 seconds; the model runs before the
+            # reply. Same reasoning as order-md above — the top of that
+            # range is already over the 30s default.
+            timeout=self.settings.http_slow_timeout_seconds,
         )
         data = (response.payload or {}).get("data") or {}
         core = dig(data, "aiAnalysis", "foundational_metadata",
@@ -1016,9 +1029,46 @@ def _cnr(value: str) -> str:
     if len(text) != CNR_LEN or not text[:4].isalpha() or not text[4:].isdigit():
         raise ValueError(
             f"'{value}' is not a CNR. Expected 4 letters then 12 digits, "
-            f"e.g. DLHC010001232024."
+            f"e.g. DLHC010001232024. Nothing was sent and nothing was "
+            f"charged. A search hit that carries no CNR is an index stub, "
+            f"not a case — look the matter up by its case number instead."
         )
     return text
+
+
+#: 4 letters then 12 digits. A CNR is the only identifier in a search hit
+#: that can be handed back to `/case/{cnr}`, and it has a shape.
+CNR_SHAPE = re.compile(r"^[A-Z]{4}\d{12}$")
+
+
+def _cnr_in(row: dict) -> str | None:
+    """The CNR in a search hit — BY SHAPE, not only by key name.
+
+    `row["cnr"]` is preferred and is usually right. The fallback exists
+    because a case detail lookup costs ₹1.50 and takes whatever string
+    we hand it: if the search response ever moves that value under a
+    different key, reading only `cnr` sends `None` or an internal row id
+    to a paid endpoint and gets CASE_NOT_FOUND back. The charge lands
+    anyway, and the failure reads as the provider's.
+
+    So: take the keyed value when it is CNR-shaped, and otherwise look
+    for a CNR-shaped string anywhere in the row. This does not guess a
+    field NAME — it recognises the thing by what it is, which is the
+    only approach that has survived contact with these providers.
+
+    Returns None when the row carries no CNR-shaped value at all. That
+    is an index stub, and a stub must not be offered for a paid lookup.
+    """
+    keyed = str(row.get("cnr") or "").strip().upper()
+    if CNR_SHAPE.match(keyed):
+        return keyed
+
+    for value in row.values():
+        if isinstance(value, str):
+            candidate = value.strip().upper()
+            if CNR_SHAPE.match(candidate):
+                return candidate
+    return None
 
 
 def _case_row(row: dict) -> dict:
@@ -1030,7 +1080,7 @@ def _case_row(row: dict) -> dict:
     that drops them cannot be reviewed.
     """
     return {
-        "cnr": row.get("cnr"),
+        "cnr": _cnr_in(row),
         "case_type": row.get("caseType"),
         "case_status": row.get("caseStatus"),
         "filing_date": row.get("filingDate"),

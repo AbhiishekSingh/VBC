@@ -29,6 +29,9 @@ import httpx
 import pytest
 
 from app.config import Settings
+
+#: The published search rate, read rather than copied.
+SEARCH_PAISA = Settings().ecourts_search_paisa
 from app.providers import ecourts as ec
 from app.providers.base import PaidCallRefused, ProviderOutOfCredits
 
@@ -198,14 +201,20 @@ class TestOutOfCredits:
         p = provider(ok({"data": [{"cnr": "A", "hasCauselist": True}]}))
         p.cnr_causelist_batch(["MHSO070008712017", "MHMT010018352022",
                                "MHGO010008032025"])
-        assert p.spend.paisa == 3 * 150
+        # The RATE, not a copy of it. The cause-list batch bills at the
+        # search rate, which was corrected from a 150 guess to the
+        # published ₹0.60 on 12 Nov 2026 — and these two tests were the
+        # only thing that broke, because they had the old number typed
+        # in. What is being asserted is "three CNRs, three charges",
+        # which is true at any price.
+        assert p.spend.paisa == 3 * SEARCH_PAISA
 
     def test_the_same_cnr_twice_is_charged_once(self):
         """Deduplicated before sending. The same case twice in a list is
         the same case, and paying twice for it buys nothing."""
         p = provider(ok({"data": []}))
         p.cnr_causelist_batch(["MHSO070008712017", "MHSO070008712017"])
-        assert p.spend.paisa == 150
+        assert p.spend.paisa == SEARCH_PAISA
 
     def test_an_empty_batch_costs_nothing_and_never_calls(self):
         calls = []
