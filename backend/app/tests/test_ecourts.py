@@ -256,7 +256,7 @@ def test_no_token_is_not_configured():
 CAPS = {"data": {
     "sortableFields": ["score", "filingDate", "decisionDate"],
     "facetableFields": ["caseType", "caseStatus", "courtCode", "stateCode"],
-    "filterableFields": ["parties", "advocates", "courtCodes", "filingDateFrom"],
+    "filterableFields": ["litigants", "advocates", "courtCodes", "filingDateFrom"],
 }}
 
 
@@ -281,7 +281,7 @@ def test_search_returns_parties_so_the_side_is_visible():
         "petitioners": ["ABC Private Limited"],
         "respondents": ["XYZ Corporation"],
     }]
-    data = _provider(_search_router(rows)).case_search(parties="ABC Private Limited")
+    data = _provider(_search_router(rows)).case_search(litigants="ABC Private Limited")
     assert data["count"] == 1
     assert data["results"][0]["petitioners"] == ["ABC Private Limited"]
     assert data["results"][0]["respondents"] == ["XYZ Corporation"]
@@ -306,7 +306,7 @@ def test_empty_results_from_an_unverified_filter_is_not_clean():
 
 
 def test_empty_results_from_a_verified_filter_is_a_real_answer():
-    data = _provider(_search_router([])).case_search(parties="NOBODY LIMITED")
+    data = _provider(_search_router([])).case_search(litigants="NOBODY LIMITED")
     assert data["count"] == 0
     assert data["unverified_filters"] == []
 

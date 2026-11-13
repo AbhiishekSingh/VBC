@@ -1984,7 +1984,12 @@ class CheckRunner:
             # The search index returns stubs: a row with an identifier
             # and nothing else. Those identifiers are not always CNRs,
             # and a stub must not be turned into a paid lookup.
-            if not CNR_SHAPE.match(str(cnr).strip().upper()):
+            # `ec_mod.` IS LOAD-BEARING. Written as a bare `CNR_SHAPE` in
+            # cefb999, which raised NameError on every case detail — the
+            # guard that exists to protect a paid call instead became the
+            # thing that broke it, and the catch-all reported it as
+            # "Unexpected error" rather than naming the module.
+            if not ec_mod.CNR_SHAPE.match(str(cnr).strip().upper()):
                 return Finding(
                     check_id, CheckStatus.SKIPPED_MISSING_INPUT,
                     "Not a CNR",

@@ -52,11 +52,34 @@ class TestTheShapeItself:
     def test_a_real_cnr_matches(self):
         assert CNR_SHAPE.match("MHAH010012342020")
 
-    def test_four_letters_then_twelve_digits_is_the_rule(self):
+    def test_the_length_and_court_code_are_the_rule(self):
+        """This asserted "four letters then twelve digits" until 13 Nov
+        2026, written from the district-court examples in the docs. Two
+        of its assertions — a court code shorter or longer than four
+        letters — turned out to describe REAL CNRs, so they were deleted
+        rather than fixed. See `test_tribunal_cnrs_are_real_cnrs`.
+        """
         assert not CNR_SHAPE.match("MHAH01001234202")    # 15
         assert not CNR_SHAPE.match("MHAH0100123420201")  # 17
-        assert not CNR_SHAPE.match("MHA0010012342020")   # 3 letters
-        assert not CNR_SHAPE.match("MHAHA10012342020")   # 5 letters
+        assert not CNR_SHAPE.match("MH00010012342020")   # no court code
+        assert not CNR_SHAPE.match("MHAH-10012342020")   # punctuated
+
+    def test_tribunal_cnrs_are_real_cnrs(self):
+        """CAPTURED FROM PRODUCTION, 13 Nov 2026. Both were returned by
+        the live search, and the first resolved at `/case/{cnr}` with a
+        full record.
+
+        The old four-letter rule refused both BEFORE the call, reporting
+        a valid NCLT or DRT matter as an index stub — worse than the 404
+        the guard exists to prevent, because a refusal reads as our
+        considered judgement rather than as a gap. Insolvency and
+        debt-recovery matters are also exactly the ones a vendor check
+        most wants to find.
+        """
+        assert CNR_SHAPE.match("NCLTCH0001872024")   # six-letter court code
+        assert CNR_SHAPE.match("DRTM3OA006572016")   # letters and digits mixed
+        assert CNR_SHAPE.match("DRTK2SA001092022")
+        assert CNR_SHAPE.match("MPHC020051722014")   # the district shape still
 
     def test_lowercase_is_not_matched_raw(self):
         """The callers upper-case before matching; the pattern itself

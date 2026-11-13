@@ -83,7 +83,7 @@ class TestTheGuard:
 
     @pytest.mark.parametrize("call", [
         lambda p: p.case_detail("HCBM010380062022"),
-        lambda p: p.case_search(parties="RELIANCE INDUSTRIES LIMITED"),
+        lambda p: p.case_search(litigants="RELIANCE INDUSTRIES LIMITED"),
         lambda p: p.order_markdown("HCBM010380062022", "order-1.pdf"),
         lambda p: p.order_ai("HCBM010380062022", "order-1.pdf"),
         lambda p: p.order_download("HCBM010380062022", "order-1.pdf"),

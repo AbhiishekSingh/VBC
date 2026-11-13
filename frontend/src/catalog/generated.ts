@@ -1952,7 +1952,7 @@ export const CHECKS = [
     "id": "courtsearch",
     "group": "rep",
     "name": "Court case search",
-    "endpoint": "GET /search",
+    "endpoint": "GET /v2/search",
     "provider": "ecourts",
     "note": "Cases naming this party, with petitioner/respondent so the side is visible",
     "state": "active",

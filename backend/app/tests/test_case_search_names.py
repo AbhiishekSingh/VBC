@@ -29,11 +29,19 @@ def _provider(pages: dict[str, list[dict]]):
         url = str(request.url)
         if "capabilities" in url:
             return httpx.Response(200, json={"data": {"fields": [
-                "parties", "courtCodes", "filingDateFrom"]}})
-        party = request.url.params.get("parties", "")
+                "litigants", "courtCodes", "filingDateFrom"]}})
+        party = request.url.params.get("litigants", "")
         calls.append(party)
+        # A REAL NAME SEARCH RETURNS ROWS THAT NAME THAT PARTY, so the
+        # fixtures do too. They carried a CNR and nothing else until
+        # 13 Nov 2026, which made them indistinguishable from the
+        # unfiltered corpus dump `_subject_is_named` exists to catch —
+        # and a fixture that cannot be told apart from the failure case
+        # cannot demonstrate the success case.
+        rows = [{"petitioners": [party], "respondents": ["UNION OF INDIA"],
+                 **row} for row in pages.get(party, [])]
         return httpx.Response(200, json={
-            "data": {"results": pages.get(party, []), "total": len(pages.get(party, []))}
+            "data": {"results": rows, "total": len(rows)}
         })
 
     provider = EcourtsProvider(
