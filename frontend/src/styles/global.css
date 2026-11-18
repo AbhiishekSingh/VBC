@@ -1925,7 +1925,71 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   display: flex; align-items: center; gap: var(--space-3);
   flex-wrap: wrap;
 }
-.hist-bar .input { flex: 1 1 20rem; }
+.hist-bar .input { flex: 1 1 18rem; }
+
+/* ---- the statement header -------------------------------------------
+   WAS four equal tiles. Four equal tiles say four equal things, and
+   these four are not: one is the answer and three are context. The
+   total leads at --step-4; everything else sits beside it at a quarter
+   of the weight. */
+.stmt {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--space-6); flex-wrap: wrap;
+  border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-5) var(--space-6);
+  box-shadow: var(--shadow-1);
+}
+.stmt-lead { min-width: 0; }
+.stmt-who { font-size: var(--step-0); color: var(--ink-3); }
+.stmt-total {
+  font-size: var(--step-4); font-weight: var(--weight-semi);
+  line-height: var(--leading-tight); letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.stmt-sub { font-size: var(--step--1); color: var(--ink-4); margin-top: var(--space-1); }
+
+.stmt-figs { display: flex; gap: var(--space-7); flex-wrap: wrap; }
+.stmt-fig { min-width: 3.5rem; }
+.fig-n {
+  font-size: var(--step-2); font-weight: var(--weight-semi);
+  line-height: var(--leading-tight); color: var(--ink-1);
+}
+.fig-l {
+  font-size: var(--step--2); color: var(--ink-4);
+  text-transform: uppercase; letter-spacing: var(--tracking-wide);
+  margin-top: 2px;
+}
+/* Calls that recorded no price. Coloured only when there ARE some —
+   a zero here is the good outcome and should not glow. */
+.stmt-fig.is-flagged .fig-n,
+.stmt-fig.is-flagged .fig-l { color: var(--warn); }
+
+/* ---- where the money went, by provider ------------------------------
+   The spend-watching half of this page, on the same rows as the billing
+   view rather than on a second screen. */
+.burn { display: flex; flex-direction: column; gap: var(--space-2); }
+.burn-bar {
+  display: flex; height: 8px; border-radius: var(--radius-pill);
+  overflow: hidden; background: var(--surface-3);
+}
+.burn-seg { height: 100%; }
+.burn-keys { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.burn-key {
+  display: inline-flex; align-items: baseline; gap: var(--space-2);
+  font-size: var(--step--1); color: var(--ink-3);
+}
+.burn-key b { font-weight: var(--weight-semi); color: var(--ink-1); }
+.burn-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; flex: none; }
+
+/* Six steps, distinguishable from each other and from the semantic
+   palette — provider identity is not a verdict and must not borrow the
+   colours that carry one. */
+.burn-c0 { background: #5b5fd6; }
+.burn-c1 { background: #2f9e8f; }
+.burn-c2 { background: #c08a2e; }
+.burn-c3 { background: #8a6bbf; }
+.burn-c4 { background: #4d86c6; }
+.burn-c5 { background: #a2557f; }
 
 .hist-split {
   display: grid;
@@ -1936,7 +2000,7 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 
 .hist-side {
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   background: var(--surface);
   padding: var(--space-2);
   position: sticky; top: var(--space-4);
@@ -1949,7 +2013,7 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .hist-side-h + .hist-pick { margin-top: 0; }
 
 .hist-pick {
-  display: flex; align-items: baseline; gap: var(--space-2);
+  display: flex; align-items: center; gap: var(--space-2);
   width: 100%;
   padding: var(--space-2);
   border: 0; border-radius: var(--radius-sm);
@@ -1962,25 +2026,143 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* THE CALL COUNT IS ALWAYS TRUE. The rupee figure can legitimately read
+   ₹0 while prices go unwritten, and a column of zeroes makes the list
+   look broken rather than unpriced. */
+.hist-pick-meta {
+  display: flex; flex-direction: column; align-items: flex-end;
+  flex: none; line-height: 1.2;
+}
+.hist-pick-cost { font-size: var(--step--1); }
+.hist-pick-calls { font-size: var(--step--2); color: var(--ink-4); }
 
+/* ---- the ledger itself ----------------------------------------------
+   THE COST COLUMN NEVER SCROLLS AWAY. It is the figure this page exists
+   for, and two column min-widths plus the sidebar used to push it past
+   the right edge behind a horizontal scrollbar. Sticky-right keeps it
+   in view at any width: a narrow screen loses When and Vendor, never
+   the money. */
 .hist-main { min-width: 0; }
-.hist-table td { vertical-align: top; }
-.hist-table .num { text-align: right; white-space: nowrap; }
-/* Columns sized by what they hold. Left to itself the table gave the
-   vendor name four lines and the timestamp two, which turned a dense
-   ledger into a page of stacked fragments. */
-.hist-table td:first-child { white-space: nowrap; }
-.hist-table th:nth-child(2),
-.hist-table td:nth-child(2) { min-width: 12rem; }
-.hist-table th:nth-child(3),
-.hist-table td:nth-child(3) { min-width: 11rem; }
-.hist-table td:nth-child(2) .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--surface);
+}
+.hist-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.hist-table th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface-2);
+  font-size: var(--step--2); text-transform: uppercase;
+  letter-spacing: var(--tracking-wide); color: var(--ink-4);
+  font-weight: var(--weight-semi); text-align: left;
+  padding: var(--space-3) var(--space-4); white-space: nowrap;
+  border-bottom: 1px solid var(--line-2);
+}
+.hist-table td {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: top;
+}
+.hist-table tbody tr:hover td { background: var(--surface-2); }
+.hist-table tbody tr:last-child td { border-bottom: 0; }
 
-/* A call whose result was set aside. DIMMED, NEVER HIDDEN: the money was
-   spent and the invoice says so, and a ledger that quietly drops rows is
-   the defect retiring the delete was meant to close. */
-.hist-table tr.is-aside td { opacity: 0.66; }
-.hist-aside { color: var(--ink-3); }
+.hist-table th.c-cost, .hist-table td.c-cost {
+  position: sticky; right: 0; z-index: 3;
+  text-align: right; white-space: nowrap;
+  background: var(--surface);
+  box-shadow: -1px 0 0 var(--line-2), -12px 0 12px -12px rgba(0, 0, 0, .25);
+}
+.hist-table th.c-cost { background: var(--surface-2); z-index: 4; }
+.hist-table tbody tr:hover td.c-cost { background: var(--surface-2); }
+
+.hist-table .c-when {
+  white-space: nowrap; color: var(--ink-4); font-size: var(--step--1);
+}
+.hist-table .c-check { min-width: 10rem; }
+.hist-table .c-asked { min-width: 11rem; }
+/* ONE LINE, ELLIPSIS, FULL NAME ON HOVER. Wrapping gave every row two
+   lines of vendor name and turned a dense ledger into a page of stacked
+   fragments — the complaint the original column rules were written to
+   fix, reintroduced by a narrower column. */
+.hist-table .c-vendor { min-width: 10rem; max-width: 15rem; }
+.hist-table .c-vendor .cell-main,
+.hist-table .c-vendor .cell-sub {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Result is allowed to WRAP. It hugs its content so the money is not
+   separated from its rows by a column of empty space — but `nowrap`
+   made "Needs confirmation" an unbreakable ~9rem, which pushed the
+   table past the container and slid the label under the pinned Cost
+   cell. Two short lines cost nothing; an overlapped column costs the
+   reader the status. */
+.hist-table .c-res { width: 1%; max-width: 9rem; }
+
+.hist-table .cell-main { font-size: var(--step-0); }
+.hist-table .cell-sub { font-size: var(--step--1); color: var(--ink-4); margin-top: 2px; }
+/* `word-break: break-word` split kaveritraders.co.in as
+   "kaveritraders.co.i / n". A domain, a CIN and a CNR are identifiers —
+   a reader checks them character by character, and an arbitrary break
+   makes that harder than a wrapped line ever would. `overflow-wrap`
+   breaks only when a token genuinely cannot fit. */
+.asked-val {
+  font-family: var(--font-mono); font-size: var(--step--1);
+  color: var(--ink-2); overflow-wrap: break-word;
+}
+.cost-val { font-size: var(--step-0); }
+/* NOT "₹0". A call with no recorded price is not a free call. */
+.cost-none { color: var(--ink-4); font-size: var(--step--1); }
+.cost-cr { font-size: var(--step--2); color: var(--ink-4); }
+
+/* A day separator. A ledger is read by date, and the date was
+   repeating on every row. */
+.day-row td {
+  background: var(--surface-3);
+  font-size: var(--step--2); text-transform: uppercase;
+  letter-spacing: var(--tracking-wide); color: var(--ink-3);
+  font-weight: var(--weight-semi);
+  padding: var(--space-2) var(--space-4);
+}
+/* Not sticky-left: pinning a colSpan cell clipped its own subtotal
+   against the pinned Cost column. */
+.day-sum { float: right; color: var(--ink-2); }
+
+/* A result marker. A dot and a word rather than a filled badge: this is
+   a list read for numbers, and a column of saturated chips competes
+   with the figures beside it. */
+.res {
+  display: inline-flex; align-items: flex-start; gap: var(--space-2);
+  font-size: var(--step--1); line-height: 1.3;
+}
+.res-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  margin-top: 0.4em;
+}
+.res-pass { color: var(--pass); }
+.res-pass .res-dot { background: var(--pass); }
+.res-warn { color: var(--warn); }
+.res-warn .res-dot { background: var(--warn); }
+.res-adverse { color: var(--adverse); }
+.res-adverse .res-dot { background: var(--adverse); }
+.res-unchecked, .res-neutral, .res-accent { color: var(--ink-4); }
+.res-unchecked .res-dot, .res-neutral .res-dot { background: var(--unchecked); }
+.res-accent .res-dot { background: var(--accent); }
+
+/* A call whose result was set aside. DIMMED, NEVER HIDDEN: the money
+   was spent and the invoice says so, and a ledger that quietly drops
+   rows is the defect retiring the delete was meant to close.
+   Dimmed BY COLOUR, not opacity — `opacity` makes the pinned Cost cell
+   translucent, so the Result column scrolls underneath and shows
+   through the money. */
+.hist-table tr.is-aside .cell-main,
+.hist-table tr.is-aside .asked-val,
+.hist-table tr.is-aside .linklike { color: var(--ink-4); }
+.hist-table tr.is-aside .linklike {
+  text-decoration: line-through; text-decoration-thickness: 1px;
+}
+.aside-why {
+  font-size: var(--step--2); color: var(--warn);
+  margin-top: 2px; max-width: 14rem;
+}
 
 /* A segmented control for the date range. */
 .seg {
@@ -2007,6 +2189,9 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 @media (max-width: 900px) {
   .hist-split { grid-template-columns: 1fr; }
   .hist-side { position: static; }
+  .stmt { padding: var(--space-4); }
+  .stmt-figs { gap: var(--space-5); }
+  .stmt-total { font-size: var(--step-3); }
 }
 
 /* A check that has run once: the header is there for the Ignore
