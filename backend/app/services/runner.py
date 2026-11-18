@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.catalog.checks import CHECKS_BY_ID, expand_selection
@@ -444,6 +445,11 @@ class RunResult:
     unlock_purchased: bool = False
     ambiguous_candidates: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Results that were computed but could not be WRITTEN. Distinct
+    #: from a check that failed: the provider answered and was billed,
+    #: and the defect is ours. Surfaced so a run that half-saved cannot
+    #: look like a run that half-ran.
+    storage_errors: list[str] = field(default_factory=list)
 
     #: False while the provider's background download/extraction is still
     #: running. Unlocking is ASYNCHRONOUS — the POST returns in
@@ -462,6 +468,19 @@ class RunResult:
     @property
     def skipped(self) -> list[Finding]:
         return [f for f in self.findings if not f.status.was_examined]
+
+
+def _db_reason(exc: Exception) -> str:
+    """The database's own complaint, in one line.
+
+    `IntegrityError.__str__` carries the whole failing INSERT and every
+    parameter — fourteen kilobytes of JSON payload in the case that
+    prompted this. That belongs in the log, not on a screen and not in
+    an audit row, so only the driver's first line is kept.
+    """
+    original = getattr(exc, "orig", None) or exc
+    first = str(original).strip().split("\n")[0]
+    return first[:300] or type(exc).__name__
 
 
 class CheckRunner:
@@ -2782,58 +2801,143 @@ class CheckRunner:
         """
         inputs = self._inputs(vendor)
         for finding in result.findings:
-            had_primary = self.session.scalar(
-                select(VendorCheck.id).where(
-                    VendorCheck.vendor_id == vendor.id,
-                    VendorCheck.check_id == finding.check_id,
-                    VendorCheck.is_primary.is_(True),
-                )
-            )
-            previous = len(self.session.scalars(
-                select(VendorCheck.id).where(
-                    VendorCheck.vendor_id == vendor.id,
-                    VendorCheck.check_id == finding.check_id,
-                )
-            ).all())
-
-            row = VendorCheck(
-                vendor_id=vendor.id,
-                check_id=finding.check_id,
-                status=finding.status.value,
-                value=finding.value,
-                detail=finding.detail,
-                raw_response=finding.raw,
-                facts=finding.facts,
-                parser_version=(finding.facts or {}).get("parserVersion"),
-                cost_paisa=finding.cost_paisa,
-                credits=finding.credits,
-                error=finding.error,
-                fetched_at=finding.fetched_at,
-                # How many times this check has been run for this vendor,
-                # counting this one. Previously stuck at 1 forever, which
-                # hid how often a flaky source had been retried.
-                attempts=previous + 1,
-                is_primary=had_primary is None,
-                # WHAT WAS ASKED, FOR THIS RESULT. `vendor_check_inputs`
-                # holds one value per key, so it reflects whatever was
-                # typed LAST — four runs against four directors would all
-                # show the fourth director's number. Snapshotted here so a
-                # result and the values it came from cannot drift apart.
-                inputs=self._inputs_for(finding.check_id, inputs, vendor),
-            )
-            self.session.add(row)
-
-            if had_primary is None and previous:
-                # Every result for this check was deleted and a new one
-                # arrived. Worth a line: a check silently becoming
-                # countable again is the kind of thing somebody asks
-                # about three months later.
-                self._audit(
-                    vendor.id, "CHECK_PRIMARY_SET",
-                    f"{finding.check_id}: no result was marked as counting, "
-                    f"so this run became the one the score reads.",
-                )
+            self._persist_one(vendor, finding, inputs, result)
         self.session.flush()
+
+    def _persist_one(
+        self, vendor: Vendor, finding: Finding, inputs: dict, result: RunResult,
+    ) -> None:
+        """One result, in a SAVEPOINT of its own.
+
+        WHY EACH ROW IS ISOLATED
+        ------------------------
+        This loop used to add every row to one session and flush at the
+        end. On 18 Nov 2026 a `resolve` result carried a status the
+        database refused, and the failure did not stay local: the bad
+        INSERT was queued, then flushed by the NEXT check's primary
+        lookup, and the IntegrityError left the whole transaction
+        aborted. Eleven checks had run. Eleven provider calls had been
+        paid for. Nothing was saved, and the traceback pointed at the
+        innocent SELECT that happened to trigger the flush.
+
+        That is the same failure this product refuses everywhere else,
+        in the most expensive form it takes: work that was done and
+        charged for, discarded, with nothing on any screen saying so.
+
+        `begin_nested()` issues a SAVEPOINT. A row that cannot be
+        written rolls back to it and the surrounding transaction stays
+        usable, so every other check still lands. A provider that
+        returns something we cannot store is now exactly as contained
+        as a provider that returns an error.
+
+        THE FAILURE IS RECORDED, NOT SWALLOWED. A check whose row was
+        refused is written again as UNAVAILABLE carrying the database's
+        own message — because a result that silently vanished would be
+        indistinguishable from a check nobody selected, and this screen
+        exists to make that distinction impossible to miss.
+        """
+        try:
+            with self.session.begin_nested():
+                self._write_row(vendor, finding, inputs)
+            return
+        except SQLAlchemyError as exc:
+            # The savepoint is rolled back; the transaction is alive.
+            #
+            # `reason` is taken HERE, inside the block. Python unbinds
+            # the `as exc` name when the except clause ends, so reading
+            # it afterwards raises UnboundLocalError — which, in a
+            # handler whose whole job is to survive a failure, would
+            # have replaced a contained error with an uncontained one.
+            reason = _db_reason(exc)
+            logger.exception("could not store %s for %s",
+                             finding.check_id, vendor.id)
+
+        result.storage_errors.append(f"{finding.check_id}: {reason}")
+        try:
+            with self.session.begin_nested():
+                self._write_row(
+                    vendor,
+                    Finding(
+                        finding.check_id, CheckStatus.UNAVAILABLE,
+                        "Result could not be stored",
+                        f"The source answered and this result was computed, "
+                        f"but the database refused the row: {reason}. The "
+                        f"call was made and billed. This is an application "
+                        f"defect, NOT a finding about the vendor — nothing "
+                        f"here says the check passed.",
+                        error=reason,
+                        cost_paisa=finding.cost_paisa,
+                        credits=finding.credits,
+                        fetched_at=finding.fetched_at,
+                    ),
+                    inputs,
+                )
+        except SQLAlchemyError:
+            # Even the placeholder was refused. Nothing more to try —
+            # the audit line below is then the only record, which is
+            # why it is written outside the savepoint.
+            logger.exception("could not store the failure marker for %s",
+                             finding.check_id)
+
+        self._audit(
+            vendor.id, "CHECK_NOT_STORED",
+            f"{finding.check_id}: the result was computed but could not be "
+            f"written — {reason}. The provider call was made and billed.",
+        )
+
+    def _write_row(self, vendor: Vendor, finding: Finding, inputs: dict) -> None:
+        """The INSERT itself, and the audit line that may go with it."""
+        had_primary = self.session.scalar(
+            select(VendorCheck.id).where(
+                VendorCheck.vendor_id == vendor.id,
+                VendorCheck.check_id == finding.check_id,
+                VendorCheck.is_primary.is_(True),
+            )
+        )
+        previous = len(self.session.scalars(
+            select(VendorCheck.id).where(
+                VendorCheck.vendor_id == vendor.id,
+                VendorCheck.check_id == finding.check_id,
+            )
+        ).all())
+
+        row = VendorCheck(
+            vendor_id=vendor.id,
+            check_id=finding.check_id,
+            status=finding.status.value,
+            value=finding.value,
+            detail=finding.detail,
+            raw_response=finding.raw,
+            facts=finding.facts,
+            parser_version=(finding.facts or {}).get("parserVersion"),
+            cost_paisa=finding.cost_paisa,
+            credits=finding.credits,
+            error=finding.error,
+            fetched_at=finding.fetched_at,
+            # How many times this check has been run for this vendor,
+            # counting this one. Previously stuck at 1 forever, which
+            # hid how often a flaky source had been retried.
+            attempts=previous + 1,
+            is_primary=had_primary is None,
+            # WHAT WAS ASKED, FOR THIS RESULT. `vendor_check_inputs`
+            # holds one value per key, so it reflects whatever was
+            # typed LAST — four runs against four directors would all
+            # show the fourth director's number. Snapshotted here so a
+            # result and the values it came from cannot drift apart.
+            inputs=self._inputs_for(finding.check_id, inputs, vendor),
+        )
+        self.session.add(row)
+
+        if had_primary is None and previous:
+            # Every result for this check was deleted and a new one
+            # arrived. Worth a line: a check silently becoming
+            # countable again is the kind of thing somebody asks
+            # about three months later.
+            self._audit(
+                vendor.id, "CHECK_PRIMARY_SET",
+                f"{finding.check_id}: no result was marked as counting, "
+                f"so this run became the one the score reads.",
+            )
 
     def _inputs_for(self, check_id: str, inputs: dict, vendor: Vendor) -> dict:
         """The values this check actually ran with.
