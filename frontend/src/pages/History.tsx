@@ -30,33 +30,34 @@
  * 3. Round. Prices are integers in paisa everywhere they travel and are
  *    turned into rupees once, at the edge, for display.
  *
- * WHAT CHANGED ON 18 NOV 2026, AND WHY
- * ------------------------------------
+ * THE SIDEBAR IS GONE (18 Nov 2026)
+ * ---------------------------------
+ * A 17rem card held four names, a column of ₹0 and two truncated
+ * vendors. It filtered on two dimensions and cost the table the width
+ * that forced the Cost column off the right edge in the first place.
  *
- * THE COST COLUMN WAS OFF-SCREEN. Two column min-widths plus the client
- * sidebar pushed the table past the viewport, and the one column this
- * page exists for sat behind the horizontal scrollbar. It is now
- * `position: sticky; right: 0` — narrow the window and you lose When and
- * Vendor, never the money.
+ * The same filtering is now a row of dropdowns, one per dimension, each
+ * option carrying its own count — `ZEPTO LIMITED (25)` says more than a
+ * sidebar entry did, in a quarter of the space. The table takes the rest,
+ * which is why every column fits on a laptop without scrolling.
  *
- * FOUR EQUAL TILES SAID FOUR EQUAL THINGS, and these four are not equal:
- * one is the answer and three are context. The total leads; calls,
- * credits and set-aside sit beside it at a quarter of the weight.
+ * `Cost` keeps `position: sticky; right: 0` anyway. It no longer triggers
+ * at a normal width, and it is the difference between a narrow window
+ * losing `When` and a narrow window losing the money.
  *
- * A FOURTH FIGURE, "unpriced", COUNTS CALLS THAT RECORDED NO PRICE.
+ * EVERY FILTER DEFAULTS TO EVERYTHING, and the line under the bar says
+ * what is being shown — "78 of 78 calls", or "22 of 78" with the active
+ * filters listed as removable chips. A filtered page that does not admit
+ * it is filtered is how an invoice goes out short, which is the same
+ * failure as the silent ₹0 and deserves the same treatment.
+ *
+ * WHY "unpriced" IS A HEADLINE FIGURE
+ * -----------------------------------
  * `Finding.cost_paisa` defaults to zero and only the person-subject path
  * ever sets it, so most rows store nothing and the total under-reports.
- * A confident ₹0 across 78 calls is the failure this product refuses
- * everywhere else — a gap wearing the clothes of a clean result. Until
- * the write path is fixed the page says how many it could not price,
- * which is both the honest total and the bug report.
- *
- * THE SIDEBAR SHOWS CALLS AS WELL AS RUPEES, for the same reason: with
- * prices unwritten every line read "₹0" and the list looked broken
- * rather than unpriced. A call count is always true.
- *
- * ROWS ARE GROUPED BY DAY with a daily subtotal, which stops the date
- * repeating on every row and is how a ledger is read anyway.
+ * A confident ₹0 across 78 calls is a gap wearing the clothes of a clean
+ * result. Until the write path is fixed the page says how many calls it
+ * could not price, which is both the honest total and the bug report.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -71,22 +72,65 @@ import {
   rupees,
 } from '@/components/ui'
 import { useToast } from '@/hooks/useToast'
-import type { HistoryRow, HistoryPage } from '@/types/domain'
+import type { CheckStatus, HistoryRow, HistoryPage } from '@/types/domain'
 
 /** YYYY-MM-DD, for the date inputs. */
 const day = (d: Date): string => d.toISOString().slice(0, 10)
 
 const SPAN = {
-  '7': 'Last 7 days',
-  '30': 'Last 30 days',
-  '90': 'Last 90 days',
-  all: 'Everything',
+  '7': '7d',
+  '30': '30d',
+  '90': '90d',
+  all: 'All',
 } as const
 
 type Span = keyof typeof SPAN
 
+const SPAN_LABEL: Record<Span, string> = {
+  '7': 'Last 7 days',
+  '30': 'Last 30 days',
+  '90': 'Last 90 days',
+  all: 'Everything',
+}
+
 /** Provider colours, assigned by rank so the bar and the keys agree. */
 const BURN_CLASSES = 6
+
+/** The five dimensions the bar filters on. All default to everything. */
+type FilterKey = 'client' | 'vendor' | 'provider' | 'check' | 'status'
+
+const EMPTY: Record<FilterKey, string> = {
+  client: '', vendor: '', provider: '', check: '', status: '',
+}
+
+const FILTER_NOUN: Record<FilterKey, string> = {
+  client: 'Client',
+  vendor: 'Vendor',
+  provider: 'Provider',
+  check: 'Check',
+  status: 'Result',
+}
+
+/** How a row answers each dimension — one place, so the option lists,
+ *  the filtering and the chips can never disagree about what a filter
+ *  means. */
+const VALUE_OF: Record<FilterKey, (r: HistoryRow) => string> = {
+  client: (r) => r.clientId,
+  vendor: (r) => r.vendorId,
+  provider: (r) => r.provider || 'in-house',
+  check: (r) => r.checkId,
+  status: (r) => r.status,
+}
+
+const LABEL_OF: Record<FilterKey, (r: HistoryRow) => string> = {
+  client: (r) => r.clientName,
+  vendor: (r) => r.vendorName,
+  provider: (r) => r.provider || 'in-house',
+  check: (r) => r.checkName,
+  status: (r) => STATUS_LABEL[r.status as CheckStatus] ?? r.status,
+}
+
+interface Option { value: string; label: string; count: number }
 
 interface DayGroupData {
   key: string
@@ -102,19 +146,18 @@ export default function History() {
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [span, setSpan] = useState<Span>('30')
-  const [client, setClient] = useState<string>('')
-  const [vendor, setVendor] = useState<string>('')
+  const [filters, setFilters] = useState<Record<FilterKey, string>>(EMPTY)
   const [query, setQuery] = useState('')
 
   /*
-    THE WHOLE SET IS FETCHED ONCE PER DATE RANGE, and narrowing by client
-    or vendor happens here.
+    THE WHOLE SET IS FETCHED ONCE PER DATE RANGE, and every other filter
+    is applied here.
 
-    A round trip per click would make the left-hand list feel like a
-    series of page loads, and the totals it shows are already in hand —
-    they are sums over rows this screen is holding. The date range is the
-    one filter that genuinely changes what the server must read, so it is
-    the one that refetches.
+    A round trip per dropdown would make the bar feel like a series of
+    page loads, and the counts beside each option are sums over rows
+    this screen is already holding. The date range is the one filter
+    that genuinely changes what the server must read, so it is the one
+    that refetches.
   */
   useEffect(() => {
     let live = true
@@ -140,12 +183,15 @@ export default function History() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [span])
 
-  const rows = useMemo(() => {
-    const all = page?.rows ?? []
+  const all = useMemo(() => page?.rows ?? [], [page])
+
+  const matches = useMemo(() => {
     const term = query.trim().toLowerCase()
-    return all.filter((r) => {
-      if (client && r.clientId !== client) return false
-      if (vendor && r.vendorId !== vendor) return false
+    return (r: HistoryRow): boolean => {
+      for (const key of Object.keys(filters) as FilterKey[]) {
+        const want = filters[key]
+        if (want && VALUE_OF[key](r) !== want) return false
+      }
       if (!term) return true
       return (
         r.checkName.toLowerCase().includes(term) ||
@@ -154,8 +200,44 @@ export default function History() {
         r.provider.toLowerCase().includes(term) ||
         Object.values(r.inputs).some((v) => v.toLowerCase().includes(term))
       )
-    })
-  }, [page, client, vendor, query])
+    }
+  }, [filters, query])
+
+  const rows = useMemo(() => all.filter(matches), [all, matches])
+
+  /*
+    OPTION COUNTS ARE MEASURED WITH THAT DIMENSION'S OWN FILTER LIFTED.
+
+    Counted against the fully filtered set, picking "ZEPTO LIMITED"
+    would leave every other vendor reading (0) — the list would tell you
+    only what you had already chosen, and look broken doing it. Lifting
+    just this dimension answers the question actually being asked: "how
+    many would I get if I switched to that one".
+  */
+  const options = useMemo(() => {
+    const out = {} as Record<FilterKey, Option[]>
+    for (const key of Object.keys(EMPTY) as FilterKey[]) {
+      const others = { ...filters, [key]: '' }
+      const pool = all.filter((r) => {
+        for (const k of Object.keys(others) as FilterKey[]) {
+          const want = others[k]
+          if (want && VALUE_OF[k](r) !== want) return false
+        }
+        return true
+      })
+      const acc = new Map<string, Option>()
+      for (const r of pool) {
+        const value = VALUE_OF[key](r)
+        const at = acc.get(value) ?? { value, label: LABEL_OF[key](r), count: 0 }
+        at.count += 1
+        acc.set(value, at)
+      }
+      out[key] = [...acc.values()].sort(
+        (a, b) => b.count - a.count || a.label.localeCompare(b.label),
+      )
+    }
+    return out
+  }, [all, filters])
 
   /** Summed from the rows ON SCREEN — see the note at the top. */
   const totals = useMemo(
@@ -168,6 +250,7 @@ export default function History() {
          free check and a check whose cost was never written both store
          zero, and only one of them should reassure anybody. */
       unpriced: rows.filter((r) => !r.costPaisa && !r.credits).length,
+      vendors: new Set(rows.map((r) => r.vendorId)).size,
     }),
     [rows],
   )
@@ -187,51 +270,6 @@ export default function History() {
         b.paisa - a.paisa || b.calls - a.calls || a.name.localeCompare(b.name),
     )
   }, [rows])
-
-  /** Clients down the left, with what each has cost in this range. */
-  const clients = useMemo(() => {
-    const acc = new Map<
-      string,
-      { id: string; name: string; calls: number; paisa: number }
-    >()
-    for (const r of page?.rows ?? []) {
-      const at = acc.get(r.clientId) ?? {
-        id: r.clientId,
-        name: r.clientName,
-        calls: 0,
-        paisa: 0,
-      }
-      at.calls += 1
-      at.paisa += r.costPaisa
-      acc.set(r.clientId, at)
-    }
-    return [...acc.values()].sort(
-      (a, b) => b.paisa - a.paisa || b.calls - a.calls || a.name.localeCompare(b.name),
-    )
-  }, [page])
-
-  /** Vendors of the chosen client — or of everyone, when none is chosen. */
-  const vendors = useMemo(() => {
-    const acc = new Map<
-      string,
-      { id: string; name: string; calls: number; paisa: number }
-    >()
-    for (const r of page?.rows ?? []) {
-      if (client && r.clientId !== client) continue
-      const at = acc.get(r.vendorId) ?? {
-        id: r.vendorId,
-        name: r.vendorName,
-        calls: 0,
-        paisa: 0,
-      }
-      at.calls += 1
-      at.paisa += r.costPaisa
-      acc.set(r.vendorId, at)
-    }
-    return [...acc.values()].sort(
-      (a, b) => b.paisa - a.paisa || b.calls - a.calls || a.name.localeCompare(b.name),
-    )
-  }, [page, client])
 
   /** Rows cut into days, newest first, each with its own subtotal. */
   const days = useMemo(() => {
@@ -259,9 +297,20 @@ export default function History() {
     return acc
   }, [rows])
 
-  const scope = client
-    ? clients.find((c) => c.id === client)?.name ?? 'This client'
-    : 'All clients'
+  const active = (Object.keys(filters) as FilterKey[]).filter((k) => filters[k])
+
+  /** What the header says it is showing. */
+  const scope = useMemo(() => {
+    const parts = (['client', 'vendor'] as FilterKey[]).map((key) => {
+      const chosen = filters[key]
+      if (!chosen) return key === 'client' ? 'All clients' : 'All vendors'
+      return options[key].find((o) => o.value === chosen)?.label ?? chosen
+    })
+    return `${parts[0]} · ${parts[1]} · ${SPAN_LABEL[span]}`
+  }, [filters, options, span])
+
+  const set = (key: FilterKey, value: string) =>
+    setFilters((f) => ({ ...f, [key]: value }))
 
   /*
     EXPORT WHAT IS ON SCREEN, not what the server last sent.
@@ -289,7 +338,7 @@ export default function History() {
           r.checkName,
           r.provider,
           Object.values(r.inputs).filter(Boolean).join(' · '),
-          STATUS_LABEL[r.status] ?? r.status,
+          STATUS_LABEL[r.status as CheckStatus] ?? r.status,
           r.ignoredAt ? 'yes' : '',
           r.ignoreReason ?? '',
           // Paisa to rupees once, at the edge, exactly as the screen does.
@@ -336,16 +385,15 @@ export default function History() {
           sized like context. */}
       <section className="stmt">
         <div className="stmt-lead">
-          <div className="stmt-who">
-            {scope} · {SPAN[span]}
-          </div>
+          <div className="stmt-who">{scope}</div>
           <div className="stmt-total nums">{rupees(totals.paisa)}</div>
           <div className="stmt-sub">
             {totals.calls} call{totals.calls === 1 ? '' : 's'} across{' '}
-            {burn.length} provider{burn.length === 1 ? '' : 's'}
-            {vendor
-              ? ''
-              : ` · ${vendors.length} vendor${vendors.length === 1 ? '' : 's'}`}
+            {burn.length} provider{burn.length === 1 ? '' : 's'} ·{' '}
+            {totals.vendors} vendor{totals.vendors === 1 ? '' : 's'}
+            {totals.unpriced === totals.calls && totals.calls > 0
+              ? ' · no prices recorded yet'
+              : ''}
           </div>
         </div>
 
@@ -404,161 +452,195 @@ export default function History() {
         </section>
       )}
 
-      <div className="hist-bar">
-        <div className="seg">
-          {(Object.keys(SPAN) as Span[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              className={`seg-btn${span === key ? ' is-on' : ''}`}
-              onClick={() => setSpan(key)}
-            >
-              {SPAN[key]}
-            </button>
-          ))}
-        </div>
-        <input
-          className="input"
-          type="search"
-          value={query}
-          placeholder="Filter by check, vendor, provider or the value it was run against"
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn"
-          onClick={exportCsv}
-          disabled={!rows.length}
-          title="Downloads exactly the rows shown, with the filters applied"
-        >
-          Export CSV
-        </button>
-      </div>
-
-      <div className="hist-split">
-        <aside className="hist-side">
-          <div className="hist-side-h small">Clients</div>
-          <Pick
-            on={client === ''}
-            name="All clients"
-            paisa={page?.totalCostPaisa ?? 0}
-            calls={page?.totalCalls ?? 0}
-            onClick={() => {
-              setClient('')
-              setVendor('')
-            }}
+      <section className="filters">
+        {(Object.keys(EMPTY) as FilterKey[]).map((key) => (
+          <Picker
+            key={key}
+            id={`f-${key}`}
+            label={FILTER_NOUN[key]}
+            value={filters[key]}
+            options={options[key]}
+            total={all.length}
+            onChange={(v) => set(key, v)}
           />
-          {clients.map((c) => (
-            <Pick
-              key={c.id}
-              on={client === c.id}
-              name={c.name}
-              paisa={c.paisa}
-              calls={c.calls}
-              onClick={() => {
-                setClient(c.id)
-                setVendor('')
-              }}
-            />
-          ))}
+        ))}
 
-          <div className="hist-side-h small">
-            {client ? 'Vendors of this client' : 'Vendors'}
+        <div className="f">
+          <span className="f-l">Period</span>
+          <div className="seg">
+            {(Object.keys(SPAN) as Span[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={`seg-btn${span === key ? ' is-on' : ''}`}
+                onClick={() => setSpan(key)}
+                title={SPAN_LABEL[key]}
+              >
+                {SPAN[key]}
+              </button>
+            ))}
           </div>
-          {vendors.map((v) => (
-            <Pick
-              key={v.id}
-              on={vendor === v.id}
-              name={v.name}
-              paisa={v.paisa}
-              calls={v.calls}
-              onClick={() => setVendor(vendor === v.id ? '' : v.id)}
-            />
-          ))}
-        </aside>
-
-        <div className="hist-main">
-          {rows.length === 0 ? (
-            <Callout kind="info" title="Nothing matches those filters">
-              Clear the search, or pick a different client.
-            </Callout>
-          ) : (
-            <div className="hist-scroll">
-              <table className="hist-table">
-                <thead>
-                  <tr>
-                    <th className="c-when">When</th>
-                    {!vendor && <th className="c-vendor">Vendor</th>}
-                    <th className="c-check">Check</th>
-                    <th className="c-asked">Asked</th>
-                    <th className="c-res">Result</th>
-                    <th className="c-cost">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {days.map((group) => (
-                    <DayGroup
-                      key={group.key}
-                      group={group}
-                      showVendor={!vendor}
-                      onVendor={(id) => navigate(`/vendor/${id}/findings`)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
+
+        <div className="f f-grow">
+          <label className="f-l" htmlFor="f-search">Search</label>
+          <input
+            className="input"
+            id="f-search"
+            type="search"
+            value={query}
+            placeholder="Check, vendor, provider, or the value it was run against"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="f-actions">
+          <button
+            type="button"
+            className="btn"
+            onClick={exportCsv}
+            disabled={!rows.length}
+            title="Downloads exactly the rows shown, with the filters applied"
+          >
+            Export CSV
+          </button>
+        </div>
+      </section>
+
+      {/* WHAT IS BEING SHOWN, ALWAYS. A page that has quietly narrowed
+          itself is how an invoice goes out short. */}
+      <div className="chips">
+        <span className="chips-l">Showing</span>
+        {active.length === 0 && !query ? (
+          <span className="chip-f"><b>Everything</b></span>
+        ) : (
+          <>
+            {active.map((key) => (
+              <span key={key} className="chip-f">
+                {FILTER_NOUN[key]}{' '}
+                <b>
+                  {options[key].find((o) => o.value === filters[key])?.label ??
+                    filters[key]}
+                </b>
+                <button
+                  type="button"
+                  className="chip-x"
+                  onClick={() => set(key, '')}
+                  aria-label={`Clear the ${FILTER_NOUN[key]} filter`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {query && (
+              <span className="chip-f">
+                Search <b>{query}</b>
+                <button
+                  type="button"
+                  className="chip-x"
+                  onClick={() => setQuery('')}
+                  aria-label="Clear the search"
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              className="chip-clear"
+              onClick={() => {
+                setFilters(EMPTY)
+                setQuery('')
+              }}
+            >
+              Clear all
+            </button>
+          </>
+        )}
+        <span className="chips-count">
+          — {rows.length} of {all.length} calls
+        </span>
       </div>
+
+      {rows.length === 0 ? (
+        <Callout kind="info" title="Nothing matches those filters">
+          Clear a filter, or widen the period.
+        </Callout>
+      ) : (
+        <div className="hist-scroll">
+          <table className="hist-table">
+            <thead>
+              <tr>
+                <th className="c-when">When</th>
+                <th className="c-vendor">Vendor</th>
+                <th className="c-check">Check</th>
+                <th className="c-asked">Asked</th>
+                <th className="c-res">Result</th>
+                <th className="c-cost">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((group) => (
+                <DayGroup
+                  key={group.key}
+                  group={group}
+                  onVendor={(id) => navigate(`/vendor/${id}/findings`)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
 
-/** One client or vendor in the left-hand list. */
-function Pick({
-  on,
-  name,
-  paisa,
-  calls,
-  onClick,
+/** One dropdown. Every option carries its count, which is the thing the
+ *  sidebar used to be for and does better here: the list shows the
+ *  distribution before anything is picked. */
+function Picker({
+  id, label, value, options, total, onChange,
 }: {
-  on: boolean
-  name: string
-  paisa: number
-  calls: number
-  onClick: () => void
+  id: string
+  label: string
+  value: string
+  options: Option[]
+  total: number
+  onChange: (value: string) => void
 }) {
+  const shown = options.reduce((n, o) => n + o.count, 0)
   return (
-    <button
-      type="button"
-      className={`hist-pick${on ? ' is-on' : ''}`}
-      onClick={onClick}
-      title={name}
-    >
-      <span className="hist-pick-name">{name}</span>
-      <span className="hist-pick-meta">
-        {/* The rupee figure can legitimately be ₹0 while prices are
-            unwritten, so the call count carries the line. */}
-        <span className="hist-pick-cost nums">{rupees(paisa)}</span>
-        <span className="hist-pick-calls nums">{calls} calls</span>
-      </span>
-    </button>
+    <div className="f">
+      <label className="f-l" htmlFor={id}>{label}</label>
+      <select
+        className="select"
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">
+          All {label.toLowerCase()}s ({value ? total : shown})
+        </option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label} ({o.count})
+          </option>
+        ))}
+      </select>
+    </div>
   )
 }
 
 function DayGroup({
-  group,
-  showVendor,
-  onVendor,
+  group, onVendor,
 }: {
   group: DayGroupData
-  showVendor: boolean
   onVendor: (vendorId: string) => void
 }) {
   return (
     <>
       <tr className="day-row">
-        <td colSpan={showVendor ? 6 : 5}>
+        <td colSpan={6}>
           {group.label}
           <span className="day-sum nums">
             {group.rows.length} call{group.rows.length === 1 ? '' : 's'} ·{' '}
@@ -567,26 +649,13 @@ function DayGroup({
         </td>
       </tr>
       {group.rows.map((r) => (
-        <Row
-          key={r.runId}
-          row={r}
-          showVendor={showVendor}
-          onVendor={() => onVendor(r.vendorId)}
-        />
+        <Row key={r.runId} row={r} onVendor={() => onVendor(r.vendorId)} />
       ))}
     </>
   )
 }
 
-function Row({
-  row,
-  showVendor,
-  onVendor,
-}: {
-  row: HistoryRow
-  showVendor: boolean
-  onVendor: () => void
-}) {
+function Row({ row, onVendor }: { row: HistoryRow; onVendor: () => void }) {
   /* The values this call was made against. On a check run once per
      director this is the only thing telling the rows apart, and on an
      invoice it is what a client would query. */
@@ -601,18 +670,20 @@ function Row({
           minute: '2-digit',
         })}
       </td>
-      {showVendor && (
-        <td className="c-vendor">
-          <div className="cell-main">
-            <button type="button" className="linklike" onClick={onVendor}>
-              {row.vendorName}
-            </button>
-          </div>
-          <div className="cell-sub">{row.clientName}</div>
-        </td>
-      )}
+      <td className="c-vendor">
+        <div className="cell-main">
+          <button type="button" className="linklike" onClick={onVendor}>
+            {row.vendorName}
+          </button>
+        </div>
+        <div className="cell-sub">{row.clientName}</div>
+      </td>
       <td className="c-check">
         <div className="cell-main">{row.checkName}</div>
+        {/* The provider, under the check rather than in a column of its
+            own. It repeats down the page and rarely varies within a
+            vendor, so it does not earn the width — but it is still what
+            a reader checks when a cost looks wrong. */}
         <div className="cell-sub">{row.provider || '—'}</div>
       </td>
       <td className="c-asked">

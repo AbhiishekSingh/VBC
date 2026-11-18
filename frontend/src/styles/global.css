@@ -1991,50 +1991,54 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .burn-c4 { background: #4d86c6; }
 .burn-c5 { background: #a2557f; }
 
-.hist-split {
-  display: grid;
-  grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr);
-  gap: var(--space-4);
-  align-items: start;
-}
+/* ═══ THE FILTER BAR — what replaced the sidebar ═══════════════════
+   A 17rem card held four names, a column of ₹0 and two truncated
+   vendors. It filtered on two dimensions and cost the table exactly
+   the width that forced the Cost column off the right edge.
 
-.hist-side {
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: var(--space-2);
-  position: sticky; top: var(--space-4);
+   The same filtering is a row of dropdowns, one per dimension, each
+   option carrying its own count. The table takes the width back. */
+.filters {
+  display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap;
+  border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--surface); padding: var(--space-3) var(--space-4);
 }
-.hist-side-h {
-  color: var(--ink-3); font-weight: var(--weight-semi);
-  text-transform: uppercase; letter-spacing: 0.04em;
-  padding: var(--space-3) var(--space-2) var(--space-2);
+.f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.f-l {
+  font-size: var(--step--2); color: var(--ink-4);
+  text-transform: uppercase; letter-spacing: var(--tracking-wide);
 }
-.hist-side-h + .hist-pick { margin-top: 0; }
+.f .select { min-width: 11rem; max-width: 15rem; }
+.f-grow { flex: 1 1 16rem; }
+.f-grow .input { width: 100%; }
+.f-actions { display: flex; gap: var(--space-2); margin-left: auto; }
 
-.hist-pick {
-  display: flex; align-items: center; gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2);
-  border: 0; border-radius: var(--radius-sm);
-  background: none; font: inherit; color: inherit;
-  text-align: left; cursor: pointer;
+/* Every filter currently applied, stated plainly and each removable.
+   A dropdown that has quietly narrowed the page is how an invoice
+   goes out short. */
+.chips { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.chips-l {
+  font-size: var(--step--2); color: var(--ink-4);
+  text-transform: uppercase; letter-spacing: var(--tracking-wide);
 }
-.hist-pick:hover { background: var(--surface-2); }
-.hist-pick.is-on { background: var(--accent-wash); color: var(--accent); }
-.hist-pick-name {
-  flex: 1 1 auto; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.chips-count { font-size: var(--step--1); color: var(--ink-4); }
+.chip-f {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--step--1); padding: 3px 6px 3px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-wash); color: var(--accent);
 }
-/* THE CALL COUNT IS ALWAYS TRUE. The rupee figure can legitimately read
-   ₹0 while prices go unwritten, and a column of zeroes makes the list
-   look broken rather than unpriced. */
-.hist-pick-meta {
-  display: flex; flex-direction: column; align-items: flex-end;
-  flex: none; line-height: 1.2;
+.chip-f b { font-weight: var(--weight-semi); }
+.chip-x {
+  border: 0; background: none; cursor: pointer; color: inherit;
+  font: inherit; line-height: 1; padding: 0 2px; opacity: .7;
 }
-.hist-pick-cost { font-size: var(--step--1); }
-.hist-pick-calls { font-size: var(--step--2); color: var(--ink-4); }
+.chip-x:hover { opacity: 1; }
+.chip-clear {
+  border: 0; background: none; cursor: pointer; font: inherit;
+  font-size: var(--step--1); color: var(--ink-4); text-decoration: underline;
+}
+.chip-clear:hover { color: var(--ink-2); }
 
 /* ---- the ledger itself ----------------------------------------------
    THE COST COLUMN NEVER SCROLLS AWAY. It is the figure this page exists
@@ -2042,7 +2046,6 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
    the right edge behind a horizontal scrollbar. Sticky-right keeps it
    in view at any width: a narrow screen loses When and Vendor, never
    the money. */
-.hist-main { min-width: 0; }
 .hist-scroll {
   overflow-x: auto;
   border: 1px solid var(--line-2); border-radius: var(--radius);
@@ -2187,9 +2190,9 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
 .linklike:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
-  .hist-split { grid-template-columns: 1fr; }
-  .hist-side { position: static; }
   .stmt { padding: var(--space-4); }
+  .f, .f .select { width: 100%; max-width: none; }
+  .f-actions { margin-left: 0; width: 100%; }
   .stmt-figs { gap: var(--space-5); }
   .stmt-total { font-size: var(--step-3); }
 }
