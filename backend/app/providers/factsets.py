@@ -562,7 +562,13 @@ def directors(rows: list[dict]) -> dict:
     This blob is what a client-facing screen reads; the PAN stays in
     ``raw_response`` behind its own grants.
     """
-    disqualified = [d for d in rows if d.get("disqualified")]
+    # `is True` / `is None`, not truthiness. `disqualified` is a tri-state
+    # and None means the response did not carry the field — counting those
+    # as "not disqualified" is the one thing this whole layer exists to
+    # stop. See filesure._disqualification.
+    disqualified = [d for d in rows if d.get("disqualified") is True]
+    unreported = [d for d in rows if d.get("disqualified") is None]
+
     flags = []
     if disqualified:
         flags.append(F.flag(
@@ -571,14 +577,33 @@ def directors(rows: list[dict]) -> dict:
             + ". A disqualification under s.164 bars the person from a board "
               "seat and is not cured by the company's own standing.",
         ))
+    if unreported:
+        flags.append(F.flag(
+            "info", "Disqualification status not reported",
+            ("This response carries no disqualification field for "
+             + ("any of these directors" if len(unreported) == len(rows)
+                else F.plural(len(unreported), "of these directors"))
+             + ". The names, DINs and directorships below are what MCA "
+               "returned; s.164 standing is a separate register and is "
+               "NOT covered by this check. Blank in the Disqualified "
+               "column means unreported, not clear."),
+        ))
+
+    if disqualified:
+        disq_stat = F.stat("Disqualified", len(disqualified), tone="bad")
+    elif unreported:
+        # Deliberately not a green zero. A tile reading "0" would be a
+        # clearance assembled out of a field nobody read.
+        disq_stat = F.stat("Disqualified", None, tone="neutral")
+    else:
+        disq_stat = F.stat("Disqualified", 0, tone="good")
 
     return F.build(
         F.TABLE,
         derived_from="master",
         stats=[
             F.stat("On the board", len(rows)),
-            F.stat("Disqualified", len(disqualified),
-                   tone="bad" if disqualified else "good"),
+            disq_stat,
             F.stat("Still serving", sum(1 for d in rows if d.get("still_serving"))),
         ],
         rows=F.table(

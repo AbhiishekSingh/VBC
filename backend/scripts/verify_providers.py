@@ -127,7 +127,9 @@ CONTRACTS: dict[str, list[Field]] = {
     "directors": [
         Field("0.din", critical=True),
         Field("0.name", critical=True),
-        Field("0.disqualified", note="MUST be a real bool, not the string 'false'"),
+        Field("0.disqualified",
+              note="tri-state: True, False, or None when the response does "
+                   "not carry the field. NEVER the string 'false'"),
         Field("0.still_serving",
               note="cessationDate is \"\" (not null) for a sitting director"),
     ],
@@ -299,11 +301,17 @@ def _check_string_booleans(directors: list[dict], report: Report) -> None:
     """The most dangerous gotcha: "false" is a truthy string in Python."""
     for director in directors:
         value = director.get("disqualified")
-        if not isinstance(value, bool):
+        # None is legitimate: the response did not carry the field at all.
+        # A STRING is the bug — "false" is truthy in Python.
+        if value is not None and not isinstance(value, bool):
             print(f"  {RED}✗{RESET} disqualified is {type(value).__name__}, not bool "
                   f"— string booleans are not being converted")
             report.failures.append("directors.disqualified: not a bool")
             return
+    if directors and all(d.get("disqualified") is None for d in directors):
+        print(f"  {DIM}•{RESET} {'disqualified':22s} = not reported in this "
+              f"response — carried as None, not False")
+        return
     if directors:
         print(f"  {GREEN}✓{RESET} {'disqualified':22s} = real booleans "
               f"{DIM}(string 'false' converted correctly){RESET}")

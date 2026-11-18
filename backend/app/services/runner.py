@@ -1342,7 +1342,22 @@ class CheckRunner:
                 return Finding(check_id, CheckStatus.SKIP, "N/A",
                                "Company master did not return, so no directors are on file.")
             directors = fs_mod.normalise_directors(master.get("payload", master))
-            disqualified = [d for d in directors if d["disqualified"]]
+            # `is True`, not truthiness — None means the response did not
+            # carry the field. Treating that as "not disqualified" is what
+            # the parse guard used to prevent by throwing the whole board
+            # away; it is now carried as a third state instead.
+            disqualified = [d for d in directors if d["disqualified"] is True]
+            unreported = [d for d in directors if d["disqualified"] is None]
+            # The board itself came back, so the check reports what it got.
+            # What it did NOT get is said in the detail and flagged in the
+            # facts rather than left to be inferred from a green row.
+            roll = ", ".join(f"{d['name']} (DIN {d['din']})" for d in directors)
+            coverage = (
+                " Disqualification status is not reported in this response"
+                + (" for any of them" if len(unreported) == len(directors)
+                   else f" for {len(unreported)} of them")
+                + " and is not covered by this check."
+            ) if unreported else ""
             return Finding(
                 check_id,
                 CheckStatus.FAIL if disqualified else CheckStatus.PASS,
@@ -1350,7 +1365,7 @@ class CheckRunner:
                 (f"{len(disqualified)} disqualified: "
                  f"{', '.join(d['name'] for d in disqualified)}. ")
                 if disqualified else
-                ", ".join(f"{d['name']} (DIN {d['din']})" for d in directors) or "None listed.",
+                (roll or "None listed.") + coverage,
                 # Derived from the master payload — no call of its own, so
                 # no payload of its own. Named explicitly so the row points
                 # at the evidence instead of looking like it lost it.

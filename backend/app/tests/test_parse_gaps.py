@@ -112,20 +112,80 @@ def test_renamed_whois_date_field_is_a_gap_not_a_domain_with_no_age():
 def test_renamed_director_flag_is_a_gap_not_a_clean_board():
     """Regression for the isDisqualified bug — the dangerous direction.
 
-    If neither disqualification field name is present, the flag is not being
-    read at all. Reporting that as "no directors disqualified" is a missed
-    adverse finding, which nobody investigates because the check is green.
+    A payload that NAMES a disqualification under a field this adapter does
+    not read is proof the fact is there and we are not reading it. Calling
+    that "no directors disqualified" is a missed adverse finding, which
+    nobody investigates because the check is green.
+
+    Narrowed 18 Nov 2026. This used to fire whenever neither known field
+    name appeared, which voided a real board of 11 directors whose payload
+    simply did not carry the fact at all — see
+    `test_a_payload_that_never_mentions_disqualification_is_not_a_gap`.
+    The payload's own vocabulary is what separates the two.
     """
     payload = {
         "masterData": {
             "directorData": [
-                {"DIN": "1", "FirstName": "A", "LastName": "B",
+                {"DIN": "12345678", "FirstName": "A", "LastName": "B",
                  "someFutureDisqualifiedField": "Y"}
             ]
         }
     }
     with pytest.raises(ProviderParseGap, match="disqualification flag"):
         normalise_directors(payload)
+
+
+def test_a_renamed_flag_inside_the_role_entries_is_also_a_gap():
+    """The live field sits inside MCAUserRole[], so a rename will too."""
+    payload = {
+        "masterData": {
+            "directorData": [
+                {"DIN": "12345678", "FirstName": "A", "LastName": "B",
+                 "MCAUserRole": [{"designation": "Director",
+                                  "disqualificationStatus": "Y"}]}
+            ]
+        }
+    }
+    with pytest.raises(ProviderParseGap, match="disqualification flag"):
+        normalise_directors(payload)
+
+
+def test_a_payload_that_never_mentions_disqualification_is_not_a_gap():
+    """THE REGRESSION, 18 Nov 2026 — the OTHER direction.
+
+    A ZEPTO LIMITED company master returned 11 directors with DINs, names,
+    appointment dates and full MCAUserRole[] arrays, and no disqualification
+    field under any name: MCA's company master does not always report s.164
+    standing. The guard voided the check, and the screen said "Response not
+    understood" over 11 directors' worth of real evidence.
+
+    The board must parse, and the flag must come back None rather than
+    False — "unreported" is a different fact from "not disqualified", and
+    this is the check where conflating them matters most.
+    """
+    payload = {
+        "cin": "U46909MH2020PLC351339",
+        "masterData": {
+            "directorData": [
+                {"DIN": "08057013", "FirstName": "AADIT", "MiddleName": "KAVIT",
+                 "LastName": "PALICHA", "dateOfAppointment": "28/08/2020",
+                 "MCAUserRole": [
+                     {"cin": "U46909MH2020PLC351339", "role": "Director",
+                      "ucin": "X1", "companyName": "ZEPTO LIMITED",
+                      "designation": "Managing Director", "directorFlag": "D",
+                      "cessationDate": "", "currentDesignationDate": "28/08/2020"}
+                 ]},
+            ]
+        },
+    }
+    directors = normalise_directors(payload)
+
+    assert len(directors) == 1
+    assert directors[0]["name"] == "AADIT KAVIT PALICHA"
+    assert directors[0]["disqualified"] is None, (
+        "unreported must not become False — False renders as 'No' against "
+        "the director's name and as a green zero on the tile"
+    )
 
 
 def test_reordered_cdx_columns_are_a_gap_not_a_timeline():
@@ -225,8 +285,17 @@ def test_the_gap_carries_the_payload_that_could_not_be_read():
 def test_every_normaliser_attaches_its_payload():
     """Not just master — a gap anywhere must keep its evidence."""
     cases = [
+        # A row that LOOKS like a real person — a name is what makes it
+        # one — with the DIN moved to a field this adapter does not read.
+        # It used to be `{"DIN": "1", "futureField": "x"}`, which raised
+        # only because the old disqualification guard fired on every
+        # payload lacking that field; the row itself is an MCA placeholder
+        # and is correctly dropped without a gap.
         (normalise_directors,
-         {"masterData": {"directorData": [{"DIN": "1", "futureField": "x"}]}}),
+         {"masterData": {"directorData": [
+             {"FirstName": "AADIT", "LastName": "PALICHA",
+              "directorIdentificationNumber": "08057013"}
+         ]}}),
         (normalise_charges,
          {"masterData": {"indexChargesData": [{"someFutureAmountField": 500}]}}),
         (normalise_financials,
