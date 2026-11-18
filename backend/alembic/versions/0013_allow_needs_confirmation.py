@@ -61,21 +61,7 @@ down_revision = "0012_ignore_instead_of_delete"
 branch_labels = None
 depends_on = None
 
-#: THE NAME IS ALREADY FINAL, hence `op.f()`.
-#:
-#: This metadata carries a naming convention —
-#: `ck_%(table_name)s_%(constraint_name)s` — and alembic applies it to
-#: whatever name an operation is given. Passing the full name plainly
-#: produced
-#:
-#:     ALTER TABLE vendor_checks
-#:       DROP CONSTRAINT ck_vendor_checks_ck_vendor_checks_status_enum
-#:
-#: and the migration failed on a constraint that does not exist, which
-#: is a confusing way to be told you named something twice. `op.f()`
-#: marks a name as already-conventional so it is used verbatim —
-#: exactly as migration 0001 does where it creates this constraint.
-CONSTRAINT = op.f("ck_vendor_checks_status_enum")
+CONSTRAINT = "ck_vendor_checks_status_enum"
 TABLE = "vendor_checks"
 
 #: WRITTEN OUT IN FULL, not assembled from a constant. A migration is a
@@ -97,9 +83,41 @@ OLD = (
 
 
 def _swap(check: str) -> None:
-    """Postgres cannot alter a CHECK in place; it is dropped and remade."""
-    op.drop_constraint(CONSTRAINT, TABLE, type_="check")
-    op.create_check_constraint(CONSTRAINT, TABLE, check)
+    """Postgres cannot alter a CHECK in place; it is dropped and remade.
+
+    `op.f()` IS CALLED HERE, NOT AT MODULE LEVEL.
+    ---------------------------------------------
+    The name is already final and must be marked as such. This metadata
+    carries a naming convention — `ck_%(table_name)s_%(constraint_name)s`
+    — which alembic applies to whatever name an operation is given.
+    Passing the full name plainly produced
+
+        ALTER TABLE vendor_checks
+          DROP CONSTRAINT ck_vendor_checks_ck_vendor_checks_status_enum
+
+    and the migration failed on a constraint that does not exist, which
+    is a confusing way to be told you named something twice. `op.f()`
+    marks a name as already-conventional so it is used verbatim —
+    exactly as migration 0001 does where it creates this constraint.
+
+    But `op` is a PROXY, bound only once a migration is actually
+    running. This file first called `op.f()` at import time, as a module
+    constant, and `upgrade` happened to work because by then the proxy
+    was established. `alembic heads` and `alembic history` only IMPORT
+    the revision files — they never start a migration — so both died
+    with
+
+        NameError: Can't invoke function 'f', as the proxy object has
+        not yet been established for the Alembic 'Operations' class.
+
+    A migration that cannot be listed is a migration nobody can audit,
+    and the two commands you reach for while debugging a schema problem
+    are exactly the two that broke. Anything touching `op` belongs
+    inside a function.
+    """
+    name = op.f(CONSTRAINT)
+    op.drop_constraint(name, TABLE, type_="check")
+    op.create_check_constraint(name, TABLE, check)
 
 
 def upgrade() -> None:

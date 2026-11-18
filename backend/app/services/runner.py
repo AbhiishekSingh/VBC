@@ -629,7 +629,19 @@ class CheckRunner:
             self._ensure_unlock(vendor, cin, result)
 
         # --- STEP 4: master, sequential — later steps depend on it -------
-        master_payload: dict | None = None
+        #
+        # A DELTA RUN DOES NOT RE-BUY `master` (see `run`), so on that path
+        # it is not in `runnable` and this stayed None — and every check
+        # derived from it then reported "Company master did not return"
+        # about a company whose master was sitting in the database, fetched
+        # minutes earlier and paid for.
+        #
+        # That is the same failure as a parse gap wearing a different
+        # label: evidence we hold, on a screen that says we do not. So when
+        # master is not being run, the one already on file is read.
+        master_payload: dict | None = (
+            None if "master" in runnable else self._master_on_file(vendor)
+        )
         for check_id in SEQUENTIAL_BLOCK:
             if check_id not in runnable:
                 continue
@@ -2474,6 +2486,32 @@ class CheckRunner:
                 len(str(payload)),
             )
         return finding
+
+    def _master_on_file(self, vendor: Vendor) -> dict | None:
+        """The company master a previous run already paid for, or None.
+
+        `dirs` and `charges` make no call of their own — they are read out
+        of the master payload. On a full run that payload is in hand
+        because master just ran. On a DELTA run it is not, because the
+        delta logic deliberately drops a prerequisite already on file
+        rather than re-buying it, and dropping the call also dropped the
+        data.
+
+        Read from ``vendor.checks`` rather than with a query of its own:
+        the delta logic one screen up decides what is "already on file"
+        from the same rows, and two sources would be two answers.
+
+        ONLY AN EXAMINED ROW COUNTS. An `unavailable` master row carries a
+        ParseGuard envelope, not a company — handing that to the directors
+        parser would turn one unreadable response into three.
+        """
+        row = next((r for r in (vendor.checks or []) if r.check_id == "master"), None)
+        if row is None or row.status not in ("pass", "warn", "fail"):
+            return None
+        raw = row.raw_response
+        if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
+            return None
+        return raw
 
     def _prior_raw(self, vendor_id: str, check_id: str) -> dict:
         """What a previous run stored for this check, if anything.
