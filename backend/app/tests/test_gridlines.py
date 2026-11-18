@@ -899,7 +899,7 @@ class TestPersonCheckRunsEverySubject:
 
         finding = next(f for f in result.findings if f.check_id == "prefill")
         assert len(fake.calls) == 3
-        assert finding.status.value == "warn"
+        assert finding.status.value == "needs_confirmation"
         assert "2 of 3 returned" == finding.value
         assert "NOT cleared, they were not examined" in finding.detail
 

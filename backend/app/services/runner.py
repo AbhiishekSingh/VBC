@@ -878,9 +878,21 @@ class CheckRunner:
                 facts=factsets.person_subjects(check_id, raw),
             )
 
-        # Some subjects not returning is reported in the value and in
-        # `detail`, which already says those people were NOT cleared.
-        status = CheckStatus.PASS
+        # A SUBJECT THAT DID NOT RETURN IS A GAP, NOT A CLEARANCE.
+        #
+        # Briefly PASS on 17 Nov 2026, when "Attention" was retired: the
+        # reasoning was that `detail` already says those people were not
+        # cleared, so the status need not. Wrong, and the test named
+        # `test_one_failure_does_not_lose_the_other_two` said so — it had
+        # been SKIPPING for want of a Postgres server, which is how the
+        # mistake reached a deploy.
+        #
+        # Two of three directors coming back is not a pass on the third.
+        # The check did not establish anything about that person, which
+        # is what NEEDS_CONFIRMATION means and what a green tick beside
+        # a partial answer would deny.
+        status = (CheckStatus.PASS if not failed
+                  else CheckStatus.NEEDS_CONFIRMATION)
         value = (f"{len(ok)} of {len(pairs)} returned"
                  if len(pairs) > 1 else _one_line(check_id, ok[0]["data"]))
         detail = (
