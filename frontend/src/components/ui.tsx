@@ -15,9 +15,10 @@ import type { CheckStatus, Rating, RuleState, SourceMode } from '@/types/domain'
 
 type Tone = 'pass' | 'warn' | 'adverse' | 'unchecked' | 'neutral' | 'accent'
 
-const STATUS_TONE: Record<CheckStatus, Tone> = {
+export const STATUS_TONE: Record<CheckStatus, Tone> = {
   pass: 'pass',
   warn: 'warn',
+  needs_confirmation: 'warn',
   fail: 'adverse',
   skip: 'unchecked',
   unavailable: 'unchecked',
@@ -25,9 +26,14 @@ const STATUS_TONE: Record<CheckStatus, Tone> = {
   skipped_missing_input: 'unchecked',
 }
 
-const STATUS_LABEL: Record<CheckStatus, string> = {
+export const STATUS_LABEL: Record<CheckStatus, string> = {
   pass: 'Pass',
-  warn: 'Attention',
+  // Legacy rows only. Labelled as what it now means rather than as the
+  // verdict it used to assert — we cannot tell, per stored row, whether
+  // an old WARN was our opinion or a genuine gap, and "needs a look" is
+  // the reading that cannot mislead.
+  warn: 'Needs confirmation',
+  needs_confirmation: 'Needs confirmation',
   fail: 'Adverse',
   skip: 'Not applicable',
   unavailable: 'Unavailable',
@@ -37,8 +43,12 @@ const STATUS_LABEL: Record<CheckStatus, string> = {
 
 /** Why a non-result happened. Shown wherever there is room for it. */
 export const STATUS_EXPLANATION: Record<CheckStatus, string> = {
-  pass: 'The check ran and found nothing adverse.',
-  warn: 'The check ran and found something worth a look.',
+  pass: 'The source answered. What it returned is shown as it came.',
+  warn: 'Recorded before VBC stopped judging provider responses. Worth a look.',
+  needs_confirmation:
+    'The source answered, but this is not established for this vendor — '
+    + 'either the match is on name only, or nothing was returned. '
+    + 'An analyst must confirm it. This is NOT a clean result.',
   fail: 'The check ran and found an adverse finding.',
   skip: 'This check does not apply to this vendor.',
   unavailable: 'The provider could not be reached after retries. This is not a pass.',
