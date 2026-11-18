@@ -460,7 +460,6 @@ export default function History() {
             label={FILTER_NOUN[key]}
             value={filters[key]}
             options={options[key]}
-            total={all.length}
             onChange={(v) => set(key, v)}
           />
         ))}
@@ -595,20 +594,27 @@ export default function History() {
   )
 }
 
-/** One dropdown. Every option carries its count, which is the thing the
- *  sidebar used to be for and does better here: the list shows the
- *  distribution before anything is picked. */
+/** One dropdown.
+ *
+ *  The options carried their row counts until 18 Nov 2026 —
+ *  `ZEPTO LIMITED (17)`. Dropped: with five filters side by side the
+ *  bar became a wall of parenthesised numbers, and the two that
+ *  matter are already on the page — the total in the header and
+ *  "17 of 31 calls" under the bar. A count repeated five times in the
+ *  closed state of a control is noise, not information.
+ *
+ *  `Option.count` is still carried, because the list is ORDERED by it:
+ *  the vendor you have spent most on is the one you are most likely to
+ *  want, and it sits at the top without having to say why. */
 function Picker({
-  id, label, value, options, total, onChange,
+  id, label, value, options, onChange,
 }: {
   id: string
   label: string
   value: string
   options: Option[]
-  total: number
   onChange: (value: string) => void
 }) {
-  const shown = options.reduce((n, o) => n + o.count, 0)
   return (
     <div className="f">
       <label className="f-l" htmlFor={id}>{label}</label>
@@ -618,12 +624,10 @@ function Picker({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
-        <option value="">
-          All {label.toLowerCase()}s ({value ? total : shown})
-        </option>
+        <option value="">All {label.toLowerCase()}s</option>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
-            {o.label} ({o.count})
+            {o.label}
           </option>
         ))}
       </select>
