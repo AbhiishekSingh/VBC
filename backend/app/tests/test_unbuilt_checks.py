@@ -223,7 +223,7 @@ class TestBilledButNotRefreshed:
             FakeSession(None),
             refresh_filings={"fromCache": True, "status": "ok"})
         finding = dispatch(runner, "frefresh")
-        assert finding.status is CheckStatus.WARN
+        assert finding.status is CheckStatus.NEEDS_CONFIRMATION
         assert finding.value == "Served from cache"
         assert "Billed, but nothing was refreshed" in flags_of(finding)
 
@@ -246,7 +246,7 @@ class TestAsyncUpdateHonesty:
                                 update_status={"status": "pending"})
         runner.settings = Settings(filesure_update_poll_budget_seconds=settings_budget)
         finding = dispatch(runner, "refresh")
-        assert finding.status is CheckStatus.WARN
+        assert finding.status is CheckStatus.NEEDS_CONFIRMATION
         assert "Charged and still running" in flags_of(finding)
         assert "re-run the company master check" in finding.detail.lower()
 
@@ -285,7 +285,7 @@ class TestDirectorResolve:
     def test_no_match_is_a_gap_not_a_clearance(self):
         runner, _ = make_runner(FakeSession(None), resolve_director=[])
         finding = dispatch(runner, "dresolve", {"dresolve": {"q": "Nobody"}})
-        assert finding.status is CheckStatus.WARN
+        assert finding.status is CheckStatus.NEEDS_CONFIRMATION
         assert "not a clearance" in finding.detail
 
     def test_a_blank_name_never_reaches_the_provider(self):
@@ -450,7 +450,7 @@ class TestDirectorContact:
         runner, _ = make_runner(FakeSession(None),
                                 director_contact={"email": None, "mobile": None})
         finding = dispatch(runner, "dcontact", {"dcontact": {"din": "00001"}})
-        assert finding.status is CheckStatus.WARN
+        assert finding.status is CheckStatus.NEEDS_CONFIRMATION
 
     def test_no_din_available_skips_without_paying(self):
         runner, provider = make_runner(FakeSession(None))

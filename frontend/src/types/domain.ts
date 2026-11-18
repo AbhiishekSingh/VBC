@@ -14,7 +14,28 @@ export type CheckState = 'active' | 'not_configured'
 
 export type CheckStatus =
   | 'pass'
+  /**
+   * RETIRED 17 Nov 2026 — "Attention". Kept because stored results
+   * carry it; nothing produces it any more.
+   *
+   * It asserted that something a provider returned was CONCERNING, on
+   * thresholds this codebase chose: a domain under two years old, a
+   * reputation score under 80, a negative net worth, a pending case.
+   * None came from a client or a standard. Whether any of it
+   * disqualifies a supplier is the analyst's judgement.
+   */
   | 'warn'
+  /**
+   * Not a verdict — a statement about what came back. Either we cannot
+   * show the answer is about THIS subject (cases matched on name alone,
+   * several CIN or DIN candidates), or the source returned nothing
+   * where something was sought (no DIN, no contact details, a refresh
+   * that never finished).
+   *
+   * Adverse and NOT examined, deliberately: an unconfirmed match must
+   * not widen coverage it never provided.
+   */
+  | 'needs_confirmation'
   | 'fail'
   | 'skip'
   | 'unavailable'
@@ -28,7 +49,7 @@ export type FieldTypeName = 'Yes / No' | 'Choice' | 'Text' | 'Number' | 'Date'
 /** A check produced evidence — as opposed to being skipped or unavailable. */
 export const WAS_EXAMINED: CheckStatus[] = ['pass', 'warn', 'fail']
 
-export const IS_ADVERSE: CheckStatus[] = ['warn', 'fail']
+export const IS_ADVERSE: CheckStatus[] = ['warn', 'needs_confirmation', 'fail']
 
 /* ---- facts: the renderable tier between a result line and the payload --
  *

@@ -859,7 +859,9 @@ class CheckRunner:
                 facts=factsets.person_subjects(check_id, raw),
             )
 
-        status = CheckStatus.PASS if not failed else CheckStatus.WARN
+        # Some subjects not returning is reported in the value and in
+        # `detail`, which already says those people were NOT cleared.
+        status = CheckStatus.PASS
         value = (f"{len(ok)} of {len(pairs)} returned"
                  if len(pairs) > 1 else _one_line(check_id, ok[0]["data"]))
         detail = (
@@ -1225,7 +1227,9 @@ class CheckRunner:
                        "_fetched_at": triggered["_fetched_at"]}
             return Finding(
                 check_id,
-                CheckStatus.PASS if done else CheckStatus.WARN,
+                # A refresh that did not finish did not refresh anything.
+                # Not a verdict on the vendor, and not a pass either.
+                CheckStatus.PASS if done else CheckStatus.NEEDS_CONFIRMATION,
                 "Company data refreshed" if done else f"Update {final}",
                 (f"Completed after {polls} poll(s). Re-run the company master "
                  f"check to read the refreshed record."
@@ -1285,7 +1289,8 @@ class CheckRunner:
 
             return Finding(
                 check_id,
-                CheckStatus.PASS if active else CheckStatus.WARN,
+                # The MCA status string is the fact. r1 scores it.
+                CheckStatus.PASS,
                 f"{facts.get('status', 'Unknown')} · {facts.get('cin')}",
                 # Through the same formatters the detail panel uses. These
                 # were raw: the summary line read "Incorporated 1973-05-08 ·
@@ -1331,8 +1336,12 @@ class CheckRunner:
                 return Finding(check_id, CheckStatus.PASS, "No open charges",
                                f"{len(charges['closed'])} historical charges, all satisfied.",
                                raw=charges, facts=factsets.charges(charges))
+            # PASS. An open charge is a registry FACT and it is in the
+            # value; whether it disqualifies this supplier is the client's
+            # policy, not ours. Rule r7 still scores it, reading `open`
+            # from the payload rather than from this status.
             return Finding(
-                check_id, CheckStatus.WARN,
+                check_id, CheckStatus.PASS,
                 f"{len(open_charges)} open charge · {_crore(charges['open_total'])}",
                 "; ".join(
                     f"{c['holder']} {_crore(c['amount']) or '—'} "
@@ -1349,7 +1358,9 @@ class CheckRunner:
                 limit=int(get("limit", 10) or 10),
             )
             if not candidates:
-                return Finding(check_id, CheckStatus.WARN, "No CIN found",
+                # No MCA registration is a FACT about how the business is
+                # constituted, not a concern. The detail says as much.
+                return Finding(check_id, CheckStatus.PASS, "No CIN found",
                                "No MCA registration traced — consistent with a "
                                "proprietorship or partnership firm.",
                                raw={"candidates": [], "payload": resolve_payload},
@@ -1358,7 +1369,8 @@ class CheckRunner:
             strong = [c for c in candidates if (c.get("matchScore") or 0) >= 0.9]
             if len(strong) > 1:
                 return Finding(
-                    check_id, CheckStatus.WARN, f"{len(strong)} strong matches",
+                    check_id, CheckStatus.NEEDS_CONFIRMATION,
+                    f"{len(strong)} strong matches",
                     "More than one company matches this name closely. The "
                     "ambiguity is surfaced rather than resolved automatically — "
                     "auditing the wrong company is worse than auditing none.",
@@ -1386,7 +1398,10 @@ class CheckRunner:
                 page=max(int(get("page", 1) or 1), 1),
             )
             if not rows:
-                return Finding(check_id, CheckStatus.WARN, "No filings returned",
+                # A gap in the registry, stated plainly. r2 reads the row
+                # count, so an empty result cannot score as "filings
+                # current" on the strength of this status.
+                return Finding(check_id, CheckStatus.PASS, "No filings returned",
                                "MCA holds no filings matching this filter.",
                                raw={"rows": [], "meta": meta,
                                     "payload": filings_payload},
@@ -1460,7 +1475,9 @@ class CheckRunner:
             cached = bool(data.get("fromCache") or data.get("from_cache"))
             return Finding(
                 check_id,
-                CheckStatus.WARN if cached else CheckStatus.PASS,
+                # Billed, but served from cache: the filings were NOT
+                # refreshed, so this must not read as though they were.
+                CheckStatus.NEEDS_CONFIRMATION if cached else CheckStatus.PASS,
                 "Served from cache" if cached else "Refresh requested",
                 ("Billed, but no fresh pull from MCA happened — the source "
                  "returned its cache. The filings on file are no newer than "
@@ -1484,7 +1501,9 @@ class CheckRunner:
             )
             if not data:
                 return Finding(
-                    check_id, CheckStatus.WARN, "No financials filed",
+                    # r3 reads positive_net_worth from the payload, so an
+                    # absent filing cannot score as a healthy one.
+                    check_id, CheckStatus.PASS, "No financials filed",
                     "The requested form type is not among those available for "
                     "this company — a gap in the record, not a failed call.",
                 )
@@ -1493,7 +1512,9 @@ class CheckRunner:
             gaps = facts.get("year_gaps") or []
             return Finding(
                 check_id,
-                CheckStatus.PASS if facts["positive_net_worth"] else CheckStatus.WARN,
+                # Whether a loss-making year disqualifies a supplier is a
+                # commercial judgement, and not one an API response makes.
+                CheckStatus.PASS,
                 (f"Revenue {_crore(revenue)}" if revenue else "Filed financials"),
                 f"{facts['scope']} · FY ending "
                 f"{_human_date(facts['period_end']) or '—'} · net worth "
@@ -1560,7 +1581,10 @@ class CheckRunner:
                                "not match.")
             candidates = fs.resolve_director(query, limit=int(get("limit", 10) or 10))
             if not candidates:
-                return Finding(check_id, CheckStatus.WARN, "No DIN found",
+                # A GAP, NOT A CLEARANCE. Nothing was found, so nothing
+                # about this director was established.
+                return Finding(check_id, CheckStatus.NEEDS_CONFIRMATION,
+                               "No DIN found",
                                f"MCA holds no director matching '{query}'. A "
                                f"person can hold no DIN and still be an "
                                f"officer, so this is a gap, not a clearance.",
@@ -1585,7 +1609,8 @@ class CheckRunner:
                     and (c.get("totalDirectorshipCount") or 0)]
             return Finding(
                 check_id,
-                CheckStatus.WARN if (len(candidates) > 1 or loaded) else CheckStatus.PASS,
+                CheckStatus.NEEDS_CONFIRMATION
+                if (len(candidates) > 1 or loaded) else CheckStatus.PASS,
                 f"{top.get('din')} · {top.get('fullName') or top.get('name')}"
                 if len(candidates) == 1 else f"{len(candidates)} possible matches",
                 (f"{len(loaded)} of these sit on {alarm}+ boards — the "
@@ -1628,7 +1653,7 @@ class CheckRunner:
             reachable = sum(1 for c in contacts if c.get("email") or c.get("mobile"))
             return Finding(
                 check_id,
-                CheckStatus.PASS if reachable else CheckStatus.WARN,
+                CheckStatus.PASS if reachable else CheckStatus.NEEDS_CONFIRMATION,
                 f"{reachable} of {len(contacts)} contactable",
                 (f"{unlocked_now} director unlock(s) purchased this run. "
                  f"Mobile numbers are returned masked by MCA."
@@ -1647,7 +1672,9 @@ class CheckRunner:
             age = data.get("age_years")
             return Finding(
                 check_id,
-                CheckStatus.PASS if (age or 0) >= 2 else CheckStatus.WARN,
+                # The two-year line was OURS. The age is the fact and it
+                # is right here in the value; the analyst draws the line.
+                CheckStatus.PASS,
                 f"Domain age {age} yrs" if age is not None else "Ownership history retrieved",
                 f"Registered {data.get('created')} · registrant "
                 f"{data.get('registrant') or 'privacy-protected'} · "
@@ -1671,10 +1698,10 @@ class CheckRunner:
                 # is a gap in the answer, not a clean result — saying
                 # "domain age —" beside a green tick would be exactly
                 # the thing this product refuses to do.
-                status = CheckStatus.WARN
+                status = CheckStatus.NEEDS_CONFIRMATION
                 value = "Registered · age unknown"
             else:
-                status = CheckStatus.PASS if years >= 2 else CheckStatus.WARN
+                status = CheckStatus.PASS
                 value = f"Domain age {years} yrs"
 
             holder = data.get("registrant_name") or (
@@ -1698,7 +1725,8 @@ class CheckRunner:
             score = data.get("score") or 0
             return Finding(
                 check_id,
-                CheckStatus.PASS if score >= 80 else CheckStatus.WARN,
+                # 80 was a number we chose. The score is the fact.
+                CheckStatus.PASS,
                 f"Trust score {score}",
                 "; ".join(w["warning"] for w in data["warnings"]) or "No warnings raised.",
                 raw=data, credits=1,
@@ -1790,7 +1818,7 @@ class CheckRunner:
                                facts=factsets.timeline(data))
             return Finding(
                 check_id,
-                CheckStatus.PASS if data["continuous"] else CheckStatus.WARN,
+                CheckStatus.PASS,
                 f"{data['captures']} captures"
                 + (f", {len(outages)} outage(s)" if outages else ", no outages"),
                 f"First successful capture {data.get('first_ok_capture')}"
@@ -1833,7 +1861,7 @@ class CheckRunner:
                 # A status we do not recognise is not a pass. Reporting an
                 # unknown state as clean is the failure this product exists
                 # to prevent.
-                status = CheckStatus.WARN
+                status = CheckStatus.NEEDS_CONFIRMATION
                 value = f"Status '{data['status']}' not recognised"
             return Finding(
                 check_id, status, value,
@@ -1862,7 +1890,10 @@ class CheckRunner:
                 status = CheckStatus.FAIL
                 value = f"Last filed {months} months ago"
             elif months is not None and months > 1:
-                status = CheckStatus.WARN
+                # One month late is a fact; calling it concerning was a
+                # line we drew. Over three months stays FAIL — that is the
+                # statutory position, not our reading of it.
+                status = CheckStatus.PASS
                 value = f"Last filed {months} months ago"
             else:
                 status = CheckStatus.PASS
@@ -1925,7 +1956,7 @@ class CheckRunner:
             # and one that collapses the first time somebody checks.
             return Finding(
                 check_id,
-                CheckStatus.WARN if count else CheckStatus.PASS,
+                CheckStatus.NEEDS_CONFIRMATION if count else CheckStatus.PASS,
                 (f"{count} possible case(s) to review" if count
                  else "No cases found"),
                 ((f"Matched on name only, across {spellings} spelling(s) — "
@@ -1957,7 +1988,7 @@ class CheckRunner:
             listed = data["listed_count"]
             return Finding(
                 check_id,
-                CheckStatus.WARN if listed else CheckStatus.PASS,
+                CheckStatus.PASS,
                 f"{listed} of {data['checked']} listed for hearing",
                 "An upcoming listing means the matter is live, not merely "
                 "historical." if listed else
@@ -2008,9 +2039,10 @@ class CheckRunner:
             # A pending matter is a live exposure; a disposed one is history.
             # But DISPOSED alone says nothing — a withdrawal and a conviction
             # are both "disposed", so the disposal TYPE carries the finding.
-            status = CheckStatus.WARN if data["is_pending"] else CheckStatus.PASS
+            # Pending vs disposed is in the value. Which of them worries
+            # a client is the client's call.
             return Finding(
-                check_id, status,
+                check_id, CheckStatus.PASS,
                 f"{data.get('case_status') or 'status unknown'}"
                 + (f" · {data['disposal_type_raw']}" if data.get("disposal_type_raw") else ""),
                 " · ".join(filter(None, [
@@ -2080,7 +2112,8 @@ class CheckRunner:
             count = data["count"]
             more = data.get("truncated")
             return Finding(
-                check_id, CheckStatus.WARN if count else CheckStatus.PASS,
+                check_id,
+                CheckStatus.NEEDS_CONFIRMATION if count else CheckStatus.PASS,
                 f"{count}{'+' if more else ''} listing(s) under this name",
                 ("Name match is fuzzy — the list includes any party whose "
                  "name contains the search term, which for a group name "
@@ -2222,7 +2255,7 @@ class CheckRunner:
             if not confident:
                 # Named, not scored. r13 checks the same flag, so this
                 # cannot move the ledger — it goes to a human instead.
-                status = CheckStatus.WARN
+                status = CheckStatus.NEEDS_CONFIRMATION
                 value = f"{band} band, identity confidence {confidence}"
                 detail = (
                     f"Below the {ec_mod.MIN_IDENTITY_CONFIDENCE:.0f}% confidence "
@@ -2476,7 +2509,8 @@ class CheckRunner:
                 top = res.matches[0]
                 return Finding(
                     check_id,
-                    CheckStatus.FAIL if top["confidence"] == "conclusive" else CheckStatus.WARN,
+                    CheckStatus.FAIL if top["confidence"] == "conclusive"
+                    else CheckStatus.NEEDS_CONFIRMATION,
                     f"Possible duplicate of #{top['vendorId']}",
                     f"{top['rule']} ({top['confidence']}): {top['detail']}",
                     raw=res.as_payload(),
@@ -2493,7 +2527,10 @@ class CheckRunner:
                                    facts=factsets.inhouse(res.as_payload(),
                                                           kind="related party"))
                 top = res.matches[0]
-                return Finding(check_id, CheckStatus.WARN,
+                # A shared director or address is a CANDIDATE
+                # relationship — ours to surface, an analyst's to confirm.
+                # Stays adverse, so r9 fires exactly as it did.
+                return Finding(check_id, CheckStatus.NEEDS_CONFIRMATION,
                                f"Related to #{top['vendorId']}", top["detail"],
                                raw=res.as_payload(),
                                facts=factsets.inhouse(res.as_payload(),

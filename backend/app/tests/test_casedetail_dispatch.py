@@ -115,9 +115,16 @@ class TestAValidCnrReachesTheProvider:
         assert ec.calls == [VALID_CNR]
         assert finding.status is not CheckStatus.UNAVAILABLE
 
-    def test_a_pending_matter_warns(self):
+    def test_a_pending_matter_states_the_status_without_judging_it(self):
+        """WAS `test_a_pending_matter_warns`, asserting WARN.
+
+        A case being pending is a FACT the court publishes. Whether a
+        pending matter disqualifies a supplier is the client's policy,
+        and VBC stamping "Attention" on it was us holding an opinion
+        about a vendor we were only asked to look up. The status is in
+        the value; the reader decides."""
         finding = dispatch(make_runner(FakeECourts()), {"cnr": VALID_CNR})
-        assert finding.status is CheckStatus.WARN
+        assert finding.status is CheckStatus.PASS
         assert "PENDING" in finding.value
 
     def test_a_disposed_matter_passes(self):
@@ -175,7 +182,7 @@ class TestTheCnrComesFromTheSearchWhenNoneIsTyped:
     def test_the_first_cnr_of_the_search_is_used(self):
         ec = FakeECourts()
         prior = {"courtsearch": Finding(
-            "courtsearch", CheckStatus.WARN, "2 cases", "",
+            "courtsearch", CheckStatus.NEEDS_CONFIRMATION, "2 cases", "",
             raw={"results": [{"cnr": VALID_CNR}, {"cnr": "DLHC010001232024"}]},
         )}
         dispatch(make_runner(ec), {}, prior)
@@ -186,7 +193,7 @@ class TestTheCnrComesFromTheSearchWhenNoneIsTyped:
         add-more dialog."""
         ec = FakeECourts()
         prior = {"courtsearch": Finding(
-            "courtsearch", CheckStatus.WARN, "1 case", "",
+            "courtsearch", CheckStatus.NEEDS_CONFIRMATION, "1 case", "",
             raw={"results": [{"cnr": "DLHC010001232024"}]},
         )}
         dispatch(make_runner(ec), {"cnr": VALID_CNR}, prior)
