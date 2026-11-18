@@ -749,7 +749,11 @@ export function buildReport(vendor: Vendor) {
 
 const STATUS_LABEL: Record<string, string> = {
   pass: 'Passed',
-  warn: 'Attention',
+  // See types/domain.ts — "Attention" was retired on 17 Nov 2026
+  // because it carried OUR opinion of a provider's answer. `warn`
+  // survives only on stored rows.
+  warn: 'Needs confirmation',
+  needs_confirmation: 'Needs confirmation',
   fail: 'Adverse',
   skip: 'N/A',
   unavailable: 'Not examined',

@@ -71,6 +71,117 @@ def _gst_flag(checks: dict[str, CheckResult], key: str) -> bool:
     return bool(isinstance(raw, dict) and raw.get(key))
 
 
+#: "this result carries no payload", distinct from "the fact is false".
+_NO_PAYLOAD = object()
+
+
+def _fact(checks: dict[str, CheckResult], check_id: str, *path: str):
+    """One value out of a check's STORED PAYLOAD, or None.
+
+    WHY THESE RULES STOPPED READING `status`
+    ----------------------------------------
+    Four rules award points for a GOOD outcome and tested it with
+    `_passed(check)` — which only worked while the check reported
+    anything other than PASS for the bad outcome:
+
+        r1 +20  "MCA registered and active"      PASS unless struck off
+        r3 +15  "positive net worth"             PASS unless negative
+        r5 +10  "continuous presence, no outages" PASS unless outages
+        r7 -15  "open charge"                    WARN when charges open
+
+    When WARN was retired on 17 Nov 2026 those checks began reporting
+    PASS in every case, because the thing they were reporting on is a
+    FACT and not a verdict. The statuses were right. The rules reading
+    them as a proxy for the fact were not: r1 would have awarded +20 to
+    a struck-off company, r3 +15 for a loss, r5 +10 despite outages.
+
+    A gap reading as clean is the failure this product is built to
+    prevent. Adverse reading as POSITIVE is the same failure with the
+    sign flipped, and it is the reason these now read the payload —
+    the pattern `_gst_flag` and `_court_adverse` already used, and
+    said why: "Deliberately not derived from the check STATUS."
+
+    Returns `_NO_PAYLOAD` when there is nothing to read, which is NOT the
+    same as a fact that is absent or false. A manually recorded result
+    carries no provider payload at all — the Kaveri fixture's suspended
+    GSTIN arrives exactly that way — and so do results stored before a
+    check kept its raw response. Those must fall back to the status
+    rather than silently score as the bad outcome, which is what every
+    caller below does.
+    """
+    result = checks.get(check_id)
+    if not result or not result.status.was_examined:
+        return None
+    node = result.raw_response
+    if not isinstance(node, dict) or not node:
+        return _NO_PAYLOAD
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _mca_active(checks: dict[str, CheckResult]) -> bool:
+    """r1 — the registry's own status string, not ours."""
+    value = _fact(checks, "master", "facts", "status")
+    if value is _NO_PAYLOAD:
+        return _passed(checks, "master")
+    return str(value or "").lower() == "active"
+
+
+def _positive_net_worth(checks: dict[str, CheckResult]) -> bool:
+    """r3 — the normaliser's flag, computed from the filed figures."""
+    value = _fact(checks, "fin", "facts", "positive_net_worth")
+    if value is _NO_PAYLOAD:
+        return _passed(checks, "fin")
+    return bool(value)
+
+
+def _continuous_presence(checks: dict[str, CheckResult]) -> bool:
+    """r5 — the archive's own continuity flag."""
+    value = _fact(checks, "cdx", "continuous")
+    if value is _NO_PAYLOAD:
+        return _passed(checks, "cdx")
+    return bool(value)
+
+
+def _filings_on_record(checks: dict[str, CheckResult]) -> bool:
+    """r2 — MCA returned at least one filing.
+
+    Same correction as r1/r3/r5. `_passed(filings)` worked only while an
+    empty result reported WARN; with the check reporting PASS either way
+    it would have awarded +10 "Filings current" to a company MCA holds no
+    filings for.
+    """
+    value = _fact(checks, "filings", "rows")
+    if value is _NO_PAYLOAD:
+        return _passed(checks, "filings")
+    return bool(value)
+
+
+def _open_charges(checks: dict[str, CheckResult]) -> bool:
+    """An unsatisfied charge on the company's assets.
+
+    READS THE FACT, NOT THE STATUS, for the same reason `_gst_flag` does.
+
+    This was `_adverse(c, "charges")`, which worked only while the check
+    reported WARN for an open charge. WARN was retired on 17 Nov 2026
+    because it carried OUR opinion of a provider's answer, and `charges`
+    now reports PASS with the open charges in its value.
+
+    The rule has to survive that, because an unsatisfied charge is not an
+    opinion — it is a registry fact, and the one fact on this check a
+    client is entitled to see scored. Reading `open` from the stored
+    payload keeps the rule firing on exactly the companies it fired on
+    before, whatever the status becomes next.
+    """
+    value = _fact(checks, "charges", "open")
+    if value is _NO_PAYLOAD:
+        return _adverse(checks, "charges")
+    return bool(value)
+
+
 def _court_adverse(checks: dict[str, CheckResult]) -> bool:
     """Litigation that is BOTH adverse and confidently the right subject.
 
@@ -94,13 +205,13 @@ def _court_adverse(checks: dict[str, CheckResult]) -> bool:
 #: Rule id -> predicate. Kept separate from the RiskRule dataclass so the
 #: rules themselves stay serialisable and seedable into the database.
 RULE_TESTS: dict[str, Callable[[dict[str, CheckResult]], bool]] = {
-    "r1": lambda c: _passed(c, "master"),
-    "r2": lambda c: _passed(c, "filings"),
-    "r3": lambda c: _passed(c, "fin"),
+    "r1": _mca_active,
+    "r2": _filings_on_record,
+    "r3": _positive_net_worth,
     "r4": _domain_older_than_2y,
-    "r5": lambda c: _passed(c, "cdx"),
+    "r5": _continuous_presence,
     "r6": lambda c: _passed(c, "ssl"),
-    "r7": lambda c: _adverse(c, "charges"),
+    "r7": _open_charges,
     "r8": lambda c: _adverse(c, "dup"),
     "r9": lambda c: _adverse(c, "rp"),
     "r10": lambda c: _gst_flag(c, "is_active"),

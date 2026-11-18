@@ -44,7 +44,7 @@ import type {
   SurveillanceScore,
   VerdictName,
 } from '@/types/domain'
-import { IS_ADVERSE } from '@/types/domain'
+import { IS_ADVERSE, WAS_EXAMINED } from '@/types/domain'
 
 const TOLERANCE_PASS = 0.6
 const TOLERANCE_WATCH = 0.5
@@ -293,6 +293,81 @@ const isAdverse = (checks: Record<string, CheckResult>, id: string) => {
   return status !== null && IS_ADVERSE.includes(status)
 }
 
+/**
+ * One value out of a check's STORED PAYLOAD.
+ *
+ * Returns NO_PAYLOAD when there is nothing to read, which is NOT the
+ * same as a fact that is false. A manually recorded result carries no
+ * provider payload, and neither does a row stored before the check kept
+ * its raw response — those fall back to the status.
+ *
+ * Mirrors `_fact` in backend/app/catalog/risk.py. parity.test.ts exists
+ * because these two implementations have drifted before.
+ */
+const NO_PAYLOAD = Symbol('no payload')
+
+const fact = (
+  checks: Record<string, CheckResult>,
+  id: string,
+  ...path: string[]
+): unknown => {
+  const result = checks[id]
+  if (!result || !WAS_EXAMINED.includes(result.status)) return null
+  let node = result.rawResponse
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+    return NO_PAYLOAD
+  }
+  if (Object.keys(node as object).length === 0) return NO_PAYLOAD
+  for (const key of path) {
+    if (typeof node !== 'object' || node === null) return null
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
+}
+
+/*
+  THESE READ THE FACT, NOT THE STATUS.
+
+  r1, r2, r3 and r5 award points for a GOOD outcome and tested it with
+  `didPass(check)` — which worked only while the check reported
+  something other than 'pass' for the BAD outcome. "Attention" was
+  retired on 17 Nov 2026 because it carried our opinion of a provider's
+  answer, so these checks now report 'pass' either way, and r1 would
+  have awarded +20 to a struck-off company.
+
+  A gap reading as clean is this product's cardinal failure. Adverse
+  reading as POSITIVE is the same failure worth more points.
+*/
+const factOr = (
+  checks: Record<string, CheckResult>,
+  id: string,
+  path: string[],
+  test: (v: unknown) => boolean,
+  fallback: (c: Record<string, CheckResult>, id: string) => boolean,
+): boolean => {
+  const value = fact(checks, id, ...path)
+  if (value === NO_PAYLOAD) return fallback(checks, id)
+  return test(value)
+}
+
+const mcaActive = (c: Record<string, CheckResult>) =>
+  factOr(c, 'master', ['facts', 'status'],
+    (v) => String(v ?? '').toLowerCase() === 'active', didPass)
+
+const filingsOnRecord = (c: Record<string, CheckResult>) =>
+  factOr(c, 'filings', ['rows'],
+    (v) => Array.isArray(v) && v.length > 0, didPass)
+
+const positiveNetWorth = (c: Record<string, CheckResult>) =>
+  factOr(c, 'fin', ['facts', 'positive_net_worth'], (v) => !!v, didPass)
+
+const continuousPresence = (c: Record<string, CheckResult>) =>
+  factOr(c, 'cdx', ['continuous'], (v) => !!v, didPass)
+
+const openCharges = (c: Record<string, CheckResult>) =>
+  factOr(c, 'charges', ['open'],
+    (v) => Array.isArray(v) ? v.length > 0 : !!v, isAdverse)
+
 const domainOlderThan2y = (checks: Record<string, CheckResult>): boolean => {
   const result = checks['whois']
   if (!result || result.status !== 'pass') return false
@@ -301,13 +376,13 @@ const domainOlderThan2y = (checks: Record<string, CheckResult>): boolean => {
 }
 
 const RULE_TESTS: Record<string, (c: Record<string, CheckResult>) => boolean> = {
-  r1: (c) => didPass(c, 'master'),
-  r2: (c) => didPass(c, 'filings'),
-  r3: (c) => didPass(c, 'fin'),
+  r1: mcaActive,
+  r2: filingsOnRecord,
+  r3: positiveNetWorth,
   r4: domainOlderThan2y,
-  r5: (c) => didPass(c, 'cdx'),
+  r5: continuousPresence,
   r6: (c) => didPass(c, 'ssl'),
-  r7: (c) => isAdverse(c, 'charges'),
+  r7: openCharges,
   r8: (c) => isAdverse(c, 'dup'),
   r9: (c) => isAdverse(c, 'rp'),
   r10: () => false,

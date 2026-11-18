@@ -80,7 +80,41 @@ class CheckStatus(str, Enum):
     """
 
     PASS = "pass"
+    #: RETIRED 17 Nov 2026. Kept because stored rows still carry it.
+    #:
+    #: "Attention" asserted that something a provider returned was
+    #: CONCERNING — a domain under two years old, a reputation score
+    #: under 80, a negative net worth, a case still pending. Every one of
+    #: those thresholds was chosen here, by us. None came from a client,
+    #: a standard, or the registry that supplied the fact.
+    #:
+    #: Whether a two-year-old domain disqualifies a supplier is the
+    #: analyst's judgement and the client's policy. VBC's job is to fetch
+    #: the fact, show it unaltered, and say plainly when it could not. It
+    #: was never to hold an opinion about it.
+    #:
+    #: Nothing emits this any more. It stays in the enum so results
+    #: already in the database keep deserialising, and it keeps
+    #: `is_adverse` so no stored vendor's rating moves underneath them.
     WARN = "warn"
+    #: NOT a verdict on the vendor — a statement about WHAT WE GOT BACK.
+    #:
+    #: Two kinds of answer land here, and neither is an opinion:
+    #:
+    #:   * we cannot show the answer is about THIS SUBJECT — court cases
+    #:     matched on name alone, several CIN or DIN candidates, a GST
+    #:     status string we do not recognise;
+    #:   * the source returned NOTHING WHERE SOMETHING WAS SOUGHT — no
+    #:     DIN for that director, no contact details on file, a refresh
+    #:     that never completed.
+    #:
+    #: This is the half of "Attention" that had to survive its removal.
+    #: Turning these green would let a failed identification, or a plain
+    #: gap, read as a clean result — the one thing this product exists to
+    #: prevent, and the thing four tests in `test_unbuilt_checks.py` are
+    #: named after. Adverse, so the rules that relied on the old status
+    #: behave exactly as before.
+    NEEDS_CONFIRMATION = "needs_confirmation"
     FAIL = "fail"
     SKIP = "skip"                                # not applicable to this vendor
     UNAVAILABLE = "unavailable"                  # provider errored after retries
@@ -89,11 +123,20 @@ class CheckStatus(str, Enum):
 
     @property
     def is_adverse(self) -> bool:
-        return self in (CheckStatus.FAIL, CheckStatus.WARN)
+        return self in (CheckStatus.FAIL, CheckStatus.WARN,
+                        CheckStatus.NEEDS_CONFIRMATION)
 
     @property
     def was_examined(self) -> bool:
-        """True only when the check actually produced evidence."""
+        """True only when the check actually produced evidence ABOUT THIS
+        VENDOR.
+
+        NEEDS_CONFIRMATION is excluded deliberately. Twenty cases matched
+        on a company name are twenty candidates, and until a person says
+        which of them is this vendor they are not evidence about it —
+        counting them as examined would let an unconfirmed match widen
+        coverage it never actually provided.
+        """
         return self in (CheckStatus.PASS, CheckStatus.WARN, CheckStatus.FAIL)
 
 
