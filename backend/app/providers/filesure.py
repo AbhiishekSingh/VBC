@@ -818,6 +818,77 @@ def _birth_year(roles: list[dict], row: dict) -> int | None:
     return None
 
 
+#: The two field names that carry disqualification, lower-cased.
+#: ``DirectorDisqualified`` is the documented one and sits on the row;
+#: ``isDisqualified`` is the one the live API actually sends and sits
+#: inside ``MCAUserRole[]``. Both are strings.
+_DISQ_FIELDS = ("isdisqualified", "directordisqualified")
+
+
+def _disqualification(row: dict, roles: list[dict]) -> bool | None:
+    """True, False, or None — and None means "this source did not say".
+
+    WHY A THIRD STATE, 18 Nov 2026
+    ------------------------------
+    A ZEPTO LIMITED company-master response came back with 11 directors,
+    each carrying DIN, name, appointment date and a full MCAUserRole[] of
+    directorships — and no disqualification field anywhere in it, under
+    any name. MCA's company master does not always report s.164 standing;
+    that is a separate register.
+
+    The adapter previously had two answers available: ``False``, which
+    would have put "No" against 11 directors and a green zero on the tile
+    for a field nobody read, and a parse gap, which threw all 11 away and
+    reported the check as unexamined. Both are wrong, in opposite
+    directions, and the second is what shipped.
+
+    ``None`` is the honest answer, and ``F.yes_no`` already carries it
+    through to the screen as blank rather than "No".
+
+    Disqualified on ANY directorship disqualifies the person, so every
+    role is read before the row-level flag. Empty strings count as
+    unsaid: the API sends ``""`` as freely as it sends ``"N"``.
+    """
+    stated = [
+        value
+        for value in (
+            [r.get("isDisqualified") for r in roles]
+            + [row.get("isDisqualified"), row.get("DirectorDisqualified")]
+        )
+        if value is not None and str(value).strip() != ""
+    ]
+    if not stated:
+        return None
+    # as_bool, not truthiness: "false" and "N" are both truthy strings.
+    return any(as_bool(value) for value in stated)
+
+
+def _unread_disqualification_fields(rows: list[dict]) -> list[str]:
+    """Keys that NAME a disqualification but are not ones this adapter reads.
+
+    This is what is left of the old guard, and it is the only part that
+    was ever sound. "The field is absent" and "the field was renamed" look
+    identical if you only test the names you know — so the test is the
+    payload's own vocabulary. A key with "disqualif" in it that we are not
+    reading is proof the fact IS there under a name we do not have, and
+    that is a genuine adapter gap worth voiding the check for.
+
+    A payload with no such key anywhere, like ZEPTO's, is not a gap. It
+    is a source that does not carry the fact, and it parses.
+    """
+    found: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        roles = [r for r in (row.get("MCAUserRole") or []) if isinstance(r, dict)]
+        for obj in [row, *roles]:
+            for key in obj:
+                lowered = str(key).lower()
+                if "disqualif" in lowered and lowered not in _DISQ_FIELDS:
+                    found.add(str(key))
+    return sorted(found)
+
+
 def normalise_directors(data: dict) -> list[dict]:
     """directorData is PascalCase and its booleans are strings."""
     rows = dig(data, "masterData", "directorData", default=[]) or []
@@ -865,17 +936,10 @@ def normalise_directors(data: dict) -> list[dict]:
                     if r.get("companyName") and r.get("cin") != data.get("cin")
                 }),
                 "appointed_on": parse_date(row.get("dateOfAppointment")),
-                # Two encodings in the wild: the documented
-                # "DirectorDisqualified": "true"/"false" and the real
-                # "isDisqualified": "Y"/"N". Both are strings, so both must
-                # go through as_bool — "false" is truthy in Python.
-                # Disqualified on ANY directorship disqualifies the person.
-                # Checked across every role, then the row-level flag.
-                "disqualified": (
-                    any(as_bool(r.get("isDisqualified")) for r in roles)
-                    or as_bool(row.get("isDisqualified"))
-                    or as_bool(row.get("DirectorDisqualified"))
-                ),
+                # TRI-STATE. None = this response did not carry the fact,
+                # which is not the same as "not disqualified". See
+                # `_disqualification`.
+                "disqualified": _disqualification(row, roles),
                 "ceased_on": ceased,
                 "still_serving": still_serving,
                 # Year only — the source masks day and month. Age is derived
@@ -899,26 +963,19 @@ def normalise_directors(data: dict) -> list[dict]:
                  hint="masterData.directorData[].DIN (8 digits)")
     guard.expect("name", raw=real_rows, parsed=[d["name"] for d in out if d["name"]],
                  hint="masterData.directorData[].FirstName / .MiddleName / .LastName")
-    # Two field names so far. Neither present = not reading the flag.
-    guard.expect_any(
+    # NOT "neither field name is present". That voided a payload of 11
+    # real directors because MCA's company master does not report s.164
+    # standing at all — see `_disqualification`. The gap is only a gap
+    # when the payload itself names the fact under something we do not
+    # read, which `_unread_disqualification_fields` tests for.
+    unread = _unread_disqualification_fields(rows)
+    guard.expect(
         "disqualification flag",
-        raw=rows,
-        parsed=[
-            any(
-                r.get("DirectorDisqualified") is not None
-                or r.get("isDisqualified") is not None
-                or any(
-                    role.get("isDisqualified") is not None
-                    for role in (r.get("MCAUserRole") or [])
-                    if isinstance(role, dict)
-                )
-                for r in rows if isinstance(r, dict)
-            )
-            or None
-        ],
-        hint="DirectorDisqualified or isDisqualified on the row (director "
-             "profile shape), or isDisqualified inside MCAUserRole[] "
-             "(company master shape)",
+        raw=unread,
+        parsed=None,
+        hint=f"the payload carries {', '.join(unread)}, which this adapter "
+             f"does not read — the names it knows are DirectorDisqualified "
+             f"on the row and isDisqualified inside MCAUserRole[]",
     )
     guard.raise_if_gaps(payload=data)
     return out
