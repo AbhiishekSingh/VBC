@@ -25,6 +25,7 @@ import {
   StatusBadge,
   rupees,
 } from '@/components/ui'
+import { copyText } from '@/lib/copyText'
 import { useToast } from '@/hooks/useToast'
 import { subjectCount, subjectsOnFile } from '@/lib/pricing'
 import { publicDetail } from '@/lib/publicText'
@@ -784,7 +785,11 @@ function ResultBody({
                 className="btn sm ghost"
                 onClick={() => copy(keyId, panel.text)}
               >
-                {copied === keyId ? 'Copied' : 'Copy JSON'}
+                {copied === keyId
+                  ? 'Copied'
+                  : copied === `${keyId}:failed`
+                    ? 'Copy failed — select the text'
+                    : 'Copy JSON'}
               </button>
               <button
                 type="button"
@@ -1157,14 +1162,24 @@ export default function Findings({ vendor, setVendor, setPrimary }: PageProps) {
     })
   }
 
+  /*
+    COPY JSON. The mechanics live in `lib/copyText` because they are
+    not obvious — `navigator.clipboard` is undefined on a plain-http
+    origin, which is this deployment, and the old one-liner threw a
+    TypeError there instead of copying. See that file.
+
+    The RESULT is used: a copy that silently did not happen is how a
+    parse gap gets reported with no payload attached to it.
+  */
   const copy = (id: string, text: string) => {
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(id)
-        window.setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500)
-      },
-      () => setCopied(null),
-    )
+    void copyText(text).then((ok) => {
+      const mark = ok ? id : `${id}:failed`
+      setCopied(mark)
+      window.setTimeout(
+        () => setCopied((c) => (c === mark ? null : c)),
+        ok ? 1500 : 2500,
+      )
+    })
   }
 
   /*

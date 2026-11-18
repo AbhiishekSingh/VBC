@@ -539,9 +539,18 @@ class VendorCheck(Base):
             "uq_vendor_check_primary", "vendor_id", "check_id", unique=True,
             postgresql_where=text("is_primary"),
         ),
+        # MIRRORED IN THE DATABASE by migration 0013. Adding a value to
+        # `CheckStatus` without adding it here passes every test that
+        # does not touch Postgres and fails on the first real INSERT —
+        # which is exactly how `needs_confirmation` shipped broken on
+        # 17 Nov 2026.
+        #
+        # `warn` is retired and still listed: rows written before that
+        # date hold it, and a CHECK is enforced on UPDATE too, so
+        # dropping it would make every historical row unwritable.
         CheckConstraint(
-            "status IN ('pass','warn','fail','skip','unavailable',"
-            "'not_configured','skipped_missing_input')",
+            "status IN ('pass','warn','needs_confirmation','fail','skip',"
+            "'unavailable','not_configured','skipped_missing_input')",
             name="status_enum",
         ),
         CheckConstraint("cost_paisa >= 0", name="cost_non_negative"),

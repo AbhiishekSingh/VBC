@@ -33,6 +33,8 @@ facts carry a flag saying what they are.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -192,11 +194,22 @@ class FakeSession:
 
     `scalars(...).all()` answers the "how many results does this check
     already have" query; `scalar(...)` answers "is one of them primary".
+
+    `begin_nested()` is a SAVEPOINT in the real thing. `_persist` wraps
+    each row in one so a row the database refuses cannot abort the whole
+    transaction and lose every other check in the run — see
+    `test_persist_isolation.py`. Here it only has to be a context
+    manager; the isolation it provides is Postgres's job and is tested
+    against the real session.
     """
 
     def __init__(self, existing=None):
         self._existing = existing
         self.added = []
+
+    @contextmanager
+    def begin_nested(self):
+        yield self
 
     def scalar(self, _stmt):
         # Stands in for "the id of the primary result, if there is one".
