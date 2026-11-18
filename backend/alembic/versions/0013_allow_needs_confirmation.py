@@ -37,7 +37,18 @@ before 17 Nov 2026 hold it, and a constraint is checked on UPDATE as
 well as INSERT — dropping it would make every historical row
 unwritable, so setting one aside would fail.
 
-Revision ID: 0013_status_allows_needs_confirmation
+Revision ID: 0013_allow_needs_confirmation
+
+THE ID IS SHORT ON PURPOSE. `alembic_version.version_num` is
+varchar(32); the first draft of this migration was called
+`0013_status_allows_needs_confirmation`, which is 37 characters, and
+every statement in it succeeded before the final
+
+    UPDATE alembic_version SET version_num = '...'
+
+failed with StringDataRightTruncation and rolled the whole thing back.
+A migration that does its work and then cannot record that it did is a
+confusing failure, so: 32 characters, including the number.
 Revises: 0012_ignore_instead_of_delete
 """
 
@@ -45,12 +56,26 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0013_status_allows_needs_confirmation"
+revision = "0013_allow_needs_confirmation"
 down_revision = "0012_ignore_instead_of_delete"
 branch_labels = None
 depends_on = None
 
-CONSTRAINT = "ck_vendor_checks_status_enum"
+#: THE NAME IS ALREADY FINAL, hence `op.f()`.
+#:
+#: This metadata carries a naming convention —
+#: `ck_%(table_name)s_%(constraint_name)s` — and alembic applies it to
+#: whatever name an operation is given. Passing the full name plainly
+#: produced
+#:
+#:     ALTER TABLE vendor_checks
+#:       DROP CONSTRAINT ck_vendor_checks_ck_vendor_checks_status_enum
+#:
+#: and the migration failed on a constraint that does not exist, which
+#: is a confusing way to be told you named something twice. `op.f()`
+#: marks a name as already-conventional so it is used verbatim —
+#: exactly as migration 0001 does where it creates this constraint.
+CONSTRAINT = op.f("ck_vendor_checks_status_enum")
 TABLE = "vendor_checks"
 
 #: WRITTEN OUT IN FULL, not assembled from a constant. A migration is a
