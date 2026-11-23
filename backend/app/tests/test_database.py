@@ -19,6 +19,7 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.catalog.checks import CHECKS
+from app.domain.types import PILLAR_WEIGHTS, Pillar, Provider
 from app.db.base import Base
 from app.db.models import (
     AuditLog,
@@ -97,14 +98,32 @@ class TestSeeding:
         assert len(session.scalars(select(ManualFieldTemplate)).all()) == 17
 
     def test_hooks_are_seeded_not_omitted(self, session, seeded):
-        """A gap in coverage must be a visible row, not an absence."""
+        """A gap in coverage must be a visible row, not an absence.
+
+        COUNTED FROM THE CATALOG, not hard-coded. This read `== 8` and
+        went red the day a hook was built — then stayed red, because a
+        bare number says nothing about why it is that number and nobody
+        could tell a stale assertion from a real regression.
+
+        A permanently failing test is worse than a missing one: it trains
+        the reader to skip the summary line. That is precisely how the
+        `needs_confirmation` constraint reached production behind 129
+        skipped tests.
+        """
         hooks = session.scalars(
             select(CheckDefinitionRow).where(CheckDefinitionRow.state == "not_configured")
         ).all()
-        assert len(hooks) == 8
-        assert {h.id for h in hooks} >= {"ofac", "rbi", "news", "court"}
-        # `gst` is NOT a hook any more — FinAGG went live on 2026-09-09.
-        assert "gst" not in {h.id for h in hooks}
+        unbuilt = {c.id for c in CHECKS if c.provider is Provider.NONE}
+
+        assert {h.id for h in hooks} == unbuilt, (
+            "every check with no provider must be seeded as a visible "
+            "not_configured row, and nothing else may be"
+        )
+        assert unbuilt >= {"ofac", "rbi", "news"}
+        # `gst` is NOT a hook any more — FinAGG went live 2026-09-09,
+        # and nor is `court` — eCourts went live 2026-11-13.
+        assert "gst" not in unbuilt
+        assert "court" not in unbuilt
 
     def test_gst_is_live_and_split_across_two_checks(self, session, seeded):
         """The single `gst` hook became two checks: the facts come from
@@ -373,14 +392,50 @@ class TestRoundTrip:
         return vendor
 
     def test_scores_computed_from_stored_rows_match_the_fixture(self, session, seeded):
+        """UPDATED TWICE, both times for a deliberate model change that
+        this file was not told about. The numbers below are measured from
+        the current model, and the history is recorded so the next person
+        can tell a stale expectation from a regression without bisecting.
+
+        6 Oct 2026 — `53db5ca`, the SCAN migration onto the client's live
+        workbook. Pillar weights moved A .6 → .4 and N .1 → .3, the A
+        pillar became a weighted blend rather than a count, and an odd
+        Yellow stopped being floored away. **weighted 3.80 → 3.50,
+        pct 97.4 → 89.7.** The authority for those numbers is
+        `test_workbook_parity.py`, built from eight of the client's own
+        completed assessments; it passes 62/62 and is what this file
+        should have been reconciled against.
+
+        18 Nov 2026 — `67b1433`, the removal of the Attention status.
+        r1, r2, r3 and r5 stopped reading a check's STATUS as a proxy for
+        the fact it reports and began reading the stored payload, because
+        with WARN retired those checks report PASS either way and the
+        rules would have awarded +20 to a struck-off company and +15 for
+        a loss. **risk_score 95 → 55.**
+
+        The drop here is a FIXTURE artefact, not a scoring one: `_load`
+        writes `{"sample": True, "checkId": ...}` as every raw_response,
+        which is a non-empty dict carrying none of the facts, so the
+        rules correctly decline to award points for facts nobody can
+        read. A real `master` row carries `{"facts": ..., "payload": ...}`
+        and r1 fires. Erring towards NOT awarding is the safe direction,
+        and the one this product exists to take.
+        """
         self._load_meridian(session)
         score = record_score(session, "234479")
-        assert float(score.weighted) == 3.80
+        assert float(score.weighted) == 3.50
         assert float(score.best) == 3.90
-        assert float(score.pct) == 97.4
+        assert float(score.pct) == 89.7
         assert score.applicable == 14
-        assert score.risk_score == 95
-        assert score.risk_band == "APPROVE"
+        assert score.risk_score == 55
+        # 95 was APPROVE (80-100); 55 is DEEP REVIEW (40-59). The band
+        # moving is the point, not an inconvenience: four positive rules
+        # now decline to award for facts they cannot read, and the band
+        # is supposed to follow. THE FIXTURE IS THE ARTIFICIAL PART —
+        # its placeholder payloads carry no facts at all, so this vendor
+        # is no longer a realistic well-evidenced one. Worth replacing
+        # with real stored shapes rather than tuning the number again.
+        assert score.risk_band == "DEEP REVIEW"
 
     def test_azahan_is_gated_when_scored_from_the_database(self, session, seeded):
         vendor = Vendor(
@@ -400,7 +455,9 @@ class TestRoundTrip:
         session.flush()
 
         gated = record_score(session, "234478", policy=DEFAULT_POLICY)
-        assert float(gated.pct) == 60.0
+        # 60.0 before the 6 Oct SCAN migration; see the note on
+        # `test_scores_computed_from_stored_rows_match_the_fixture`.
+        assert float(gated.pct) == 70.0
         assert gated.gated is True
         assert gated.verdict == "Insufficient Coverage — Senior Review"
         assert gated.raw_verdict == "Positive for Onboarding"
@@ -445,7 +502,12 @@ class TestRoundTrip:
         self._load_meridian(session)
         score = record_score(session, "234479")
         assert score.pillars["A"]["applicable"] == 4
-        assert score.pillars["A"]["weight"] == 0.6
+        # .6 is the workbook's "Old Score" row, which the client's
+        # file computes with nothing. The live weight is .4 — moved
+        # off the psychometric test and onto the hard commercial
+        # facts, 6 Oct 2026. `PILLAR_WEIGHTS` is the source of truth.
+        assert score.pillars["A"]["weight"] == PILLAR_WEIGHTS[Pillar.A]
+        assert score.pillars["A"]["weight"] == 0.4
         assert score.pillars["C"]["applicable"] == 1
 
 
@@ -528,7 +590,7 @@ class TestReconstruction:
         assert float(first.weighted) != float(second.weighted)
         assert latest_score(session, "234479").id == second.id
         # The original is still on file, unchanged.
-        assert float(session.get(VendorScore, first.id).weighted) == 3.80
+        assert float(session.get(VendorScore, first.id).weighted) == 3.50
 
     def test_scoring_without_a_seeded_catalog_refuses(self, session):
         """A score that cannot cite its rules is not reconstructable."""
