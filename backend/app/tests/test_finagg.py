@@ -497,7 +497,18 @@ def test_empty_current_year_falls_back_to_prior_fy(monkeypatch):
 
 
 def test_caller_supplied_fy_is_never_silently_changed(monkeypatch):
-    """A named year gets an answer about THAT year, empty or not."""
+    """A named year gets an answer about THAT year, empty or not.
+
+    THE ASSERTION CONTRADICTED ITS OWN DOCSTRING until 23 Nov 2026. It
+    expected `ProviderParseGap` for an empty `EFiledlist`, which is not
+    "an answer about that year" — it is the check being voided. A GSTIN
+    that filed nothing in 2024-25 IS the finding, and the most adverse one
+    this endpoint can produce; reporting it as an unreadable response
+    buried a defaulting vendor behind what reads as our own defect.
+
+    The empty LIST under a known key is the proof the adapter still
+    understands the shape. See `_returns_key_present`.
+    """
     monkeypatch.setattr(fa, "_early_in_fy", lambda today=None: True)
 
     asked = []
@@ -506,7 +517,41 @@ def test_caller_supplied_fy_is_never_silently_changed(monkeypatch):
         asked.append(request.url.params["fy"])
         return httpx.Response(200, json=_live_envelope({"EFiledlist": []}))
 
-    with pytest.raises(ProviderParseGap):
-        _provider(handler).returns_metadata(LIVE_GSTIN, fy="2024-25")
+    data = _provider(handler).returns_metadata(LIVE_GSTIN, fy="2024-25")
 
     assert asked == ["2024-25"], "must not fall back on an explicit year"
+    assert data["filing_count"] == 0
+    assert data["filings"] == []
+
+
+def test_a_gstin_that_filed_nothing_is_reported_not_voided(monkeypatch):
+    """THE REGRESSION, in its own right.
+
+    `guard.expect("filed returns", raw=data, parsed=rows)` could not tell
+    "filed nothing" from "the key was renamed" and called both an adapter
+    defect — so the vendor this check exists to surface came back as
+    "Response not understood".
+    """
+    monkeypatch.setattr(fa, "_early_in_fy", lambda today=None: False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_live_envelope(
+            {"status_cd": "1", "EFiledlist": []}))
+
+    data = _provider(handler).returns_metadata(LIVE_GSTIN, fy="2025-26")
+    assert data["filing_count"] == 0
+
+
+def test_a_renamed_returns_key_is_still_a_gap(monkeypatch):
+    """The narrowing must not reopen the dangerous direction. Returns
+    present under a name this adapter does not read must still void the
+    check, rather than report a filing vendor as having filed nothing."""
+    monkeypatch.setattr(fa, "_early_in_fy", lambda today=None: False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_live_envelope(
+            {"status_cd": "1",
+             "filedReturnsList": [{"rtntype": "GSTR3B", "ret_prd": "032026"}]}))
+
+    with pytest.raises(ProviderParseGap):
+        _provider(handler).returns_metadata(LIVE_GSTIN, fy="2025-26")

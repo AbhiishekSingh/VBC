@@ -1166,6 +1166,30 @@ def filings(rows: list[dict], meta: dict) -> dict:
     )
 
 
+def no_financials(form_type: str) -> dict:
+    """Nothing was filed — STATED, rather than left to be inferred.
+
+    Without this the check returned a bare PASS line and no facts at all,
+    so a reader scanning the report saw "No financials filed" in the same
+    green as a company whose accounts had been read and were healthy.
+    Worse, the empty result scored +15 for positive net worth — see the
+    note at the `fin` branch in `runner._dispatch`.
+    """
+    return F.build(
+        F.SUMMARY,
+        stats=[
+            F.stat("Accounts filed", None, tone="neutral"),
+            F.stat("Net worth", None, tone="neutral"),
+        ],
+        note=(
+            f"MCA holds no {form_type} for this company, so nothing here "
+            f"describes its finances. This is a gap in the filing record, "
+            f"not a reading of a healthy balance sheet — net worth, revenue "
+            f"and profitability are all UNESTABLISHED by this check."
+        ),
+    )
+
+
 def financials(parsed: dict) -> dict:
     """Filed accounts, from the XBRL extraction."""
     gaps = parsed.get("year_gaps") or []

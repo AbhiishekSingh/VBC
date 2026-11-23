@@ -79,6 +79,7 @@ from app.providers.base import (
     Spend,
     dig,
     is_blank,
+    unread_keys_matching,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,11 +270,29 @@ class FinaggProvider(HttpProvider):
             if rows:
                 fy = fallback_fy
 
+        # NOT "no rows parsed". A GSTIN that has filed NOTHING produces an
+        # empty list under a key that is present and perfectly understood,
+        # and voiding the check over it buried the most adverse fact this
+        # endpoint can report — a non-filing vendor — behind "Response not
+        # understood", which reads as our defect rather than their default.
+        #
+        # The list ARRIVING, empty or not, is what proves the adapter still
+        # understands the shape. A payload with no returns key at all, but
+        # something else that names returns, is the rename worth catching.
         guard = ParseGuard("finagg.returns")
-        guard.expect(
-            "filed returns", raw=data, parsed=rows,
-            hint="EFiledlist / returns · feeds C2 filing status",
-        )
+        if not _returns_key_present(data):
+            renamed = sorted(set(
+                unread_keys_matching(data, "filed", _RETURNS_KEYS)
+                + unread_keys_matching(data, "return", _RETURNS_KEYS)
+            ))
+            guard.expect(
+                "filed returns", raw=renamed or data, parsed=rows,
+                hint=(f"the payload carries {', '.join(renamed)}, which this "
+                      f"adapter does not read"
+                      if renamed else
+                      f"no returns list under any of {sorted(_RETURNS_KEYS)} "
+                      f"· feeds C2 filing status"),
+            )
         guard.raise_if_gaps(payload=payload)
 
         filings = []
@@ -510,6 +529,13 @@ def _flatten_address(address_block) -> str | None:
     return joined or None
 
 
+#: The keys GSTN has used for the filed-returns array. Named once so the
+#: reader and the ParseGuard cannot disagree about what counts as "the
+#: list arrived" — they did, and a vendor who had filed nothing was
+#: reported as an unreadable response instead of as a defaulter.
+_RETURNS_KEYS = ("efiledlist", "returns", "filings", "ret")
+
+
 def _return_rows(data) -> list:
     """The filed-returns array, under whichever key it arrived."""
     if not isinstance(data, dict):
@@ -519,6 +545,23 @@ def _return_rows(data) -> list:
         if isinstance(rows, list):
             return rows
     return []
+
+
+def _returns_key_present(data) -> bool:
+    """Did the returns LIST arrive, empty or not?
+
+    This is the question the guard needs and `_return_rows` cannot answer:
+    it returns `[]` both for "filed nothing" and for "the key is gone",
+    and those demand opposite responses — report the vendor, or void the
+    check.
+    """
+    if not isinstance(data, dict):
+        return False
+    return any(
+        isinstance(value, list)
+        for key, value in data.items()
+        if str(key).lower() in _RETURNS_KEYS
+    )
 
 
 def _iso(value) -> str | None:

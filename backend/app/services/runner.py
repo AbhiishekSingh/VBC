@@ -1558,12 +1558,41 @@ class CheckRunner:
                 scope=get("scope", "standalone") or "standalone",
             )
             if not data:
+                # THE COMMENT BELOW USED TO END HERE AND WAS WRONG.
+                #
+                # It said "r3 reads positive_net_worth from the payload, so
+                # an absent filing cannot score as a healthy one" — and
+                # this Finding carried NO payload at all. `_fact` returns
+                # the `_NO_PAYLOAD` sentinel for a result with no raw
+                # response, and every rule falls back to the STATUS when it
+                # sees that, because a manually recorded result legitimately
+                # has no payload. The status here is PASS. So r3 awarded
+                # +15 for "Filed financials show positive net worth" to a
+                # company that had filed no financials whatsoever.
+                #
+                # A gap reading as clean is this product's cardinal
+                # failure; a gap reading as POSITIVE is the same failure
+                # with the sign flipped, and it is worth 15 points.
+                #
+                # The fix is here rather than in the rule: the sentinel
+                # means "nothing to read", and the honest remedy is to give
+                # it something to read. `positive_net_worth: False` would
+                # claim the net worth is negative, which is not known
+                # either — the key carries None, and `bool(None)` is False,
+                # so r3 does not fire and nothing asserts a figure.
+                no_filing = {
+                    "form_type": get("formType", "AOC-4") or "AOC-4",
+                    "filed": False,
+                    "facts": {"positive_net_worth": None, "revenue": None},
+                }
                 return Finding(
-                    # r3 reads positive_net_worth from the payload, so an
-                    # absent filing cannot score as a healthy one.
                     check_id, CheckStatus.PASS, "No financials filed",
                     "The requested form type is not among those available for "
-                    "this company — a gap in the record, not a failed call.",
+                    "this company — a gap in the record, not a failed call. "
+                    "Net worth is NOT established by this result and the "
+                    "financial-health rule does not score it.",
+                    raw=no_filing,
+                    facts=factsets.no_financials(no_filing["form_type"]),
                 )
             facts = fs_mod.normalise_financials(data)
             revenue = facts.get("revenue")

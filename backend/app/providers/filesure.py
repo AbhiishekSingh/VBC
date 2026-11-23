@@ -50,6 +50,7 @@ from app.providers.base import (
     dig,
     is_blank,
     parse_date,
+    unread_keys_matching,
 )
 
 logger = logging.getLogger(__name__)
@@ -781,8 +782,26 @@ def normalise_master(data: dict, meta: dict | None = None) -> dict:
     guard = ParseGuard("filesure.master")
     guard.expect("status", raw=company or common, parsed=result["status"],
                  hint="commonData.status (NOT companyData.companyStatus) · risk rule r1")
-    guard.expect("class_of_company", raw=company or common, parsed=result["class_of_company"],
-                 hint="companyData.classOfCompany or commonData.class_of_company · SCAN S1")
+    # NOT "we parsed no class". `classOfCompany` is a Companies Act field
+    # and this check accepts an LLPIN and an FCIN as readily as a CIN — an
+    # entity outside the Companies Act has no class of company to report,
+    # and voiding the master over it would be the directors bug with a far
+    # bigger blast radius: `dirs`, `charges`, `filings` and `fin` are all
+    # read out of this payload and all SKIP when it is unavailable.
+    #
+    # `_set_scan_ratings` already leaves S1 unrated when the class is
+    # absent, which is the honest outcome — a human decides it.
+    #
+    # So this is a gap only when the payload NAMES a class under a
+    # spelling this adapter does not read.
+    class_renamed = unread_keys_matching(
+        data, "class", ("classofcompany", "class_of_company"))
+    guard.expect(
+        "class_of_company", raw=class_renamed, parsed=None,
+        hint=f"the payload carries {', '.join(class_renamed)}, which this "
+             f"adapter does not read — it knows companyData.classOfCompany "
+             f"and commonData.class_of_company · SCAN S1",
+    )
     guard.expect_any("incorporated_on",
                      raw=company.get("dateOfIncorporation") or common.get("date_of_incorporation"),
                      parsed=[result["incorporated_on"]],
@@ -1030,9 +1049,22 @@ def normalise_charges(data: dict) -> dict:
     guard.expect("charge_id", raw=rows,
                  parsed=[c["charge_id"] for c in all_charges if c["charge_id"]],
                  hint="masterData.indexChargesData[].chargeId")
-    guard.expect("amount", raw=rows,
-                 parsed=[c["amount"] for c in all_charges if c["amount"] is not None],
-                 hint="masterData.indexChargesData[].amount (a STRING)")
+    # NOT "no amount parsed from any row". A charge can be registered
+    # without a disclosed amount — a modification entry, or a charge whose
+    # value MCA does not publish — and one such row would have voided the
+    # whole check, open charges and all. An open charge is the single most
+    # material fact on this payload; discarding it because a figure was
+    # absent is the worst available trade.
+    #
+    # Rows carrying an amount under a name this adapter does not read IS
+    # the drift worth catching, so that is what is tested.
+    amount_renamed = unread_keys_matching(rows, "amount", ("amount", "chargeamount"))
+    guard.expect(
+        "amount", raw=amount_renamed, parsed=None,
+        hint=f"the charge rows carry {', '.join(amount_renamed)}, which this "
+             f"adapter does not read — it knows "
+             f"masterData.indexChargesData[].amount (a STRING)",
+    )
     guard.raise_if_gaps(payload=data)
     return result
 

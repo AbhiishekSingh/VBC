@@ -609,10 +609,21 @@ class GridlinesProvider(HttpProvider):
             "code": code,
             "message": message,
         }
+        # `_any(_without_status(...))`, NOT `parsed["uan"]`, for the same
+        # reason `prefill` and `address` above use it: a person with no
+        # EPFO record has no UAN, and demanding one made "this subject is
+        # not in EPFO" — an answer — indistinguishable from "the adapter
+        # cannot read the response" — a defect. A response carrying a name
+        # or a member status but no UAN is now reported with what it has.
+        #
+        # This endpoint has never returned a live 200 here, so what a "no
+        # record" envelope looks like is still unknown. When one arrives,
+        # its `code` is what should decide, and this guard should read it.
         guard = ParseGuard("gridlines.epfo_member")
-        guard.expect("UAN", raw=inner, parsed=parsed["uan"],
+        guard.expect("UAN", raw=inner, parsed=_any(_without_status(parsed)),
                      hint="uan / uan_number — the field the employment "
-                          "history check chains from")
+                          "history check chains from — and nothing else "
+                          "parsed either, at any depth")
         guard.raise_if_gaps(payload)
         return {**parsed, "_raw_keys": shape_keys(inner)}
 
@@ -644,10 +655,27 @@ class GridlinesProvider(HttpProvider):
             "code": code,
             "message": message,
         }
+        # NOT `raw=inner`. A UAN with no employment rows against it — a new
+        # registration, or a person no employer has yet reported — is a
+        # FINDING, and demanding rows turned it into "Response not
+        # understood": our defect, said about their record.
+        #
+        # `_any(_without_status(parsed))` is NOT the test here, though it is
+        # the right one for `epfo_member` above. `uan` falls back to the
+        # ARGUMENT, so it is truthy on every response including an empty
+        # one, and a guard reading it could never fire again — the same trap
+        # `_without_status` itself was written to escape.
+        #
+        # The honest test is whether the CONTAINER arrived. A list, empty or
+        # not, means the adapter still understands the envelope and the
+        # person has no rows. Content under that key in a shape we cannot
+        # read is the drift worth voiding a check for.
         guard = ParseGuard("gridlines.employment")
-        guard.expect("employment history", raw=inner,
-                     parsed=parsed["employments"],
-                     hint="employment_history / history — the list of "
+        guard.expect("employment history",
+                     raw=None if _employment_container(inner) else inner,
+                     parsed=rows,
+                     hint="employment_history / history / employments / "
+                          "records / employment_details — the list of "
                           "employers and dates, at any depth")
         guard.raise_if_gaps(payload)
         return {**parsed, "_raw_keys": shape_keys(inner)}
@@ -729,6 +757,38 @@ def looks_like_employment(row: Any) -> bool:
         return False
     return (any(k in row for k in _EMPLOYER_KEYS)
             or any(k in row for k in _JOINED_KEYS))
+
+
+#: The keys the employment list has arrived under. One name, so the reader
+#: and the guard cannot disagree about what "the list arrived" means.
+_EMPLOYMENT_KEYS = ("employment_history", "history", "employments",
+                    "records", "employment_details", "employment_data")
+
+
+def _employment_container(payload: Any) -> bool:
+    """Did the employment LIST arrive, empty or not?
+
+    The question `rows` cannot answer: it is `[]` both for a UAN with no
+    employment on record — a finding about the person — and for a renamed
+    or restructured payload — a defect in this adapter. Those demand
+    opposite responses, so the guard asks this instead.
+
+    A list under a known key is the proof. A dict there is NOT: the
+    payload that prompted this carried `employment_data` holding an
+    unrecognised object, and reading that as "no employment" would be the
+    silent pass the shape search exists to prevent.
+    """
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if str(key).lower() in _EMPLOYMENT_KEYS and isinstance(value, list):
+                    return True
+                stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    return False
 
 
 def find_employments(payload: Any) -> list[dict]:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -504,6 +505,55 @@ def has_content(value: Any) -> bool:
     if isinstance(value, (str, list, tuple, dict, set)):
         return len(value) > 0
     return True
+
+
+def unread_keys_matching(
+    payload: Any, needle: str, known: Iterable[str],
+) -> list[str]:
+    """Keys ANYWHERE in ``payload`` that NAME ``needle`` and are not read.
+
+    THE TEST FOR ADAPTER DRIFT, 23 Nov 2026
+    ---------------------------------------
+    A ParseGuard asks "did the payload contain something here that we
+    failed to extract?" and most guards answered it by testing whether
+    OUR value came out empty. That cannot tell apart two situations which
+    demand opposite responses:
+
+        the field was RENAMED      → adapter defect; void the check
+        the source did not SEND it → a fact about the subject; report it
+
+    Guessing wrong in either direction has cost this product a whole
+    check, twice. On 18 Nov a ZEPTO board of 11 directors was discarded
+    because MCA's company master does not carry s.164 standing at all;
+    the guard read "we parsed no disqualification" as "the field moved".
+
+    The signal that IS reliable is the payload's own vocabulary. A key
+    whose name says "amount", "class" or "disqualified" and which this
+    adapter does not read is proof the fact is there under a name we do
+    not have. A payload that never mentions the thing is not a defect —
+    it is a source that did not send it, and it must parse.
+
+    ``needle`` is matched case-insensitively against each key's name, and
+    ``known`` lists the spellings this adapter already reads, lower-cased.
+    Returns the offending key names so the gap message can SAY what it
+    found, rather than sending somebody to go and look.
+    """
+    wanted = {str(k).lower() for k in known}
+    found: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                lowered = str(key).lower()
+                if needle in lowered and lowered not in wanted:
+                    found.add(str(key))
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return sorted(found)
 
 
 class ParseGuard:
