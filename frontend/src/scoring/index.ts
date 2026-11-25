@@ -536,11 +536,28 @@ export function applyPolicy(
   if (raw === 'Positive for Onboarding') {
     const assessed = scan.pillars.A.applicable
     if (assessed < policy.minAssessmentParameters) {
+      /*
+        THE WEIGHT IS READ, NOT WRITTEN DOWN.
+
+        This said "weight 0.60 — the heaviest in the framework" and kept
+        saying it after the 6 Oct 2026 migration moved Assessment to 0.4.
+        It is shown to the CLIENT on the verdict card, directly below a
+        tile reading "W 0.4" — the product contradicting itself on the one
+        screen whose job is to explain the arithmetic.
+
+        It also named site surveillance and market references as
+        Assessment checks. Site surveillance is N2 now, in Non Negotiable,
+        and market references left the model entirely.
+      */
+      const total = SCAN_PARAMETERS.filter((p) => p.pillar === 'A').length
+      const weight = PILLARS.find((p) => p.key === 'A')!.weight
+      const heaviest = Math.max(...PILLARS.map((p) => p.weight)) === weight
       reasons.push(
-        `Only ${assessed} of 4 Assessment parameters were evaluated, below the ` +
-          `floor of ${policy.minAssessmentParameters}. Assessment carries weight ` +
-          `0.60 — the heaviest in the framework — and site surveillance, market ` +
-          `references and the psychometric result are the substantive checks in it.`,
+        `Only ${assessed} of ${total} Assessment parameters were evaluated, ` +
+          `below the floor of ${policy.minAssessmentParameters}. Assessment ` +
+          `carries weight ${weight}` +
+          (heaviest ? ' — the heaviest in the framework' : '') +
+          ` — and the psychometric result is the substantive evidence in it.`,
       )
     }
     if (scan.applicable < policy.minApplicableParameters) {

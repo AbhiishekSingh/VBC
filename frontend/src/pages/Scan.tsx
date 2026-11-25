@@ -201,13 +201,14 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
               <div className="kicker">Verdict</div>
               <h3 className="stat-lg">{gate.verdict}</h3>
             </div>
-            {/* Only when GATED. Ungated, this repeated the percentage and
-                the applicable count from the tiles directly above it —
-                three places for two facts. Gated, it is the one thing on
-                the row the tiles cannot say. */}
-            {gate.gated && (
-              <span className="badge b-warn">{score.coverageNote}</span>
-            )}
+            {/* THE BADGE IS GONE.
+                It read "94.4% achieved, based on 14 of 18 parameters" —
+                and the Achievement tile two inches above already says
+                94.4%, while the one beside it says 14/18. The earlier
+                note here claimed it was "the one thing on the row the
+                tiles cannot say"; it was not, in either state. Three
+                renderings of two facts, on the screen whose job is to
+                make the arithmetic followable. */}
           </div>
           {/* The two thresholds, drawn where they actually sit. */}
           <Meter
@@ -240,14 +241,137 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
         </div>
       </Card>
 
+      {/*
+        AN `ⓘ` PER PILLAR, not one for the page.
+
+        The question a client asks is never "how does SCAN work" in the
+        abstract — it is "why does THAT tile say 0.90 / 1.00". A general
+        formula at the top of the page does not answer it; the reader has
+        to carry four numbers from a paragraph down to a tile and do the
+        arithmetic themselves. So each tile shows its own working, with
+        this vendor's own figures, substituted in and named.
+
+        Every number below is read from the same `bucket` the tile prints.
+        Nothing is written down twice, so the explanation cannot drift
+        from the number it explains — which is exactly how the verdict
+        card came to claim Assessment weighed 0.60 for seven weeks after
+        it stopped.
+      */}
       <div className="grid-4">
         {PILLARS.map((pillar) => {
           const bucket = score.pillars[pillar.key as PillarKey]
+          const params = SCAN_PARAMETERS.filter((p) => p.pillar === pillar.key)
+          const rated = params.filter((p) => vendor.scan[p.id])
+          const isA = pillar.key === 'A'
           return (
             <div key={pillar.key} className="tile">
               <div className="row-between">
                 <strong>{pillar.name}</strong>
-                <span className="chip">w {pillar.weight}</span>
+                <span className="row-head">
+                  <span className="chip">w {pillar.weight}</span>
+                  <InfoButton
+                    title={`${pillar.name} — how this tile is calculated`}
+                    label={`How ${pillar.name} is calculated`}
+                  >
+                    {bucket.applicable === 0 ? (
+                      <>
+                        <p>
+                          Nothing in this pillar has been answered yet, so it contributes{' '}
+                          <strong>nothing to either side</strong> of the score.
+                        </p>
+                        <p>
+                          <strong>0.00 / 0.00 does not mean the vendor scored zero.</strong> It
+                          means the questions were never put. A zero score would read 0.00 /{' '}
+                          <span className="nums">{(params.length * pillar.weight).toFixed(2)}</span>{' '}
+                          — asked and failed. Not asking is a different answer from asking and
+                          finding nothing wrong, and this product refuses to blur the two.
+                        </p>
+                        <p>
+                          Its {params.length} questions are {params.map((p) => p.id).join(', ')}.
+                          Answer any of them in the table below and both sides of this tile start
+                          moving.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p>
+                          <strong>{bucket.applicable}</strong> of this pillar&rsquo;s{' '}
+                          {params.length} questions were answered
+                          {params.length - bucket.applicable > 0 && (
+                            <>
+                              {' '}
+                              — {params.length - bucket.applicable} left Not applicable, which
+                              leaves <em>both</em> sides of the calculation
+                            </>
+                          )}
+                          .
+                        </p>
+
+                        <table className="table">
+                          <tbody>
+                            {rated.map((p) => {
+                              const value = vendor.scan[p.id]
+                              const rating = p.options.find((o) => o.value === value)?.rating
+                              const worth =
+                                rating === 'G' ? '1' : rating === 'Y' ? '½' : '0'
+                              return (
+                                <tr key={p.id}>
+                                  <td className="mono muted">{p.id}</td>
+                                  <td>{value}</td>
+                                  <td>
+                                    <RatingDot rating={(rating as Rating) ?? null} />
+                                  </td>
+                                  <td className="num nums">{worth}</td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+
+                        <p>
+                          Green is worth 1, Yellow <strong>½</strong> — not nothing — and Red 0.
+                        </p>
+                        {/* Its own paragraph. Run on after the sentence above it
+                            read "…and Red 0. 4 + (1 ÷ 2) = 4.5 positives", where
+                            the Red's zero and the Green count collide into "0. 4". */}
+                        {bucket.Y > 0 && (
+                          <p className="nums">
+                            {bucket.G} Green + ({bucket.Y} Yellow ÷ 2) = {bucket.positives}{' '}
+                            positives
+                          </p>
+                        )}
+
+                        {isA && (
+                          <p>
+                            This pillar is the exception: each of its {params.length} dimensions
+                            carries its own share of the psychometric test —{' '}
+                            {params
+                              .map((p) => `${p.label} ${(p.subWeight ?? 0) * 100}%`)
+                              .join(', ')}{' '}
+                            — rather than counting as one parameter each, so its totals come out
+                            fractional.
+                          </p>
+                        )}
+
+                        <p className="nums">
+                          <strong>
+                            {bucket.positives} positives × {pillar.weight} weight ={' '}
+                            {bucket.weighted.toFixed(2)}
+                          </strong>
+                          <br />
+                          <strong>
+                            {bucket.applicable} answered × {pillar.weight} weight ={' '}
+                            {bucket.max.toFixed(2)}
+                          </strong>
+                        </p>
+                        <p>
+                          The right-hand number only ever moves when a question is answered or set
+                          back to Not applicable. The colours move the left-hand number alone.
+                        </p>
+                      </>
+                    )}
+                  </InfoButton>
+                </span>
               </div>
               <div className="small muted">{pillar.subtitle}</div>
               <div className="nums stat-lg" style={{ marginTop: 'var(--space-2)' }}>

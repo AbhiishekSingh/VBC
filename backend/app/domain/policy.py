@@ -38,7 +38,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.domain.scoring import ScanScore
-from app.domain.types import Pillar
+from app.catalog.scan import SCAN_PARAMETERS
+from app.domain.types import PILLAR_WEIGHTS, Pillar
 
 
 class Verdict(str, Enum):
@@ -147,12 +148,29 @@ def apply_policy(
     if raw is Verdict.POSITIVE:
         assessed = scan.pillars[Pillar.A].applicable
         if assessed < policy.min_assessment_parameters:
+            # THE WEIGHT IS READ, NOT WRITTEN DOWN.
+            #
+            # This sentence said "weight 0.60 — the heaviest in the
+            # framework" and went on saying it after the 6 Oct 2026
+            # migration moved Assessment to 0.4. It is shown to the
+            # CLIENT on the verdict card, directly below a tile reading
+            # "W 0.4" — the product contradicting itself on the one
+            # screen whose job is to explain the arithmetic.
+            #
+            # It also named site surveillance and market references as
+            # Assessment checks. Site surveillance is N2 now, in Non
+            # Negotiable, and market references left the model entirely.
+            total = len([p for p in SCAN_PARAMETERS if p.pillar is Pillar.A])
+            weight = PILLAR_WEIGHTS[Pillar.A]
+            heaviest = max(PILLAR_WEIGHTS.values()) == weight
             reasons.append(
-                f"Only {assessed} of 4 Assessment parameters were evaluated, "
-                f"below the floor of {policy.min_assessment_parameters}. "
-                f"Assessment carries weight 0.60 — the heaviest in the "
-                f"framework — and site surveillance, market references and "
-                f"the psychometric result are the substantive checks in it."
+                f"Only {assessed} of {total} Assessment parameters were "
+                f"evaluated, below the floor of "
+                f"{policy.min_assessment_parameters}. Assessment carries "
+                f"weight {weight}"
+                + (" — the heaviest in the framework" if heaviest else "")
+                + " — and the psychometric result is the substantive "
+                  "evidence in it."
             )
         if scan.applicable < policy.min_applicable_parameters:
             reasons.append(
