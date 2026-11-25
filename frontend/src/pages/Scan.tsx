@@ -160,11 +160,73 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
         </p>
       </div>
 
+      {/* These four are the ROLL-UP, and they are what a client reads
+          first — so each carries its own working, the same way the
+          pillar tiles below do. Every figure is read from `score` and
+          `gate`; none is written down a second time. */}
       <div className="grid-4">
         <Tile
           n={`${score.weighted.toFixed(2)} / ${score.best.toFixed(2)}`}
           label="Weighted / best achievable"
           tone="accent"
+          info={
+            <>
+              <p>Both sides are the four pillar tiles below, added up.</p>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Pillar</th>
+                    <th className="num">Weighted</th>
+                    <th className="num">Best</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {PILLARS.map((pillar) => {
+                    const b = score.pillars[pillar.key as PillarKey]
+                    return (
+                      <tr key={pillar.key}>
+                        <td>
+                          {pillar.name} <span className="muted">· w {pillar.weight}</span>
+                        </td>
+                        <td className="num nums">{b.weighted.toFixed(2)}</td>
+                        <td className="num nums">{b.max.toFixed(2)}</td>
+                      </tr>
+                    )
+                  })}
+                  <tr>
+                    <td>
+                      <strong>Total</strong>
+                    </td>
+                    <td className="num nums">
+                      <strong>{score.weighted.toFixed(2)}</strong>
+                    </td>
+                    <td className="num nums">
+                      <strong>{score.best.toFixed(2)}</strong>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p>
+                <strong>Weighted</strong> is what this vendor earned.{' '}
+                <strong>Best achievable</strong> is what the questions that were actually answered
+                could have been worth, had every one come back Green.
+              </p>
+              <p>
+                With all {score.total} parameters applicable the best achievable would be{' '}
+                <span className="nums">
+                  {PILLARS.reduce(
+                    (sum, p) =>
+                      sum +
+                      SCAN_PARAMETERS.filter((q) => q.pillar === p.key).length * p.weight,
+                    0,
+                  ).toFixed(2)}
+                </span>
+                . It is{' '}
+                <span className="nums">{score.best.toFixed(2)}</span> here because{' '}
+                {score.total - score.applicable} were marked Not applicable and left both sides.
+              </p>
+            </>
+          }
         />
         <Tile
           n={`${score.pct.toFixed(1)}%`}
@@ -175,11 +237,94 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
               : `60% tolerance is ${score.tolerance60.toFixed(2)}`
           }
           tone={toneForScan(score.pct, gate.gated)}
+          info={
+            <>
+              <p className="nums">
+                <strong>
+                  {score.weighted.toFixed(2)} ÷ {score.best.toFixed(2)} ={' '}
+                  {score.pct.toFixed(1)}%
+                </strong>
+              </p>
+              <p>
+                The pass mark is <strong>60% of best achievable</strong> — here{' '}
+                <span className="nums">{score.tolerance60.toFixed(2)}</span>. The 50% watch line is{' '}
+                <span className="nums">{score.tolerance50.toFixed(2)}</span>; both are drawn on the
+                meter below rather than left as numbers in a sentence.
+              </p>
+              <p>
+                Onboarding needs weighted <strong>above</strong> the pass mark, strictly. Landing
+                exactly on the bar is Negative — the client&rsquo;s workbook asks{' '}
+                <span className="mono">=IF(H16&gt;D20, …)</span> and this matches it.
+              </p>
+              <p>
+                {score.weighted > score.tolerance60 ? (
+                  <>
+                    <span className="nums">{score.weighted.toFixed(2)}</span> is above{' '}
+                    <span className="nums">{score.tolerance60.toFixed(2)}</span>, so the arithmetic
+                    says <strong>{gate.rawVerdict}</strong>.
+                  </>
+                ) : (
+                  <>
+                    <span className="nums">{score.weighted.toFixed(2)}</span> does not clear{' '}
+                    <span className="nums">{score.tolerance60.toFixed(2)}</span>, so the arithmetic
+                    says <strong>{gate.rawVerdict}</strong>.
+                  </>
+                )}
+                {gate.gated && (
+                  <>
+                    {' '}
+                    The verdict shown is <strong>{gate.verdict}</strong> instead, because the
+                    evidence behind that percentage is too thin to stand behind — see the verdict
+                    card below.
+                  </>
+                )}
+              </p>
+              <p>
+                A percentage is only as good as the number of questions under it. This one rests on{' '}
+                {score.applicable} of {score.total}.
+              </p>
+            </>
+          }
         />
         <Tile
           n={`${score.applicable}/${score.total}`}
           label="Parameters applicable"
           note="The rest are N/A and excluded"
+          info={
+            <>
+              <p>
+                {score.applicable} of {score.total} questions were answered.{' '}
+                {score.total - score.applicable} are set to Not applicable.
+              </p>
+              <table className="table">
+                <tbody>
+                  {PILLARS.map((pillar) => {
+                    const b = score.pillars[pillar.key as PillarKey]
+                    const of = SCAN_PARAMETERS.filter((p) => p.pillar === pillar.key).length
+                    return (
+                      <tr key={pillar.key}>
+                        <td>{pillar.name}</td>
+                        <td className="num nums">
+                          {b.applicable} / {of}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+              <p>
+                <strong>Not applicable leaves both sides of the calculation.</strong> A vendor is
+                never marked down for a question that could not apply to them — a sole proprietor
+                has no board, so board questions are struck off the paper rather than failed.
+              </p>
+              <p>
+                The consequence is that the bar moves with coverage. Answer fewer questions and both
+                the score and the pass mark shrink together, so a high percentage on a handful of
+                answers is not the same achievement as the same percentage on all{' '}
+                {score.total}. That is what the coverage floors exist to catch.
+              </p>
+            </>
+          }
         />
         <Tile
           n={`${score.pillars.A.applicable}/${
@@ -191,6 +336,31 @@ export default function Scan({ vendor, setVendor, setPrimary }: PageProps) {
             (heaviest.key === 'A' ? ' — the heaviest pillar' : '')
           }
           tone={score.pillars.A.applicable >= 2 ? 'pass' : 'warn'}
+          info={
+            <>
+              <p>
+                How many of the {SCAN_PARAMETERS.filter((p) => p.pillar === 'A').length} Assessment
+                questions have a result. They come from the psychometric test, and all four are
+                entered by a person — nothing fills them automatically.
+              </p>
+              <p>
+                This pillar carries weight <strong>{assessment.weight}</strong>
+                {heaviest.key === 'A' && ', the heaviest of the four'}, so a verdict reached without
+                it is a statement about paperwork rather than about a vendor.
+              </p>
+              <p>
+                A positive recommendation needs at least{' '}
+                <strong>{DEFAULT_POLICY.minAssessmentParameters} of them answered</strong>. Below
+                that the score still stands and is still shown, but the verdict is held for senior
+                review.
+              </p>
+              <p>
+                It is a count rather than a yes/no on purpose. A floor of one could be met by the
+                cheapest check in the catalog; a floor of{' '}
+                {DEFAULT_POLICY.minAssessmentParameters} forces real work.
+              </p>
+            </>
+          }
         />
       </div>
 

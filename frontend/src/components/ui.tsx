@@ -304,15 +304,37 @@ export function Tile({
   label,
   note,
   tone = 'neutral',
+  info,
 }: {
   n: ReactNode
   label: string
   note?: string
   tone?: Tone
+  /**
+   * The working behind the number, shown in a modal from an `ⓘ` in the
+   * tile's corner.
+   *
+   * A tile is a headline figure with no room to show where it came from,
+   * and a reader who doubts the figure has nowhere to go. Passing the
+   * derivation here puts it one click from the number itself rather than
+   * in a document somebody has to be sent.
+   *
+   * Optional on purpose: a tile that merely counts something visible on
+   * the same screen does not need one, and an `ⓘ` on every tile teaches
+   * people to ignore all of them.
+   */
+  info?: ReactNode
 }) {
   return (
     <div className={`tile t-${tone}`}>
-      <div className="tile-n nums">{n}</div>
+      <div className="row-between">
+        <div className="tile-n nums">{n}</div>
+        {info && (
+          <InfoButton title={`${label} — how this is calculated`} label={`How ${label} is calculated`}>
+            {info}
+          </InfoButton>
+        )}
+      </div>
       <div className="tile-label">{label}</div>
       {note && <div className="tile-note">{note}</div>}
     </div>
