@@ -1249,7 +1249,7 @@
       "expected": {
         "done": true,
         "applicable": 13,
-        "positives": 11,
+        "positives": 11.0,
         "pct": 84.6,
         "gateFailed": false,
         "passed": true,
@@ -1277,7 +1277,7 @@
       "expected": {
         "done": true,
         "applicable": 13,
-        "positives": 10,
+        "positives": 10.0,
         "pct": 76.9,
         "gateFailed": true,
         "passed": false,
@@ -1291,12 +1291,40 @@
       "expected": {
         "done": false,
         "applicable": 0,
-        "positives": 0,
+        "positives": 0.0,
         "pct": 0.0,
         "gateFailed": false,
         "passed": false,
         "verdict": "Not conducted",
         "scanValue": null
+      }
+    },
+    "oddYellowDecidesIt": {
+      "input": {
+        "V1": "Yes",
+        "V2": "Low",
+        "V3": "No",
+        "V4": "No",
+        "V5": "Average",
+        "V6": "Above Par",
+        "V7": "Positive",
+        "V8": "Satisfactory",
+        "V9": "Yes",
+        "V10": null,
+        "V11": null,
+        "V12": null,
+        "V13": null
+      },
+      "done": true,
+      "expected": {
+        "done": true,
+        "applicable": 9,
+        "positives": 5.5,
+        "pct": 61.1,
+        "gateFailed": false,
+        "passed": true,
+        "verdict": "Positive",
+        "scanValue": "Positive"
       }
     }
   },

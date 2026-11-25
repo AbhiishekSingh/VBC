@@ -20,9 +20,37 @@ from app.domain.scoring import score_scan, score_risk, score_surveillance   # no
 from app.domain.policy import apply_policy, DEFAULT_POLICY, PROTOTYPE_POLICY  # noqa: E402
 from app.domain.validation import check_value, split_subjects  # noqa: E402
 from app.catalog.scan import SCAN_PARAMETERS  # noqa: E402
+from app.catalog.surveillance import SURVEILLANCE_PARAMETERS  # noqa: E402
 from app.tests import fixtures as fx  # noqa: E402
 
 OUT = ROOT.parent / "frontend" / "src" / "scoring" / "parity-expected.json"
+
+#: A site visit whose verdict depends on the half-Yellow. Built from the
+#: catalog rather than typed out, so a corrected option spelling cannot
+#: silently turn this into a different case.
+_SV_BY_COLOUR = {
+    p.id: {rating.value: option for option, rating in p.options}
+    for p in SURVEILLANCE_PARAMETERS
+}
+
+
+def _odd_yellow_visit() -> dict:
+    """5 Green, 1 Yellow, 3 Red, premises intact."""
+    visit: dict = {p.id: None for p in SURVEILLANCE_PARAMETERS}
+    visit["V1"] = _SV_BY_COLOUR["V1"]["G"]
+    used = {"V1"}
+    for colour, count in (("Y", 1), ("R", 3), ("G", 4)):
+        taken = 0
+        for p in SURVEILLANCE_PARAMETERS:
+            if taken == count or p.id in used or colour not in _SV_BY_COLOUR[p.id]:
+                continue
+            visit[p.id] = _SV_BY_COLOUR[p.id][colour]
+            used.add(p.id)
+            taken += 1
+    return visit
+
+
+ODD_YELLOW_VISIT = _odd_yellow_visit()
 
 
 def scan_payload(ratings):
@@ -151,6 +179,16 @@ data = {
     "hardGateFails": {"input": {**fx.MERIDIAN_SURVEILLANCE, "V1": "No"}, "done": True,
                       "expected": sv_payload({**fx.MERIDIAN_SURVEILLANCE, "V1": "No"})},
     "notConducted": {"input": {}, "done": False, "expected": sv_payload({}, done=False)},
+    # AN ODD YELLOW. Added 25 Nov 2026 with the floor fix: every case
+    # above happens to have an even Yellow count, so `G + Y // 2` and
+    # `G + Y / 2` agreed on all of them and the parity suite could not
+    # have caught the two engines drifting apart on the halving.
+    #
+    # 9 applicable, 5 Green, 1 Yellow, 3 Red: 5 / 9 = 55.6% and Negative
+    # under the floor, 5.5 / 9 = 61.1% and Positive as the client's
+    # `Site Surveillance!H36` computes it.
+    "oddYellowDecidesIt": {"input": ODD_YELLOW_VISIT, "done": True,
+                           "expected": sv_payload(ODD_YELLOW_VISIT)},
   },
   "validation": {
     "checkValue": [

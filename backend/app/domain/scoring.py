@@ -238,7 +238,9 @@ class SurveillanceScore:
     G: int = 0
     Y: int = 0
     R: int = 0
-    positives: int = 0
+    #: A FLOAT. One Yellow is worth half a Green, so an odd Yellow count
+    #: gives a half. It was `int` while the arithmetic floored.
+    positives: float = 0.0
     pct: float = 0.0
     gate_failed: bool = False
     passed: bool = False
@@ -246,7 +248,7 @@ class SurveillanceScore:
 
     @property
     def scan_value(self) -> str | None:
-        """The value this result writes into SCAN parameter A2."""
+        """The value this result writes into SCAN parameter N2."""
         if not self.done:
             return None
         return "Positive" if self.passed else "Negative"
@@ -261,6 +263,20 @@ def score_surveillance(
     Premises comes back Negative, the field result is Negative regardless
     of how well the other twelve scored — you cannot have a satisfactory
     site visit to a site that does not exist.
+
+    THE ARITHMETIC, FROM THE CLIENT'S OWN SHEET
+    -------------------------------------------
+    `Site Surveillance!H36`, read out of three workbooks the client sent on
+    25 Nov 2026:
+
+        =IF(I8="red","Negative",
+            IF( (M9 + (M10/2)) >= (0.6*M12), "Positive", "Negative"))
+
+    M9 Green · M10 Yellow · M12 applicable · I8 the premises gate.
+
+    `M10/2`, with no rounding — the same as the SCAN sheet's `=D8+(D9/2)`.
+    Note `>=` here, where the SCAN verdict is strictly `>`. The two sheets
+    genuinely differ on that and both are reproduced as written.
     """
     if not done:
         return SurveillanceScore(done=False)
@@ -282,7 +298,19 @@ def score_surveillance(
             if parameter.hard_gate:
                 gate_failed = True
 
-    positives = G + Y // 2
+    # `Y / 2`, NOT `Y // 2`.
+    #
+    # The floor was corrected in SCAN on 5 Oct 2026 and this copy was
+    # missed, because nothing in the suite asserted either behaviour. The
+    # client's formula above settles it: an odd Yellow is worth half a
+    # Green here exactly as it is there.
+    #
+    # It decides verdicts. Nine applicable, five Green, one Yellow, three
+    # Red: 5 / 9 = 55.6% and Negative under the floor; 5.5 / 9 = 61.1% and
+    # Positive as the client computes it. The error ran one way only —
+    # against the vendor — and it did not stop at this screen, because the
+    # result writes SCAN parameter N2 in the 0.3 Non Negotiable pillar.
+    positives = G + Y / 2
     pct = round((positives / applicable) * 100, 1) if applicable else 0.0
     passed = not gate_failed and pct >= SURVEILLANCE_THRESHOLD_PCT
 

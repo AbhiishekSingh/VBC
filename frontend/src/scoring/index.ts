@@ -256,7 +256,25 @@ export function scoreSurveillance(
     }
   }
 
-  const positives = G + Math.floor(Y / 2)
+  /*
+    `Y / 2`, NOT `Math.floor(Y / 2)`.
+
+    The client's `Site Surveillance!H36`, read out of three workbooks they
+    sent on 25 Nov 2026:
+
+        =IF(I8="red","Negative",
+            IF( (M9 + (M10/2)) >= (0.6*M12), "Positive","Negative"))
+
+    No rounding — the same as the SCAN sheet's `=D8+(D9/2)`. The floor was
+    corrected in `scoreScan` above on 5 Oct 2026 and this copy was missed,
+    because nothing asserted either behaviour.
+
+    It decides verdicts. Nine applicable, five Green, one Yellow, three
+    Red is 55.6% and Negative under the floor, 61.1% and Positive as the
+    client computes it — and the result writes SCAN parameter N2, so it
+    does not stop at this screen.
+  */
+  const positives = G + Y / 2
   const pct = applicable ? Number(((positives / applicable) * 100).toFixed(1)) : 0
   const passed = !gateFailed && pct >= SURVEILLANCE_THRESHOLD_PCT
 
